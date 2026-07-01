@@ -1,7 +1,8 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
+import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
-import type { WorkbenchResponse } from "../shared/workbenchTypes";
+import type { ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 function response<T>(promise: Promise<T>): Promise<WorkbenchResponse<T>> {
   return promise
@@ -12,7 +13,20 @@ function response<T>(promise: Promise<T>): Promise<WorkbenchResponse<T>> {
     }));
 }
 
-function registerWorkbenchHandlers(store: WorkspaceStore): void {
+async function saveProjectSecret(store: WorkspaceStore, secretStore: SecureSecretStore, projectId: string, input: unknown): Promise<WorkbenchState> {
+  if (!input || typeof input !== "object") {
+    throw new Error("密钥保存请求无效。");
+  }
+  const candidate = input as Partial<ProjectSecretInput>;
+  if (typeof candidate.value !== "string") {
+    throw new Error("请输入需要保存到系统安全存储的密钥。");
+  }
+  const { target, existingRef } = await store.prepareProjectSecret(projectId, candidate.target);
+  const handle = await secretStore.save(projectId, target, candidate.value, existingRef);
+  return store.attachProjectSecret(projectId, target, handle);
+}
+
+function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore): void {
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
   ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
   ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
@@ -20,6 +34,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore): void {
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
+  ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
 }
 
 function createMainWindow(): void {
@@ -50,7 +65,7 @@ function createMainWindow(): void {
 
 app.whenReady().then(() => {
   const repoRoot = process.env.WORKBENCH_REPO_ROOT ?? path.resolve(app.getAppPath(), "../..");
-  registerWorkbenchHandlers(new WorkspaceStore(repoRoot));
+  registerWorkbenchHandlers(new WorkspaceStore(repoRoot), new SecureSecretStore(repoRoot));
   createMainWindow();
 
   app.on("activate", () => {

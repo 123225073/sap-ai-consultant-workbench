@@ -22,7 +22,7 @@ import {
   Sparkles
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
-import type { CaseFileNode, CaseMessage, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { CaseFileNode, CaseMessage, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes = ["问题分析", "ABAP开发", "文档生成", "画流程图"];
 
@@ -193,6 +193,21 @@ function App() {
     }
   }
 
+  async function saveProjectSecret(projectId: string, input: ProjectSecretInput): Promise<boolean> {
+    if (!bridge) {
+      setNotice("请在桌面应用中保存密钥。");
+      return false;
+    }
+    const response = await bridge.saveProjectSecret(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("密钥已保存到系统安全存储；真实连接验证未执行。");
+      return true;
+    }
+    setNotice(response.error);
+    return false;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -289,7 +304,7 @@ function App() {
         </aside>
 
         {activeView === "config" ? (
-          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} />
+          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} onSaveSecret={saveProjectSecret} />
         ) : (
         <>
         <section className="conversation-panel">

@@ -1,9 +1,25 @@
 export type CaseStatus = "active" | "solved" | "archived";
 export type ConfigStatus = "not-configured" | "saved" | "pending-verification" | "failed";
+export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-token";
+export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "failed" | "needs-rotation";
+export type SecretStoreKind = "electron-safe-storage";
 
 export interface SecretHandle {
   secretRef: string | null;
-  state: "not-set" | "secure-store-required";
+  kind: SecretKind;
+  store: SecretStoreKind | null;
+  state: SecretState;
+  updatedAt: string | null;
+}
+
+export interface ProjectSecretTarget {
+  kind: SecretKind;
+  providerId?: string;
+}
+
+export interface ProjectSecretInput {
+  target: ProjectSecretTarget;
+  value: string;
 }
 
 export interface AdtConfig {

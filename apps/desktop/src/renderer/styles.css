@@ -806,6 +806,11 @@ button {
   padding: 0;
 }
 
+.secret-entry input {
+  background: #fffaf5;
+  border-color: #fed7aa;
+}
+
 .config-actions {
   margin-top: 18px;
   display: flex;

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { CaseFileNode, CaseMessage, CaseSummary, ProjectConfig, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import { emptySecretHandle, isManagedSecretRef } from "../shared/secretHandle";
+import type { CaseFileNode, CaseMessage, CaseSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -110,7 +111,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
       language: "ZH",
       sslMode: "strict",
       readOnly: true,
-      credential: { secretRef: null, state: "secure-store-required" },
+      credential: emptySecretHandle("adt-password"),
       configStatus: "saved",
       connectionStatus: "pending-verification",
       minimalReadStatus: "pending-verification",
@@ -119,7 +120,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
     feishu: {
       profile: "demo-profile",
       cliPath: "lark-cli",
-      credential: { secretRef: null, state: "secure-store-required" },
+      credential: emptySecretHandle("feishu-token"),
       authStatus: "pending-verification",
       docPermissionStatus: "pending-verification",
       lastCheckedAt: null
@@ -131,7 +132,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
         providerType: "openai-compatible",
         baseUrl: "https://api-demo.example.com/v1",
         enabled: false,
-        credential: { secretRef: null, state: "secure-store-required" },
+        credential: emptySecretHandle("api-key"),
         modelSyncStatus: "pending-verification",
         chatTestStatus: "pending-verification",
         lastCheckedAt: null
@@ -140,7 +141,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
     codex: {
       integrationType: "cli",
       executablePath: "codex",
-      credential: { secretRef: null, state: "secure-store-required" },
+      credential: emptySecretHandle("codex-token"),
       cliStatus: "pending-verification",
       version: "",
       loginStatus: "pending-verification",
@@ -215,13 +216,33 @@ function savedOrEmptyStatus(...values: string[]): ProjectConfig["adt"]["configSt
   return values.some((value) => value.length > 0) ? "saved" : "not-configured";
 }
 
-function normalizeConnectionState(value: string): ProjectSummary["connectionState"] {
+function sapVersion(value: unknown): ProjectSummary["sapVersion"] {
+  return value === "S4" || value === "ECC" ? value : "UNKNOWN";
+}
+
+function normalizeConnectionState(value: unknown): ProjectSummary["connectionState"] {
   const legacyLocalDemo = ["demo", "readonly"].join("-");
   const legacyNotChecked = ["not", ["ver", "ified"].join("")].join("-");
   if (value === legacyLocalDemo) return "local-demo";
   if (value === legacyNotChecked) return "not-checked";
   if (value === "local-demo" || value === "not-configured" || value === "not-checked") return value;
   return "not-checked";
+}
+
+function normalizeSecretHandle(value: unknown, kind: SecretKind): SecretHandle {
+  if (value && typeof value === "object") {
+    const candidate = value as Partial<SecretHandle>;
+    if (candidate.state === "set-in-secure-store" && candidate.kind === kind && isManagedSecretRef(candidate.secretRef)) {
+      return {
+        secretRef: candidate.secretRef,
+        kind,
+        store: "electron-safe-storage",
+        state: "set-in-secure-store",
+        updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : null
+      };
+    }
+  }
+  return emptySecretHandle(kind);
 }
 
 export class WorkspaceStore {
@@ -352,6 +373,48 @@ export class WorkspaceStore {
     return this.withFiles(state);
   }
 
+  async prepareProjectSecret(projectId: string, targetInput: unknown): Promise<{ target: ProjectSecretTarget; existingRef: string | null }> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存密钥。");
+    }
+    return this.resolveSecretTarget(project, targetInput);
+  }
+
+  async attachProjectSecret(projectId: string, targetInput: unknown, handle: SecretHandle): Promise<WorkbenchState> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存密钥引用。");
+    }
+    const { target } = this.resolveSecretTarget(project, targetInput);
+    const safeHandle = normalizeSecretHandle(handle, target.kind);
+    if (safeHandle.state !== "set-in-secure-store") {
+      throw new Error("安全存储未返回有效密钥引用。");
+    }
+
+    if (target.kind === "adt-password") {
+      project.config.adt.credential = safeHandle;
+    } else if (target.kind === "api-key") {
+      const provider = project.config.apiProviders.find((item) => item.id === target.providerId);
+      if (!provider) {
+        throw new Error("未找到当前 API 渠道，无法保存密钥引用。");
+      }
+      provider.credential = safeHandle;
+    } else if (target.kind === "feishu-token") {
+      project.config.feishu.credential = safeHandle;
+    } else {
+      project.config.codex.credential = safeHandle;
+    }
+
+    project.config = this.sanitizeProjectConfig(project, project.config);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
     try {
@@ -372,12 +435,26 @@ export class WorkspaceStore {
 
   private normalizeState(state: StoredState): StoredState {
     const normalizedProjects = (state.projects.length > 0 ? state.projects : [demoProject()]).map((project) => {
-      const firstCase = project.cases[0] ?? demoCase();
-      return {
-        ...project,
+      const sourceCases = Array.isArray(project.cases) ? project.cases : [];
+      const firstCase = sourceCases[0] ?? demoCase();
+      const cases = sourceCases.length > 0 ? sourceCases : [firstCase];
+      const normalizedProject: ProjectSummary = {
+        id: text(project.id, DEMO_PROJECT_ID),
+        name: text(project.name, "演示 S4HANA"),
+        sapVersion: sapVersion(project.sapVersion),
+        systemLabel: text(project.systemLabel, "DEV/100"),
+        projectDir: text(project.projectDir, project.id || DEMO_PROJECT_ID),
+        isVisible: typeof project.isVisible === "boolean" ? project.isVisible : true,
+        visibleOrder: typeof project.visibleOrder === "number" ? project.visibleOrder : 1,
         connectionState: normalizeConnectionState(project.connectionState),
-        config: this.sanitizeProjectConfig(project, project.config ?? defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id)),
-        cases: project.cases.length > 0 ? project.cases : [firstCase]
+        createdAt: text(project.createdAt, nowIso()),
+        updatedAt: text(project.updatedAt, nowIso()),
+        config: project.config ?? defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id),
+        cases
+      };
+      return {
+        ...normalizedProject,
+        config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config)
       };
     });
     return {
@@ -388,23 +465,73 @@ export class WorkspaceStore {
   }
 
   private assertNoRawSecretFields(value: unknown): void {
-    const raw = JSON.stringify(value ?? {}).toLowerCase();
-    const forbidden = [
+    const forbiddenKeys = new Set([
       "password",
       "passwd",
       "apikey",
       "api_key",
       "api-key",
+      "apikeyvalue",
+      "api_key_value",
+      "api-key-value",
       "access_token",
+      "accesstoken",
       "refreshtoken",
       "refresh_token",
+      "token",
+      "tokenvalue",
       "authorization",
       "cookie",
       "secretvalue"
-    ];
-    if (forbidden.some((word) => raw.includes(word))) {
-      throw new Error("配置中包含疑似明文密钥字段，已阻止保存。");
+    ]);
+    const riskyValuePattern = /(bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|ghp_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{20,}|akia[0-9a-z]{16})/i;
+
+    const visit = (current: unknown): void => {
+      if (Array.isArray(current)) {
+        current.forEach(visit);
+        return;
+      }
+      if (current && typeof current === "object") {
+        for (const [key, child] of Object.entries(current)) {
+          const normalizedKey = key.replace(/[^a-zA-Z0-9_-]/g, "").toLowerCase();
+          if (forbiddenKeys.has(normalizedKey)) {
+            throw new Error("配置中包含疑似明文密钥字段，已阻止保存。");
+          }
+          visit(child);
+        }
+        return;
+      }
+      if (typeof current === "string" && riskyValuePattern.test(current)) {
+        throw new Error("配置中包含疑似明文密钥内容，已阻止保存。");
+      }
+    };
+
+    visit(value);
+  }
+
+  private resolveSecretTarget(project: ProjectSummary, targetInput: unknown): { target: ProjectSecretTarget; existingRef: string | null } {
+    if (!targetInput || typeof targetInput !== "object") {
+      throw new Error("密钥目标无效，无法保存。");
     }
+    const target = targetInput as Partial<ProjectSecretTarget>;
+    if (target.kind === "adt-password") {
+      return { target: { kind: "adt-password" }, existingRef: project.config.adt.credential.secretRef };
+    }
+    if (target.kind === "api-key") {
+      const providerId = text(target.providerId);
+      const provider = project.config.apiProviders.find((item) => item.id === providerId);
+      if (!provider) {
+        throw new Error("未找到当前 API 渠道，无法保存密钥。");
+      }
+      return { target: { kind: "api-key", providerId }, existingRef: provider.credential.secretRef };
+    }
+    if (target.kind === "feishu-token") {
+      return { target: { kind: "feishu-token" }, existingRef: project.config.feishu.credential.secretRef };
+    }
+    if (target.kind === "codex-token") {
+      return { target: { kind: "codex-token" }, existingRef: project.config.codex.credential.secretRef };
+    }
+    throw new Error("不支持的密钥类型，已阻止保存。");
   }
 
   private sanitizeProjectConfig(project: ProjectSummary, input: unknown): ProjectConfig {
@@ -415,6 +542,7 @@ export class WorkspaceStore {
     const feishu = candidate.feishu ?? fallback.feishu;
     const codex = candidate.codex ?? fallback.codex;
     const providers = Array.isArray(candidate.apiProviders) && candidate.apiProviders.length > 0 ? candidate.apiProviders : fallback.apiProviders;
+    const existingConfig = project.config;
 
     const alias = text(adt.alias, fallback.adt.alias);
     const url = text(adt.url, fallback.adt.url);
@@ -434,7 +562,7 @@ export class WorkspaceStore {
         language,
         sslMode: sslMode(adt.sslMode),
         readOnly: true,
-        credential: { secretRef: null, state: "secure-store-required" },
+        credential: normalizeSecretHandle(existingConfig?.adt?.credential, "adt-password"),
         configStatus: savedOrEmptyStatus(alias, url, client, username),
         connectionStatus: "pending-verification",
         minimalReadStatus: "pending-verification",
@@ -443,7 +571,7 @@ export class WorkspaceStore {
       feishu: {
         profile: text(feishu.profile, fallback.feishu.profile),
         cliPath: text(feishu.cliPath, fallback.feishu.cliPath),
-        credential: { secretRef: null, state: "secure-store-required" },
+        credential: normalizeSecretHandle(existingConfig?.feishu?.credential, "feishu-token"),
         authStatus: "pending-verification",
         docPermissionStatus: "pending-verification",
         lastCheckedAt: null
@@ -452,13 +580,14 @@ export class WorkspaceStore {
         const id = text(provider.id, `provider-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, "-") || `provider-${index + 1}`;
         const name = text(provider.name, `API 渠道 ${index + 1}`);
         const baseUrl = text(provider.baseUrl);
+        const existingProvider = existingConfig?.apiProviders?.find((item) => item.id === id);
         return {
           id,
           name,
           providerType: providerType(provider.providerType),
           baseUrl,
           enabled: bool(provider.enabled, false),
-          credential: { secretRef: null, state: "secure-store-required" },
+          credential: normalizeSecretHandle(existingProvider?.credential, "api-key"),
           modelSyncStatus: "pending-verification",
           chatTestStatus: "pending-verification",
           lastCheckedAt: null
@@ -467,7 +596,7 @@ export class WorkspaceStore {
       codex: {
         integrationType: codexIntegrationType(codex.integrationType),
         executablePath: text(codex.executablePath, fallback.codex.executablePath),
-        credential: { secretRef: null, state: "secure-store-required" },
+        credential: normalizeSecretHandle(existingConfig?.codex?.credential, "codex-token"),
         cliStatus: "pending-verification",
         version: "",
         loginStatus: "pending-verification",

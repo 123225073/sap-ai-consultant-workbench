@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { CaseFileNode, ProjectConfig, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { CaseFileNode, ProjectConfig, ProjectSecretInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -15,6 +15,7 @@ interface WorkbenchBridge {
   getCaseFiles: () => Promise<WorkbenchResponse<CaseFileNode[]>>;
   search: (query: string) => Promise<WorkbenchResponse<SearchResult[]>>;
   saveProjectConfig: (projectId: string, config: ProjectConfig) => Promise<WorkbenchResponse<WorkbenchState>>;
+  saveProjectSecret: (projectId: string, input: ProjectSecretInput) => Promise<WorkbenchResponse<WorkbenchState>>;
 }
 
 declare global {

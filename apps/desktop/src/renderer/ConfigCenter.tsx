@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Check, Database, KeyRound, Lock, PlugZap, Save, ShieldCheck, Terminal, Workflow } from "lucide-react";
-import type { ApiProviderConfig, ConfigStatus, ProjectConfig, ProjectSummary } from "../shared/workbenchTypes";
+import type { ApiProviderConfig, ConfigStatus, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
 
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
@@ -23,6 +23,23 @@ function ConfigStatusPill({ status }: { status: ConfigStatus }) {
   return <span className={`status-pill status-${statusTone(status)}`}>{statusLabels[status]}</span>;
 }
 
+function SecretStatusPill({ handle }: { handle: SecretHandle }) {
+  if (handle.state === "set-in-secure-store") {
+    return <span className="status-pill status-blue">已安全保存，未验证</span>;
+  }
+  if (handle.state === "failed" || handle.state === "missing" || handle.state === "needs-rotation") {
+    return <span className="status-pill status-orange">需要重新保存</span>;
+  }
+  return <span className="status-pill status-neutral">未保存密钥</span>;
+}
+
+function formatSavedAt(value: string | null): string {
+  if (!value) return "尚未保存";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "已保存";
+  return `保存于 ${date.toLocaleString("zh-CN", { hour12: false })}`;
+}
+
 function disabledReason(label: string) {
   return `${label} · 待后续真实接入`;
 }
@@ -36,13 +53,18 @@ interface ConfigCenterProps {
   notice: string;
   onBack: () => void;
   onSave: (projectId: string, config: ProjectConfig) => Promise<void>;
+  onSaveSecret: (projectId: string, input: ProjectSecretInput) => Promise<boolean>;
 }
 
-function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
+function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
+  const [adtEntry, setAdtEntry] = useState("");
+  const [apiEntry, setApiEntry] = useState("");
 
   useEffect(() => {
     setDraft(project ? cloneConfig(project.config) : null);
+    setAdtEntry("");
+    setApiEntry("");
   }, [project?.id, project?.config.updatedAt]);
 
   if (!project || !draft) {
@@ -89,6 +111,18 @@ function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
       const nextProvider = { ...currentProvider, [field]: value };
       return { ...current, apiProviders: [nextProvider, ...current.apiProviders.slice(1)] };
     });
+  }
+
+  async function saveAdtSecret() {
+    if (!project || !adtEntry) return;
+    const saved = await onSaveSecret(project.id, { target: { kind: "adt-password" }, value: adtEntry });
+    if (saved) setAdtEntry("");
+  }
+
+  async function saveApiSecret() {
+    if (!project || !apiEntry) return;
+    const saved = await onSaveSecret(project.id, { target: { kind: "api-key", providerId: provider.id }, value: apiEntry });
+    if (saved) setApiEntry("");
   }
 
   return (
@@ -179,9 +213,22 @@ function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
               <span>连接状态</span>
               <div className="readonly-row"><ConfigStatusPill status={draft.adt.connectionStatus} /></div>
             </label>
+            <label>
+              <span>SAP 密钥状态</span>
+              <div className="readonly-row"><SecretStatusPill handle={draft.adt.credential} /></div>
+            </label>
+            <label>
+              <span>密钥保存时间</span>
+              <input value={formatSavedAt(draft.adt.credential.updatedAt)} readOnly />
+            </label>
+            <label className="secret-entry">
+              <span>SAP 密码</span>
+              <input type="password" value={adtEntry} onChange={(event) => setAdtEntry(event.target.value)} placeholder="输入后保存到系统安全存储，不会回显" />
+            </label>
           </div>
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
+            <button onClick={() => void saveAdtSecret()} disabled={!adtEntry} title="只保存到系统安全存储，不执行连接验证"><Lock size={16} />{draft.adt.credential.state === "set-in-secure-store" ? "替换安全密钥" : "保存到系统安全存储"}</button>
             <button disabled title={disabledReason("测试 ADT 连接")}><PlugZap size={16} />测试连接</button>
             <button disabled title={disabledReason("读取 T000")}><Check size={16} />读取 T000</button>
           </div>
@@ -256,10 +303,22 @@ function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
               <span>最小对话测试</span>
               <div className="readonly-row"><ConfigStatusPill status={provider.chatTestStatus} /></div>
             </label>
+            <label>
+              <span>API Key 状态</span>
+              <div className="readonly-row"><SecretStatusPill handle={provider.credential} /></div>
+            </label>
+            <label>
+              <span>密钥保存时间</span>
+              <input value={formatSavedAt(provider.credential.updatedAt)} readOnly />
+            </label>
+            <label className="secret-entry">
+              <span>API Key</span>
+              <input type="password" value={apiEntry} onChange={(event) => setApiEntry(event.target.value)} placeholder="输入后保存到系统安全存储，不会回显" />
+            </label>
           </div>
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
-            <button disabled title={disabledReason("保存 API Key")}><Lock size={16} />保存密钥</button>
+            <button onClick={() => void saveApiSecret()} disabled={!apiEntry} title="只保存到系统安全存储，不获取模型列表"><Lock size={16} />{provider.credential.state === "set-in-secure-store" ? "替换安全密钥" : "保存到系统安全存储"}</button>
             <button disabled title={disabledReason("获取模型列表")}><KeyRound size={16} />获取模型</button>
           </div>
         </section>
@@ -332,9 +391,10 @@ function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
         <section>
           <h2>安全边界</h2>
           <ul>
-            <li>不保存 SAP 密码、API Key、飞书授权值。</li>
+            <li>SAP 密码和 API Key 只进系统安全存储。</li>
+            <li>项目配置只保存安全引用，不保存明文密钥。</li>
             <li>ADT 写入模式锁定为只读。</li>
-            <li>保存成功只代表草稿已落盘。</li>
+            <li>保存密钥不代表连接已通过检查。</li>
             <li>真实验证要等后续阶段接入。</li>
           </ul>
         </section>
@@ -349,7 +409,7 @@ function ConfigCenter({ project, notice, onBack, onSave }: ConfigCenterProps) {
         </section>
         <section>
           <h2>密钥策略</h2>
-          <p>Phase 2 不接收密钥。后续只能把密钥放进系统安全存储，本地配置最多保存无意义引用。</p>
+          <p>Phase 2B 允许录入密钥，但只会交给主进程加密保存。界面不会回显密钥，也不会把密钥写入项目文件。</p>
         </section>
       </aside>
     </section>
