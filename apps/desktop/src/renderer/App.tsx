@@ -21,6 +21,7 @@ import {
   ShieldCheck,
   Sparkles
 } from "lucide-react";
+import ConfigCenter from "./ConfigCenter";
 import type { CaseFileNode, CaseMessage, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes = ["问题分析", "ABAP开发", "文档生成", "画流程图"];
@@ -107,7 +108,8 @@ function App() {
   const [message, setMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [notice, setNotice] = useState("Phase 1B：本地案件闭环，未接入真实 SAP / 飞书 / 模型 API。");
+  const [activeView, setActiveView] = useState<"case" | "config">("case");
+  const [notice, setNotice] = useState("Phase 2：配置中心只保存非密钥草稿，未执行真实 SAP / 飞书 / 模型 API 验证。");
 
   const bridge = window.workbench;
   const project = activeProject(state);
@@ -177,6 +179,20 @@ function App() {
     setMessage("");
   }
 
+  async function saveProjectConfig(projectId: string, config: ProjectSummary["config"]) {
+    if (!bridge) {
+      setNotice("请在桌面应用中保存项目配置。");
+      return;
+    }
+    const response = await bridge.saveProjectConfig(projectId, config);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("配置草稿已保存；真实连接验证未执行，密钥未保存。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -194,7 +210,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 1B"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 2"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -208,8 +224,8 @@ function App() {
           <div className="primary-nav">
             <button onClick={createCase} title="创建一个新的本地案件文件夹"><PenLine size={18} />新案件</button>
             <button title="当前只搜索本地项目、案件和文件名"><Search size={18} />搜索</button>
-            <button title="Phase 1B 暂不接真实配置"><Settings size={18} />配置中心</button>
-            <button title="Phase 1B 暂不编辑真实规范"><BookOpen size={18} />规范中心</button>
+            <button className={activeView === "config" ? "active" : ""} onClick={() => setActiveView("config")} title="保存当前项目的非密钥配置草稿"><Settings size={18} />配置中心</button>
+            <button title="Phase 2 暂不编辑真实规范"><BookOpen size={18} />规范中心</button>
             <button title="候选知识后续人工确认入库"><Archive size={18} />知识库</button>
           </div>
 
@@ -234,7 +250,7 @@ function App() {
           <div className="project-header">
             <span>项目</span>
             <button onClick={createProject} title="创建本地演示项目，不连接真实 SAP"><Plus size={16} />添加演示项目</button>
-            <button aria-label="项目更多" title="Phase 1B 暂无更多项目动作"><ChevronDown size={16} /></button>
+            <button aria-label="项目更多" title="Phase 2 暂无更多项目动作"><ChevronDown size={16} /></button>
           </div>
 
           <div className="project-list">
@@ -244,11 +260,11 @@ function App() {
                   <div>
                     <strong>SAP&nbsp;&nbsp;{item.name}</strong>
                     <div className="project-tags">
-                      <StatusPill label={item.systemLabel} tone="green" />
-                      <StatusPill label={item.connectionState === "demo-readonly" ? "本地演示" : "未验证"} tone="green" />
+                      <StatusPill label={item.systemLabel} tone="blue" />
+                      <StatusPill label={item.connectionState === "local-demo" ? "本地演示" : "未验证"} tone={item.connectionState === "local-demo" ? "blue" : "orange"} />
                     </div>
                   </div>
-                  <button aria-label={`${item.name} 设置`} className="icon-button" title="配置中心后续阶段启用"><Settings size={16} /></button>
+                  <button aria-label={`${item.name} 设置`} className="icon-button" onClick={() => setActiveView("config")} title="打开当前项目配置"><Settings size={16} /></button>
                 </div>
                 <div className="case-list">
                   {item.cases.map((caseItem) => (
@@ -268,10 +284,14 @@ function App() {
               <strong>演示用户</strong>
               <span>本地个人版</span>
             </div>
-            <button aria-label="编辑个人信息" className="icon-button" title="Phase 1B 暂不编辑个人信息"><PenLine size={15} /></button>
+            <button aria-label="编辑个人信息" className="icon-button" title="Phase 2 暂不编辑个人信息"><PenLine size={15} /></button>
           </footer>
         </aside>
 
+        {activeView === "config" ? (
+          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} />
+        ) : (
+        <>
         <section className="conversation-panel">
           <div className="case-heading">
             <div>
@@ -314,18 +334,18 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={index === 0 ? "selected" : ""} type="button" key={mode} title="Phase 1B 仅保存本地案件对话">
+                <button className={index === 0 ? "selected" : ""} type="button" key={mode} title="Phase 2 仍仅保存本地案件对话">
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode}
                 </button>
               ))}
             </div>
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder="继续追问；Phase 1B 会保存到当前案件 conversation.md" />
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder="继续追问；Phase 2 会保存到当前案件 conversation.md" />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 1B 未接入真实模型" disabled>本地演示 · 未接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 2 未接入真实模型" disabled>本地演示 · 未接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
-                <button type="button" aria-label="添加附件暂不可用" title="Phase 1B 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
-                <button type="button" aria-label="语音输入暂不可用" title="Phase 1B 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
+                <button type="button" aria-label="添加附件暂不可用" title="Phase 2 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
+                <button type="button" aria-label="语音输入暂不可用" title="Phase 2 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
                 <button type="submit" aria-label="保存到当前案件" className="send-button"><Send size={18} /></button>
               </div>
             </div>
@@ -349,6 +369,8 @@ function App() {
             <span><ShieldCheck size={15} />本地演示数据</span>
           </div>
         </aside>
+        </>
+        )}
       </section>
     </main>
   );

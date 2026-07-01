@@ -131,6 +131,7 @@ button {
 }
 
 .primary-nav button:hover,
+.primary-nav button.active,
 .case-row.active {
   background: #eaf2ff;
   color: #1d4ed8;
@@ -667,4 +668,201 @@ button {
   align-items: center;
   gap: 6px;
   color: #16834a;
+}
+
+.config-workspace {
+  grid-column: 2 / 4;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(640px, 1fr) 360px;
+  background: #ffffff;
+}
+
+.config-main {
+  min-width: 0;
+  overflow: auto;
+  padding: 0 32px 32px;
+}
+
+.config-heading {
+  min-height: 96px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.config-heading h1,
+.config-section h2,
+.config-side h2 {
+  letter-spacing: 0;
+}
+
+.config-heading h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.config-heading p,
+.config-section-title p,
+.config-side p,
+.config-side li {
+  color: #6b7280;
+  font-size: 14px;
+}
+
+.config-heading p,
+.config-section-title p {
+  margin: 8px 0 0;
+}
+
+.config-notice {
+  margin: 0 0 12px;
+}
+
+.config-section {
+  border-top: 1px solid #e5e9f0;
+  padding: 26px 0;
+}
+
+.config-section.last {
+  border-bottom: 1px solid #e5e9f0;
+}
+
+.config-section-title {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: start;
+  margin-bottom: 18px;
+}
+
+.config-section-title svg {
+  margin-top: 3px;
+  color: #2563eb;
+}
+
+.config-section-title h2,
+.config-side h2 {
+  margin: 0;
+  font-size: 17px;
+}
+
+.config-fields {
+  display: grid;
+  gap: 14px;
+}
+
+.config-fields.two-columns {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.config-fields label {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.config-fields input,
+.config-fields select,
+.readonly-row {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #111827;
+  padding: 0 10px;
+  outline: none;
+}
+
+.config-fields input[readonly] {
+  background: #f8fafc;
+  color: #4b5563;
+}
+
+.config-fields select {
+  appearance: none;
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+}
+
+.checkbox-row {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  min-height: 62px;
+}
+
+.checkbox-row input {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+}
+
+.config-actions {
+  margin-top: 18px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.config-actions button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 14px;
+}
+
+.config-actions button:first-child {
+  color: #ffffff;
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.config-actions button:disabled {
+  color: #6b7280;
+  background: #f3f4f6;
+  cursor: not-allowed;
+}
+
+.config-side {
+  min-width: 0;
+  border-left: 1px solid #dde3ea;
+  background: #fbfcfe;
+  overflow: auto;
+  padding: 26px 22px;
+}
+
+.config-side section {
+  border-bottom: 1px solid #e5e9f0;
+  padding: 0 0 22px;
+  margin-bottom: 22px;
+}
+
+.config-side section:last-child {
+  border-bottom: 0;
+}
+
+.config-side ul {
+  margin: 14px 0 0;
+  padding-left: 20px;
+  line-height: 1.7;
+}
+
+.config-side p {
+  margin: 14px 0 0;
+  line-height: 1.7;
 }

@@ -1,4 +1,83 @@
 export type CaseStatus = "active" | "solved" | "archived";
+export type ConfigStatus = "not-configured" | "saved" | "pending-verification" | "failed";
+
+export interface SecretHandle {
+  secretRef: string | null;
+  state: "not-set" | "secure-store-required";
+}
+
+export interface AdtConfig {
+  alias: string;
+  url: string;
+  client: string;
+  username: string;
+  language: string;
+  sslMode: "strict" | "skip-certificate";
+  readOnly: true;
+  credential: SecretHandle;
+  configStatus: ConfigStatus;
+  connectionStatus: ConfigStatus;
+  minimalReadStatus: ConfigStatus;
+  lastCheckedAt: string | null;
+}
+
+export interface FeishuConfig {
+  profile: string;
+  cliPath: string;
+  credential: SecretHandle;
+  authStatus: ConfigStatus;
+  docPermissionStatus: ConfigStatus;
+  lastCheckedAt: string | null;
+}
+
+export interface ApiProviderConfig {
+  id: string;
+  name: string;
+  providerType: "openai-compatible" | "deepseek" | "custom";
+  baseUrl: string;
+  enabled: boolean;
+  credential: SecretHandle;
+  modelSyncStatus: ConfigStatus;
+  chatTestStatus: ConfigStatus;
+  lastCheckedAt: string | null;
+}
+
+export interface CodexConfig {
+  integrationType: "cli" | "sdk";
+  executablePath: string;
+  credential: SecretHandle;
+  cliStatus: ConfigStatus;
+  version: string;
+  loginStatus: ConfigStatus;
+  readonlyTaskStatus: ConfigStatus;
+  lastCheckedAt: string | null;
+}
+
+export interface LocalStorageConfig {
+  storageMode: "json";
+  workspaceRoot: string;
+  stateJsonPath: string;
+  projectDir: string;
+  casesDir: string;
+  databasePath: string | null;
+  indexesDir: string;
+  logsDir: string;
+  tempDir: string;
+  status: ConfigStatus;
+  lastCheckedAt: string | null;
+  lastError: string | null;
+}
+
+export interface ProjectConfig {
+  schemaVersion: 2;
+  projectId: string;
+  updatedAt: string;
+  adt: AdtConfig;
+  feishu: FeishuConfig;
+  apiProviders: ApiProviderConfig[];
+  codex: CodexConfig;
+  localStorage: LocalStorageConfig;
+}
 
 export interface CaseMessage {
   id: string;
@@ -34,9 +113,10 @@ export interface ProjectSummary {
   projectDir: string;
   isVisible: boolean;
   visibleOrder: number;
-  connectionState: "demo-readonly" | "not-configured" | "not-verified";
+  connectionState: "local-demo" | "not-configured" | "not-checked";
   createdAt: string;
   updatedAt: string;
+  config: ProjectConfig;
   cases: CaseSummary[];
 }
 

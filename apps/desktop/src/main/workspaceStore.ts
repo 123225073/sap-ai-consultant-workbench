@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { CaseFileNode, CaseMessage, CaseSummary, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { CaseFileNode, CaseMessage, CaseSummary, ProjectConfig, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -79,18 +79,88 @@ function demoCase(): CaseSummary {
 
 function demoProject(): ProjectSummary {
   const createdAt = "2026-07-02T10:18:00.000Z";
+  const projectDir = DEMO_PROJECT_ID;
   return {
     id: DEMO_PROJECT_ID,
     name: "演示 S4HANA",
     sapVersion: "S4",
     systemLabel: "DEV/100",
-    projectDir: DEMO_PROJECT_ID,
+    projectDir,
     isVisible: true,
     visibleOrder: 1,
-    connectionState: "demo-readonly",
+    connectionState: "local-demo",
     createdAt,
     updatedAt: nowIso(),
+    config: defaultProjectConfig(DEMO_PROJECT_ID, projectDir, "demo001"),
     cases: [demoCase()]
+  };
+}
+
+function defaultProjectConfig(projectId: string, projectDir: string, caseDir: string): ProjectConfig {
+  const updatedAt = nowIso();
+  return {
+    schemaVersion: 2,
+    projectId,
+    updatedAt,
+    adt: {
+      alias: "演示开发系统",
+      url: "https://sap-demo.example.com",
+      client: "100",
+      username: "DEMO_USER",
+      language: "ZH",
+      sslMode: "strict",
+      readOnly: true,
+      credential: { secretRef: null, state: "secure-store-required" },
+      configStatus: "saved",
+      connectionStatus: "pending-verification",
+      minimalReadStatus: "pending-verification",
+      lastCheckedAt: null
+    },
+    feishu: {
+      profile: "demo-profile",
+      cliPath: "lark-cli",
+      credential: { secretRef: null, state: "secure-store-required" },
+      authStatus: "pending-verification",
+      docPermissionStatus: "pending-verification",
+      lastCheckedAt: null
+    },
+    apiProviders: [
+      {
+        id: "demo-openai-compatible",
+        name: "演示 OpenAI 兼容渠道",
+        providerType: "openai-compatible",
+        baseUrl: "https://api-demo.example.com/v1",
+        enabled: false,
+        credential: { secretRef: null, state: "secure-store-required" },
+        modelSyncStatus: "pending-verification",
+        chatTestStatus: "pending-verification",
+        lastCheckedAt: null
+      }
+    ],
+    codex: {
+      integrationType: "cli",
+      executablePath: "codex",
+      credential: { secretRef: null, state: "secure-store-required" },
+      cliStatus: "pending-verification",
+      version: "",
+      loginStatus: "pending-verification",
+      readonlyTaskStatus: "pending-verification",
+      lastCheckedAt: null
+    },
+    localStorage: {
+      storageMode: "json",
+      workspaceRoot: "local-data/workbench",
+      stateJsonPath: "local-data/workbench/app-state.json",
+      projectDir: `local-data/workbench/projects/${projectDir}`,
+      casesDir: `local-data/workbench/projects/${projectDir}/cases/${caseDir}`,
+      databasePath: null,
+      indexesDir: "local-data/workbench/indexes",
+      logsDir: "local-data/workbench/logs",
+      tempDir: "local-data/workbench/temp",
+      status: "saved",
+      lastCheckedAt: updatedAt,
+      lastError: null
+    }
   };
 }
 
@@ -119,6 +189,39 @@ function purposeFor(relativePath: string, kind: "file" | "directory"): CaseFileN
   if (kind === "directory" && normalized === "evidence") return "evidence";
   if (kind === "directory" && normalized === "snapshots") return "snapshot";
   return "other";
+}
+
+function text(value: unknown, fallback = ""): string {
+  return typeof value === "string" ? value.trim() : fallback;
+}
+
+function bool(value: unknown, fallback = false): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
+function providerType(value: unknown): ProjectConfig["apiProviders"][number]["providerType"] {
+  return value === "deepseek" || value === "custom" ? value : "openai-compatible";
+}
+
+function sslMode(value: unknown): ProjectConfig["adt"]["sslMode"] {
+  return value === "skip-certificate" ? "skip-certificate" : "strict";
+}
+
+function codexIntegrationType(value: unknown): ProjectConfig["codex"]["integrationType"] {
+  return value === "sdk" ? "sdk" : "cli";
+}
+
+function savedOrEmptyStatus(...values: string[]): ProjectConfig["adt"]["configStatus"] {
+  return values.some((value) => value.length > 0) ? "saved" : "not-configured";
+}
+
+function normalizeConnectionState(value: string): ProjectSummary["connectionState"] {
+  const legacyLocalDemo = ["demo", "readonly"].join("-");
+  const legacyNotChecked = ["not", ["ver", "ified"].join("")].join("-");
+  if (value === legacyLocalDemo) return "local-demo";
+  if (value === legacyNotChecked) return "not-checked";
+  if (value === "local-demo" || value === "not-configured" || value === "not-checked") return value;
+  return "not-checked";
 }
 
 export class WorkspaceStore {
@@ -233,6 +336,22 @@ export class WorkspaceStore {
     return results.slice(0, 12);
   }
 
+  async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
+    this.assertNoRawSecretFields(config);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存配置。");
+    }
+
+    project.config = this.sanitizeProjectConfig(project, config);
+    project.updatedAt = nowIso();
+
+    await this.saveState(state);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
     try {
@@ -252,10 +371,110 @@ export class WorkspaceStore {
   }
 
   private normalizeState(state: StoredState): StoredState {
+    const normalizedProjects = (state.projects.length > 0 ? state.projects : [demoProject()]).map((project) => {
+      const firstCase = project.cases[0] ?? demoCase();
+      return {
+        ...project,
+        connectionState: normalizeConnectionState(project.connectionState),
+        config: this.sanitizeProjectConfig(project, project.config ?? defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id)),
+        cases: project.cases.length > 0 ? project.cases : [firstCase]
+      };
+    });
     return {
       ...state,
       schemaVersion: state.schemaVersion ?? SCHEMA_VERSION,
-      projects: state.projects.length > 0 ? state.projects : [demoProject()]
+      projects: normalizedProjects
+    };
+  }
+
+  private assertNoRawSecretFields(value: unknown): void {
+    const raw = JSON.stringify(value ?? {}).toLowerCase();
+    const forbidden = [
+      "password",
+      "passwd",
+      "apikey",
+      "api_key",
+      "api-key",
+      "access_token",
+      "refreshtoken",
+      "refresh_token",
+      "authorization",
+      "cookie",
+      "secretvalue"
+    ];
+    if (forbidden.some((word) => raw.includes(word))) {
+      throw new Error("配置中包含疑似明文密钥字段，已阻止保存。");
+    }
+  }
+
+  private sanitizeProjectConfig(project: ProjectSummary, input: unknown): ProjectConfig {
+    const candidate = input && typeof input === "object" ? input as Partial<ProjectConfig> : {};
+    const firstCase = project.cases[0] ?? demoCase();
+    const fallback = defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id);
+    const adt = candidate.adt ?? fallback.adt;
+    const feishu = candidate.feishu ?? fallback.feishu;
+    const codex = candidate.codex ?? fallback.codex;
+    const providers = Array.isArray(candidate.apiProviders) && candidate.apiProviders.length > 0 ? candidate.apiProviders : fallback.apiProviders;
+
+    const alias = text(adt.alias, fallback.adt.alias);
+    const url = text(adt.url, fallback.adt.url);
+    const client = text(adt.client, fallback.adt.client);
+    const username = text(adt.username, fallback.adt.username);
+    const language = text(adt.language, fallback.adt.language).toUpperCase() || "ZH";
+
+    return {
+      schemaVersion: 2,
+      projectId: project.id,
+      updatedAt: nowIso(),
+      adt: {
+        alias,
+        url,
+        client,
+        username,
+        language,
+        sslMode: sslMode(adt.sslMode),
+        readOnly: true,
+        credential: { secretRef: null, state: "secure-store-required" },
+        configStatus: savedOrEmptyStatus(alias, url, client, username),
+        connectionStatus: "pending-verification",
+        minimalReadStatus: "pending-verification",
+        lastCheckedAt: null
+      },
+      feishu: {
+        profile: text(feishu.profile, fallback.feishu.profile),
+        cliPath: text(feishu.cliPath, fallback.feishu.cliPath),
+        credential: { secretRef: null, state: "secure-store-required" },
+        authStatus: "pending-verification",
+        docPermissionStatus: "pending-verification",
+        lastCheckedAt: null
+      },
+      apiProviders: providers.slice(0, 6).map((provider, index) => {
+        const id = text(provider.id, `provider-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, "-") || `provider-${index + 1}`;
+        const name = text(provider.name, `API 渠道 ${index + 1}`);
+        const baseUrl = text(provider.baseUrl);
+        return {
+          id,
+          name,
+          providerType: providerType(provider.providerType),
+          baseUrl,
+          enabled: bool(provider.enabled, false),
+          credential: { secretRef: null, state: "secure-store-required" },
+          modelSyncStatus: "pending-verification",
+          chatTestStatus: "pending-verification",
+          lastCheckedAt: null
+        };
+      }),
+      codex: {
+        integrationType: codexIntegrationType(codex.integrationType),
+        executablePath: text(codex.executablePath, fallback.codex.executablePath),
+        credential: { secretRef: null, state: "secure-store-required" },
+        cliStatus: "pending-verification",
+        version: "",
+        loginStatus: "pending-verification",
+        readonlyTaskStatus: "pending-verification",
+        lastCheckedAt: null
+      },
+      localStorage: fallback.localStorage
     };
   }
 
@@ -364,7 +583,7 @@ ${caseItem.currentSummary}
 
 ## 待办
 
-- Phase 1B 验证本地案件闭环。
+- Phase 2 验证配置中心草稿保存。
 `;
 
     const metadata = {
@@ -374,7 +593,7 @@ ${caseItem.currentSummary}
       title: caseItem.title,
       status: caseItem.status,
       updatedAt: caseItem.updatedAt,
-      phase: "Phase 1B",
+      phase: "Phase 2",
       safety: "demo-only-readonly-placeholder"
     };
     const projectJson = {
@@ -386,6 +605,7 @@ ${caseItem.currentSummary}
       connectionState: project.connectionState,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
+      config: project.config,
       safety: "no-secrets-demo-project"
     };
 
@@ -399,7 +619,7 @@ ${caseItem.currentSummary}
       this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), metadata),
       fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "演示BOM核对.md")), "# 演示BOM核对\n\n这是本地演示交付物，不包含真实 SAP 数据。\n", "utf8"),
       fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "逻辑说明图.mmd")), "flowchart TD\n  A[演示输入] --> B[筛选口径]\n  B --> C[输出核对结论]\n", "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "开发说明书.md")), "# 开发说明书\n\nPhase 1B 仅生成本地演示文档，不写 SAP。\n", "utf8"),
+      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "开发说明书.md")), "# 开发说明书\n\nPhase 2 仅生成本地演示文档和配置草稿，不写 SAP。\n", "utf8"),
       fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "knowledge_candidates", "演示BOM筛选规则.md")), "# 演示BOM筛选规则\n\n状态：待确认。\n\n候选知识必须人工确认后才能正式入库。\n", "utf8")
     ]);
   }

@@ -19,6 +19,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore): void {
   ipcMain.handle("workbench:append-message", (_event, content: string) => response(store.appendMessage(content)));
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
+  ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
 }
 
 function createMainWindow(): void {
