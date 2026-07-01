@@ -26,9 +26,9 @@
 - [x] Add adversarial audit matrix.
 - [x] Add multi-agent execution model.
 - [x] Add feature adversarial review template.
-- [ ] Run ignore-rule verification.
-- [ ] Run `scripts/security-preflight.ps1`.
-- [ ] Commit and push Phase 0 if scan is clean.
+- [x] Run ignore-rule verification.
+- [x] Run `scripts/security-preflight.ps1`.
+- [x] Commit and push Phase 0 if scan is clean.
 
 ## Task 1: GitHub Connection
 
@@ -39,8 +39,8 @@
 - [x] Initialize Git repository.
 - [x] Add GitHub remote.
 - [x] Verify remote is reachable.
-- [ ] Create first safe commit.
-- [ ] Push `main` to GitHub.
+- [x] Create first safe commit.
+- [x] Push `main` to GitHub.
 
 ## Task 2: Phase 1A Detailed Plan
 

@@ -1,0 +1,18 @@
+{
+  "name": "sap-ai-consultant-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first SAP AI consultant workbench.",
+  "workspaces": [
+    "apps/desktop"
+  ],
+  "scripts": {
+    "dev": "npm --workspace apps/desktop run dev",
+    "build": "npm --workspace apps/desktop run build",
+    "check": "npm --workspace apps/desktop run check",
+    "start": "npm --workspace apps/desktop run start"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
