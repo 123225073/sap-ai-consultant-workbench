@@ -74,11 +74,11 @@ button {
   font-size: 14px;
 }
 
-.online-dot {
+.local-dot {
   width: 10px;
   height: 10px;
   border-radius: 50%;
-  background: #22c55e;
+  background: #2563eb;
 }
 
 .window-actions {
@@ -145,6 +145,77 @@ button {
   gap: 8px;
   color: #6b7280;
   font-size: 14px;
+}
+
+.sidebar-search {
+  height: 36px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 10px 10px;
+  padding: 0 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #9ca3af;
+}
+
+.sidebar-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #111827;
+  background: transparent;
+}
+
+.search-results {
+  margin: 0 10px 10px;
+  padding: 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.search-results > strong {
+  display: block;
+  margin-bottom: 8px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.search-result {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 8px;
+  padding: 8px 0;
+  border-top: 1px solid #eef2f7;
+  font-size: 13px;
+}
+
+.search-result:first-of-type {
+  border-top: 0;
+}
+
+.search-result span {
+  align-self: start;
+  padding: 1px 6px;
+  border-radius: 6px;
+  color: #2563eb;
+  background: #eaf2ff;
+}
+
+.search-result b,
+.search-result small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result small {
+  grid-column: 2;
+  color: #6b7280;
 }
 
 .project-header button {
@@ -304,6 +375,20 @@ button {
   padding: 0 28px 24px;
 }
 
+.phase-notice {
+  margin: 0 28px 12px;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  padding: 0 12px;
+  color: #1d4ed8;
+  background: #eff6ff;
+  font-size: 14px;
+}
+
 .user-message {
   width: min(560px, 72%);
   margin-left: auto;
@@ -437,6 +522,12 @@ button {
   font-size: 13px;
 }
 
+.model-select.disabled,
+.icon-button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .composer-actions {
   display: flex;
   gap: 8px;
@@ -515,6 +606,10 @@ button {
   gap: 4px;
 }
 
+.file-node {
+  display: grid;
+}
+
 .file-row {
   min-height: 38px;
   display: grid;
@@ -545,6 +640,12 @@ button {
 .file-folder {
   margin-top: 8px;
   font-weight: 600;
+}
+
+.empty-state {
+  color: #6b7280;
+  padding: 16px 0;
+  font-size: 14px;
 }
 
 .file-folder svg {

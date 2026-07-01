@@ -1,5 +1,25 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
+import { WorkspaceStore } from "./workspaceStore";
+import type { WorkbenchResponse } from "../shared/workbenchTypes";
+
+function response<T>(promise: Promise<T>): Promise<WorkbenchResponse<T>> {
+  return promise
+    .then((data) => ({ ok: true as const, data }))
+    .catch((error: unknown) => ({
+      ok: false as const,
+      error: error instanceof Error ? error.message : "本地工作台操作失败。"
+    }));
+}
+
+function registerWorkbenchHandlers(store: WorkspaceStore): void {
+  ipcMain.handle("workbench:get-state", () => response(store.getState()));
+  ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
+  ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
+  ipcMain.handle("workbench:append-message", (_event, content: string) => response(store.appendMessage(content)));
+  ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
+  ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
+}
 
 function createMainWindow(): void {
   const appRoot = app.getAppPath();
@@ -14,7 +34,7 @@ function createMainWindow(): void {
       preload: path.join(appRoot, "dist/preload/preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: true
     }
   });
 
@@ -28,6 +48,8 @@ function createMainWindow(): void {
 }
 
 app.whenReady().then(() => {
+  const repoRoot = process.env.WORKBENCH_REPO_ROOT ?? path.resolve(app.getAppPath(), "../..");
+  registerWorkbenchHandlers(new WorkspaceStore(repoRoot));
   createMainWindow();
 
   app.on("activate", () => {

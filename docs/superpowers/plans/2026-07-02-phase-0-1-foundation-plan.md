@@ -91,11 +91,11 @@ Phase 1A must not include:
 
 Phase 1B may include:
 
-- Persist project, case, case messages, and case files.
-- Save `conversation.md`, `timeline.md`, and `context_pack.md`.
-- Generate safe local sample output files for a case.
-- Read files back in the right panel.
-- Search local cases and file names.
+- [x] Persist project, case, case messages, and case files.
+- [x] Save `conversation.md`, `timeline.md`, and `context_pack.md`.
+- [x] Generate safe local sample output files for a case.
+- [x] Read files back in the right panel.
+- [x] Search local cases and file names.
 
 Phase 1B must not include:
 

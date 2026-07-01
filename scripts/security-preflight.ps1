@@ -1,3 +1,7 @@
+param(
+  [switch]$RequireClean
+)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
@@ -12,6 +16,12 @@ Set-Location $repoRoot
 
 Write-Section "Git status"
 git status --short
+if ($RequireClean) {
+  $status = git status --short
+  if ($status) {
+    throw "Working tree is not clean."
+  }
+}
 
 Write-Section "Remote"
 git remote -v
@@ -29,8 +39,14 @@ $ignoreTargets = @(
   "workspace-data/",
   "SAPAIWorkbench/",
   "customer-data/",
+  "client-data/",
+  "case-data/",
+  "sap-real-output/",
+  "exports/",
+  "indexes/",
   "logs/",
   "temp/",
+  "tmp/",
   "screenshots/",
   ".worktrees/"
 )
@@ -67,6 +83,15 @@ foreach ($pattern in $patterns) {
 if ($hits.Count -gt 0) {
   $hits | ForEach-Object { Write-Host $_ }
   throw "High-confidence secret scan found possible secrets. Review before committing."
+}
+
+Write-Section "Desktop delete-operation scan"
+$deleteHits = rg -n --glob "!dist/**" --glob "!node_modules/**" -- "rm\(|unlink|trashItem|shell\.trashItem|delete.*file|remove.*file" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $deleteHits | ForEach-Object { Write-Host $_ }
+  throw "Desktop code contains file delete operation patterns. Phase 1B must not expose delete."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Delete-operation scan failed."
 }
 
 Write-Section "Result"
