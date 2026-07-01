@@ -1,0 +1,88 @@
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+*.cer
+*.jks
+*.pse
+*.p8
+*.ppk
+*.kdb
+*.kdbx
+secrets/
+credentials/
+private-credentials.json
+
+# SAP / Feishu / API local credentials and sensitive runtime state
+.sap-adt-cli/
+.sap-abap-cli/
+.sap-adt-cli-sebang/
+.lark-cli/
+.feishu/
+sap-credentials*
+feishu-token*
+lark-token*
+api-keys*
+SAPUILandscape.xml
+saplogon.ini
+sapshortcut.ini
+saprouter.ini
+*.sap
+
+# Local product data that must never be committed
+local-data/
+workspace-data/
+SAPAIWorkbench/
+SAP真实输出/
+sap-real-output/
+customer-data/
+client-data/
+case-data/
+screenshots/
+exports/
+*.har
+*.trace
+*.dump
+logs/
+temp/
+tmp/
+
+# Runtime databases and indexes
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+indexes/
+
+# Node / Electron
+node_modules/
+dist/
+build/
+out/
+.vite/
+.turbo/
+.next/
+coverage/
+*.tsbuildinfo
+
+# Package manager caches
+.npm/
+.pnpm-store/
+.yarn/
+
+# Worktrees and editor files
+.worktrees/
+worktrees/
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
