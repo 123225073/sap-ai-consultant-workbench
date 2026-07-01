@@ -1,8 +1,19 @@
 export type CaseStatus = "active" | "solved" | "archived";
-export type ConfigStatus = "not-configured" | "saved" | "pending-verification" | "failed";
+export type ConfigStatus = "not-configured" | "saved" | "pending-verification" | "verified" | "failed";
 export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-token";
 export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "failed" | "needs-rotation";
 export type SecretStoreKind = "electron-safe-storage";
+export type AdtVerificationStepId = "config" | "status" | "t000";
+export type AdtVerificationStepStatus = "passed" | "failed" | "skipped";
+export type AdtVerificationErrorCode =
+  | "missing-config"
+  | "invalid-url"
+  | "missing-credential"
+  | "secret-unavailable"
+  | "readonly-disabled"
+  | "status-failed"
+  | "minimal-read-failed"
+  | "unexpected-error";
 
 export interface SecretHandle {
   secretRef: string | null;
@@ -35,6 +46,57 @@ export interface AdtConfig {
   connectionStatus: ConfigStatus;
   minimalReadStatus: ConfigStatus;
   lastCheckedAt: string | null;
+}
+
+export interface AdtRedactedSystemInfo {
+  alias: string;
+  endpointHost: string;
+  client: string;
+  usernameMasked: string;
+  language: string;
+  sslMode: AdtConfig["sslMode"];
+  readOnly: true;
+  transportWriteMode: "disabled";
+}
+
+export interface AdtT000ProbeResult {
+  objectName: "T000";
+  attempted: boolean;
+  ok: boolean;
+  rowCount: number | null;
+  sampleClient: string | null;
+  source: "fake";
+}
+
+export interface AdtVerificationError {
+  code: AdtVerificationErrorCode;
+  message: string;
+  suggestion: string;
+}
+
+export interface AdtVerificationStep {
+  id: AdtVerificationStepId;
+  title: string;
+  status: AdtVerificationStepStatus;
+  detail: string;
+  checkedAt: string;
+}
+
+export interface AdtVerificationReport {
+  ok: boolean;
+  checkedAt: string;
+  mode: "fake";
+  system: AdtRedactedSystemInfo;
+  steps: AdtVerificationStep[];
+  connectionStatus: ConfigStatus;
+  minimalReadStatus: ConfigStatus;
+  t000: AdtT000ProbeResult;
+  errors: AdtVerificationError[];
+}
+
+export interface AdtVerificationResult {
+  report: AdtVerificationReport;
+  state: WorkbenchState;
 }
 
 export interface FeishuConfig {

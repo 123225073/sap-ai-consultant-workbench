@@ -843,6 +843,122 @@ button {
   cursor: not-allowed;
 }
 
+.adt-verification-report {
+  margin-top: 18px;
+  border-top: 1px solid #e5e9f0;
+  padding-top: 18px;
+}
+
+.verification-steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.verification-step {
+  min-width: 0;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.verification-step span,
+.verification-step strong,
+.verification-step small {
+  display: block;
+}
+
+.verification-step span {
+  color: #374151;
+  font-size: 13px;
+}
+
+.verification-step strong {
+  margin-top: 6px;
+  font-size: 14px;
+}
+
+.verification-step small {
+  margin-top: 6px;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.step-passed {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.step-passed strong {
+  color: #16834a;
+}
+
+.step-failed {
+  border-color: #fed7aa;
+  background: #fff7ed;
+}
+
+.step-failed strong {
+  color: #f97316;
+}
+
+.step-skipped strong {
+  color: #6b7280;
+}
+
+.verification-details {
+  margin: 16px 0 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #e5e9f0;
+}
+
+.verification-details div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 10px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.verification-details dt,
+.verification-details dd {
+  min-width: 0;
+  margin: 0;
+  font-size: 13px;
+}
+
+.verification-details dt {
+  color: #6b7280;
+}
+
+.verification-details dd {
+  color: #111827;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.verification-error {
+  margin-top: 12px;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 12px;
+  background: #fff7ed;
+  color: #9a3412;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .config-side {
   min-width: 0;
   border-left: 1px solid #dde3ea;
@@ -870,4 +986,19 @@ button {
 .config-side p {
   margin: 14px 0 0;
   line-height: 1.7;
+}
+
+@media (max-width: 1240px) {
+  .config-workspace {
+    grid-template-columns: minmax(640px, 1fr);
+  }
+
+  .config-side {
+    display: none;
+  }
+
+  .verification-steps,
+  .verification-details {
+    grid-template-columns: 1fr;
+  }
 }

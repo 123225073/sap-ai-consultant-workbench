@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { emptySecretHandle, isManagedSecretRef } from "../shared/secretHandle";
-import type { CaseFileNode, CaseMessage, CaseSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -216,6 +216,19 @@ function savedOrEmptyStatus(...values: string[]): ProjectConfig["adt"]["configSt
   return values.some((value) => value.length > 0) ? "saved" : "not-configured";
 }
 
+function normalizeConfigStatus(value: unknown, fallback: ConfigStatus): ConfigStatus {
+  if (value === "not-configured" || value === "saved" || value === "pending-verification" || value === "verified" || value === "failed") {
+    return value;
+  }
+  return fallback;
+}
+
+function nullableIso(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : value;
+}
+
 function sapVersion(value: unknown): ProjectSummary["sapVersion"] {
   return value === "S4" || value === "ECC" ? value : "UNKNOWN";
 }
@@ -373,6 +386,35 @@ export class WorkspaceStore {
     return this.withFiles(state);
   }
 
+  async getProjectConfig(projectId: string): Promise<ProjectConfig> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法执行 ADT 只读验证。");
+    }
+    return project.config;
+  }
+
+  async updateAdtVerification(projectId: string, report: AdtVerificationReport): Promise<WorkbenchState> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存 ADT 验证结果。");
+    }
+
+    const configPassed = report.steps.some((item) => item.id === "config" && item.status === "passed");
+    project.config.adt.configStatus = configPassed ? "verified" : "failed";
+    project.config.adt.connectionStatus = report.connectionStatus;
+    project.config.adt.minimalReadStatus = report.minimalReadStatus;
+    project.config.adt.lastCheckedAt = report.checkedAt;
+    project.config.updatedAt = nowIso();
+    project.updatedAt = nowIso();
+
+    await this.saveState(state);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
   async prepareProjectSecret(projectId: string, targetInput: unknown): Promise<{ target: ProjectSecretTarget; existingRef: string | null }> {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -454,7 +496,7 @@ export class WorkspaceStore {
       };
       return {
         ...normalizedProject,
-        config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config)
+        config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config, { preserveVerification: true })
       };
     });
     return {
@@ -534,7 +576,7 @@ export class WorkspaceStore {
     throw new Error("不支持的密钥类型，已阻止保存。");
   }
 
-  private sanitizeProjectConfig(project: ProjectSummary, input: unknown): ProjectConfig {
+  private sanitizeProjectConfig(project: ProjectSummary, input: unknown, options: { preserveVerification?: boolean } = {}): ProjectConfig {
     const candidate = input && typeof input === "object" ? input as Partial<ProjectConfig> : {};
     const firstCase = project.cases[0] ?? demoCase();
     const fallback = defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id);
@@ -549,6 +591,8 @@ export class WorkspaceStore {
     const client = text(adt.client, fallback.adt.client);
     const username = text(adt.username, fallback.adt.username);
     const language = text(adt.language, fallback.adt.language).toUpperCase() || "ZH";
+    const preserveVerification = options.preserveVerification === true;
+    const adtConfigStatus = savedOrEmptyStatus(alias, url, client, username);
 
     return {
       schemaVersion: 2,
@@ -563,18 +607,18 @@ export class WorkspaceStore {
         sslMode: sslMode(adt.sslMode),
         readOnly: true,
         credential: normalizeSecretHandle(existingConfig?.adt?.credential, "adt-password"),
-        configStatus: savedOrEmptyStatus(alias, url, client, username),
-        connectionStatus: "pending-verification",
-        minimalReadStatus: "pending-verification",
-        lastCheckedAt: null
+        configStatus: preserveVerification ? normalizeConfigStatus(adt.configStatus, adtConfigStatus) : adtConfigStatus,
+        connectionStatus: preserveVerification ? normalizeConfigStatus(adt.connectionStatus, "pending-verification") : "pending-verification",
+        minimalReadStatus: preserveVerification ? normalizeConfigStatus(adt.minimalReadStatus, "pending-verification") : "pending-verification",
+        lastCheckedAt: preserveVerification ? nullableIso(adt.lastCheckedAt) : null
       },
       feishu: {
         profile: text(feishu.profile, fallback.feishu.profile),
         cliPath: text(feishu.cliPath, fallback.feishu.cliPath),
         credential: normalizeSecretHandle(existingConfig?.feishu?.credential, "feishu-token"),
-        authStatus: "pending-verification",
-        docPermissionStatus: "pending-verification",
-        lastCheckedAt: null
+        authStatus: preserveVerification ? normalizeConfigStatus(feishu.authStatus, "pending-verification") : "pending-verification",
+        docPermissionStatus: preserveVerification ? normalizeConfigStatus(feishu.docPermissionStatus, "pending-verification") : "pending-verification",
+        lastCheckedAt: preserveVerification ? nullableIso(feishu.lastCheckedAt) : null
       },
       apiProviders: providers.slice(0, 6).map((provider, index) => {
         const id = text(provider.id, `provider-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, "-") || `provider-${index + 1}`;
@@ -588,20 +632,20 @@ export class WorkspaceStore {
           baseUrl,
           enabled: bool(provider.enabled, false),
           credential: normalizeSecretHandle(existingProvider?.credential, "api-key"),
-          modelSyncStatus: "pending-verification",
-          chatTestStatus: "pending-verification",
-          lastCheckedAt: null
+          modelSyncStatus: preserveVerification ? normalizeConfigStatus(provider.modelSyncStatus, "pending-verification") : "pending-verification",
+          chatTestStatus: preserveVerification ? normalizeConfigStatus(provider.chatTestStatus, "pending-verification") : "pending-verification",
+          lastCheckedAt: preserveVerification ? nullableIso(provider.lastCheckedAt) : null
         };
       }),
       codex: {
         integrationType: codexIntegrationType(codex.integrationType),
         executablePath: text(codex.executablePath, fallback.codex.executablePath),
         credential: normalizeSecretHandle(existingConfig?.codex?.credential, "codex-token"),
-        cliStatus: "pending-verification",
-        version: "",
-        loginStatus: "pending-verification",
-        readonlyTaskStatus: "pending-verification",
-        lastCheckedAt: null
+        cliStatus: preserveVerification ? normalizeConfigStatus(codex.cliStatus, "pending-verification") : "pending-verification",
+        version: text(codex.version),
+        loginStatus: preserveVerification ? normalizeConfigStatus(codex.loginStatus, "pending-verification") : "pending-verification",
+        readonlyTaskStatus: preserveVerification ? normalizeConfigStatus(codex.readonlyTaskStatus, "pending-verification") : "pending-verification",
+        lastCheckedAt: preserveVerification ? nullableIso(codex.lastCheckedAt) : null
       },
       localStorage: fallback.localStorage
     };

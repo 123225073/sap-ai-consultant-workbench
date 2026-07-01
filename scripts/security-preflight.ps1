@@ -106,7 +106,8 @@ $allowedIpc = @(
   "workbench:get-case-files",
   "workbench:search",
   "workbench:save-project-config",
-  "workbench:save-project-secret"
+  "workbench:save-project-secret",
+  "workbench:adt-verify-readonly"
 )
 
 $ipcHits = rg -n -- 'ipcMain\.handle\(\x22([^\x22]+)\x22' apps/desktop/src/main
@@ -124,12 +125,44 @@ foreach ($line in $ipcHits) {
 }
 
 Write-Section "Dangerous IPC name scan"
-$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path" apps/desktop/src/main apps/desktop/src/preload
+$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path" apps/desktop/src/main apps/desktop/src/preload
 if ($LASTEXITCODE -eq 0) {
   $dangerousIpcHits | ForEach-Object { Write-Host $_ }
   throw "Dangerous IPC-like name found."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Dangerous IPC scan failed."
+}
+
+Write-Section "Secret resolution boundary"
+$resolveHits = rg -n -- "resolveValue\(" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $resolveHits) {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|secureSecretStore)\.ts") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Secret resolution outside approved main-process files."
+    }
+    Write-Host "OK secret resolution boundary: $line"
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Secret resolution boundary scan failed."
+}
+
+Write-Section "SAP write-operation scan"
+$sapWriteHits = rg -n -- "run-sql|execute-sql|CALL\s+TRANSACTION|SUBMIT\s+|INSERT\s+INTO|UPDATE\s+[A-Za-z0-9_/]+|MODIFY\s+[A-Za-z0-9_/]+|DELETE\s+FROM|activateObject|releaseTransport|createTransport|transportRequest" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $sapWriteHits | ForEach-Object { Write-Host $_ }
+  throw "SAP write-like operation pattern found in desktop source."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP write-operation scan failed."
+}
+
+Write-Section "Raw connector output scan"
+$rawOutputHits = rg -n -- "rawStdout|rawStderr|responseBody|SAP_SESSIONID|MYSAPSSO2" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $rawOutputHits | ForEach-Object { Write-Host $_ }
+  throw "Raw connector output or session field found."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Raw connector output scan failed."
 }
 
 Write-Section "Desktop delete-operation scan"

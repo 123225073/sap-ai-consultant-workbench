@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { ArrowLeft, Check, Database, KeyRound, Lock, PlugZap, Save, ShieldCheck, Terminal, Workflow } from "lucide-react";
-import type { ApiProviderConfig, ConfigStatus, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
+import { ArrowLeft, Database, KeyRound, Lock, PlugZap, Save, ShieldCheck, Terminal, Workflow } from "lucide-react";
+import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
 
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
   saved: "配置草稿",
-  "pending-verification": "待真实验证",
+  "pending-verification": "待只读验证",
+  verified: "只读验证通过",
   failed: "检查失败"
 };
 
@@ -13,7 +14,8 @@ function cloneConfig(config: ProjectConfig): ProjectConfig {
   return JSON.parse(JSON.stringify(config)) as ProjectConfig;
 }
 
-function statusTone(status: ConfigStatus): "neutral" | "blue" | "orange" {
+function statusTone(status: ConfigStatus): "neutral" | "blue" | "orange" | "green" {
+  if (status === "verified") return "green";
   if (status === "saved") return "blue";
   if (status === "pending-verification" || status === "failed") return "orange";
   return "neutral";
@@ -40,6 +42,13 @@ function formatSavedAt(value: string | null): string {
   return `保存于 ${date.toLocaleString("zh-CN", { hour12: false })}`;
 }
 
+function formatCheckedAt(value: string | null): string {
+  if (!value) return "尚未执行验证";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "尚未执行验证";
+  return date.toLocaleString("zh-CN", { hour12: false });
+}
+
 function disabledReason(label: string) {
   return `${label} · 待后续真实接入`;
 }
@@ -48,24 +57,135 @@ function firstProvider(config: ProjectConfig): ApiProviderConfig {
   return config.apiProviders[0];
 }
 
+function stepStatusFromConfig(status: ConfigStatus): "passed" | "failed" | "skipped" {
+  if (status === "verified") return "passed";
+  if (status === "failed") return "failed";
+  return "skipped";
+}
+
+function stepLabel(status: "passed" | "failed" | "skipped"): string {
+  if (status === "passed") return "通过";
+  if (status === "failed") return "失败";
+  return "待验证";
+}
+
+function AdtVerificationReportView({ config, report }: { config: ProjectConfig; report: AdtVerificationReport | null }) {
+  const steps = report?.steps ?? [
+    {
+      id: "config" as const,
+      title: "配置检查",
+      status: stepStatusFromConfig(config.adt.configStatus),
+      detail: "检查 URL、Client、用户、语言、SSL、只读开关和安全密钥引用。",
+      checkedAt: config.adt.lastCheckedAt ?? ""
+    },
+    {
+      id: "status" as const,
+      title: "ADT status",
+      status: stepStatusFromConfig(config.adt.connectionStatus),
+      detail: "status 通过只表示连接状态可检查，还不能代表 T000 读取成功。",
+      checkedAt: config.adt.lastCheckedAt ?? ""
+    },
+    {
+      id: "t000" as const,
+      title: "T000 最小读取",
+      status: stepStatusFromConfig(config.adt.minimalReadStatus),
+      detail: "只有固定 T000 最小读取成功，才允许标记只读验证通过。",
+      checkedAt: config.adt.lastCheckedAt ?? ""
+    }
+  ];
+  const firstError = report?.errors[0];
+  const system = report?.system;
+
+  return (
+    <div className="adt-verification-report">
+      <div className="verification-steps">
+        {steps.map((item) => (
+          <div className={`verification-step step-${item.status}`} key={item.id}>
+            <span>{item.title}</span>
+            <strong>{stepLabel(item.status)}</strong>
+            <small>{item.detail}</small>
+          </div>
+        ))}
+      </div>
+
+      <dl className="verification-details">
+        <div>
+          <dt>系统别名</dt>
+          <dd>{system?.alias || config.adt.alias || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>SAP 主机</dt>
+          <dd>{system?.endpointHost || "执行验证后显示脱敏主机"}</dd>
+        </div>
+        <div>
+          <dt>Client</dt>
+          <dd>{system?.client || config.adt.client || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>用户</dt>
+          <dd>{system?.usernameMasked || (config.adt.username ? "验证后脱敏显示" : "未填写")}</dd>
+        </div>
+        <div>
+          <dt>SSL 模式</dt>
+          <dd>{(system?.sslMode ?? config.adt.sslMode) === "skip-certificate" ? "跳过证书校验" : "严格校验"}</dd>
+        </div>
+        <div>
+          <dt>写入模式</dt>
+          <dd>锁定只读</dd>
+        </div>
+        <div>
+          <dt>传输写入</dt>
+          <dd>禁用</dd>
+        </div>
+        <div>
+          <dt>最小读取对象</dt>
+          <dd>T000</dd>
+        </div>
+        <div>
+          <dt>最后验证时间</dt>
+          <dd>{formatCheckedAt(report?.checkedAt ?? config.adt.lastCheckedAt)}</dd>
+        </div>
+        <div>
+          <dt>验证结论</dt>
+          <dd>{report ? (report.ok ? "T000 最小读取通过，当前只读链路可用。" : "未通过，不能标记为只读验证通过。") : "尚未执行本轮验证。"}</dd>
+        </div>
+      </dl>
+
+      {firstError ? (
+        <div className="verification-error">
+          <strong>{firstError.message}</strong>
+          <span>{firstError.suggestion}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface ConfigCenterProps {
   project?: ProjectSummary;
   notice: string;
   onBack: () => void;
   onSave: (projectId: string, config: ProjectConfig) => Promise<void>;
   onSaveSecret: (projectId: string, input: ProjectSecretInput) => Promise<boolean>;
+  onVerifyAdt: (projectId: string) => Promise<AdtVerificationReport | null>;
 }
 
-function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigCenterProps) {
+function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyAdt }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
   const [adtEntry, setAdtEntry] = useState("");
   const [apiEntry, setApiEntry] = useState("");
+  const [adtReport, setAdtReport] = useState<AdtVerificationReport | null>(null);
+  const [verifyingAdt, setVerifyingAdt] = useState(false);
 
   useEffect(() => {
     setDraft(project ? cloneConfig(project.config) : null);
     setAdtEntry("");
     setApiEntry("");
   }, [project?.id, project?.config.updatedAt]);
+
+  useEffect(() => {
+    setAdtReport(null);
+  }, [project?.id]);
 
   if (!project || !draft) {
     return (
@@ -119,6 +239,17 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigC
     if (saved) setAdtEntry("");
   }
 
+  async function verifyAdt() {
+    if (!project || verifyingAdt) return;
+    setVerifyingAdt(true);
+    try {
+      const report = await onVerifyAdt(project.id);
+      if (report) setAdtReport(report);
+    } finally {
+      setVerifyingAdt(false);
+    }
+  }
+
   async function saveApiSecret() {
     if (!project || !apiEntry) return;
     const saved = await onSaveSecret(project.id, { target: { kind: "api-key", providerId: provider.id }, value: apiEntry });
@@ -132,7 +263,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigC
           <button className="icon-button" onClick={onBack} aria-label="返回案件"><ArrowLeft size={18} /></button>
           <div>
             <h1>配置中心</h1>
-            <p>{project.name} · 当前项目配置 · 真实连接验证未执行</p>
+            <p>{project.name} · 当前项目配置 · ADT 只读验证按项目执行</p>
           </div>
         </div>
 
@@ -214,6 +345,14 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigC
               <div className="readonly-row"><ConfigStatusPill status={draft.adt.connectionStatus} /></div>
             </label>
             <label>
+              <span>T000 最小读取</span>
+              <div className="readonly-row"><ConfigStatusPill status={draft.adt.minimalReadStatus} /></div>
+            </label>
+            <label>
+              <span>最后验证时间</span>
+              <input value={formatCheckedAt(draft.adt.lastCheckedAt)} readOnly />
+            </label>
+            <label>
               <span>SAP 密钥状态</span>
               <div className="readonly-row"><SecretStatusPill handle={draft.adt.credential} /></div>
             </label>
@@ -229,9 +368,9 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigC
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
             <button onClick={() => void saveAdtSecret()} disabled={!adtEntry} title="只保存到系统安全存储，不执行连接验证"><Lock size={16} />{draft.adt.credential.state === "set-in-secure-store" ? "替换安全密钥" : "保存到系统安全存储"}</button>
-            <button disabled title={disabledReason("测试 ADT 连接")}><PlugZap size={16} />测试连接</button>
-            <button disabled title={disabledReason("读取 T000")}><Check size={16} />读取 T000</button>
+            <button onClick={() => void verifyAdt()} disabled={verifyingAdt} title="执行配置检查、ADT status 和固定 T000 最小读取"><PlugZap size={16} />{verifyingAdt ? "验证中" : "执行只读验证"}</button>
           </div>
+          <AdtVerificationReportView config={draft} report={adtReport} />
         </section>
 
         <section className="config-section">
@@ -395,11 +534,11 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret }: ConfigC
             <li>项目配置只保存安全引用，不保存明文密钥。</li>
             <li>ADT 写入模式锁定为只读。</li>
             <li>保存密钥不代表连接已通过检查。</li>
-            <li>真实验证要等后续阶段接入。</li>
+            <li>T000 最小读取通过后，才显示只读验证通过。</li>
           </ul>
         </section>
         <section>
-          <h2>待接入验证</h2>
+          <h2>验证边界</h2>
           <ul>
             <li>ADT：最小读取成功后才可改变状态。</li>
             <li>飞书：CLI 与权限都要单独验证。</li>

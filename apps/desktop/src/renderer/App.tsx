@@ -22,7 +22,7 @@ import {
   Sparkles
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
-import type { CaseFileNode, CaseMessage, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes = ["问题分析", "ABAP开发", "文档生成", "画流程图"];
 
@@ -187,7 +187,7 @@ function App() {
     const response = await bridge.saveProjectConfig(projectId, config);
     if (response.ok) {
       setState(response.data);
-      setNotice("配置草稿已保存；真实连接验证未执行，密钥未保存。");
+      setNotice("配置草稿已保存；ADT 状态已回到待只读验证。");
     } else {
       setNotice(response.error);
     }
@@ -201,11 +201,27 @@ function App() {
     const response = await bridge.saveProjectSecret(projectId, input);
     if (response.ok) {
       setState(response.data);
-      setNotice("密钥已保存到系统安全存储；真实连接验证未执行。");
+      setNotice("密钥已保存到系统安全存储；请继续执行 ADT 只读验证。");
       return true;
     }
     setNotice(response.error);
     return false;
+  }
+
+  async function verifyAdtReadonly(projectId: string): Promise<AdtVerificationReport | null> {
+    if (!bridge) {
+      setNotice("请在桌面应用中执行 ADT 只读验证。");
+      return null;
+    }
+    const response = await bridge.verifyAdtReadonly(projectId);
+    if (response.ok) {
+      setState(response.data.state);
+      const firstError = response.data.report.errors[0];
+      setNotice(response.data.report.ok ? "ADT 只读验证通过：T000 最小读取已完成。" : `ADT 只读验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
+      return response.data.report;
+    }
+    setNotice(response.error);
+    return null;
   }
 
   return (
@@ -304,7 +320,7 @@ function App() {
         </aside>
 
         {activeView === "config" ? (
-          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} onSaveSecret={saveProjectSecret} />
+          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} onSaveSecret={saveProjectSecret} onVerifyAdt={verifyAdtReadonly} />
         ) : (
         <>
         <section className="conversation-panel">
