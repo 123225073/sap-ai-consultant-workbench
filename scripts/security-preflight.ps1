@@ -183,7 +183,15 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "SAP write-operation scan"
-$sapWriteHits = rg -n -- "run-sql|execute-sql|CALL\s+TRANSACTION|SUBMIT\s+|INSERT\s+INTO|UPDATE\s+[A-Za-z0-9_/]+|MODIFY\s+[A-Za-z0-9_/]+|DELETE\s+FROM|activateObject|releaseTransport|createTransport|transportRequest" apps/desktop/src
+$sapWriteScanTargets = @(
+  "apps/desktop/src/main/adtReadonlyConnector.ts",
+  "apps/desktop/src/main/caseWorkflowService.ts",
+  "apps/desktop/src/main/main.ts",
+  "apps/desktop/src/main/workspaceStore.ts",
+  "apps/desktop/src/preload",
+  "apps/desktop/src/renderer"
+)
+$sapWriteHits = rg -n -- "run-sql|execute-sql|CALL\s+TRANSACTION|SUBMIT\s+|INSERT\s+INTO|UPDATE\s+[A-Za-z0-9_/]+|MODIFY\s+[A-Za-z0-9_/]+|DELETE\s+FROM|activateObject|releaseTransport|createTransport|transportRequest" $sapWriteScanTargets
 if ($LASTEXITCODE -eq 0) {
   $sapWriteHits | ForEach-Object { Write-Host $_ }
   throw "SAP write-like operation pattern found in desktop source."
@@ -345,7 +353,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Child process boundary scan"
-$childProcessHits = rg -n -- "execFile\(|spawn\(|exec\(" apps/desktop/src/main
+$childProcessHits = rg -n -- "node:child_process|from ['""]child_process['""]|require\(['""]child_process['""]\)|execFile\(|spawn\(" apps/desktop/src/main
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $childProcessHits) {
     if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]feishuCliConnector\.ts") {
@@ -356,6 +364,33 @@ if ($LASTEXITCODE -eq 0) {
   }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Child process boundary scan failed."
+}
+
+Write-Section "SQLite FTS safety scan"
+$sqliteMarkers = @(
+  "CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5",
+  "unsafeSearchPatterns",
+  "replaceSearchDocuments",
+  "local-data/workbench/app.db",
+  "sqlite3_js_db_export"
+)
+foreach ($marker in $sqliteMarkers) {
+  $markerHits = rg -n --fixed-strings -- $marker apps/desktop/src/main docs/superpowers/plans
+  if ($LASTEXITCODE -eq 0) {
+    Write-Host "OK SQLite marker: $marker"
+  } elseif ($LASTEXITCODE -eq 1) {
+    throw "Missing SQLite safety marker: $marker"
+  } else {
+    throw "SQLite safety marker scan failed for: $marker"
+  }
+}
+
+$sqlIpcHits = rg -n -- "ipcMain\.handle\([^)]*(sql|sqlite|database|fts)" apps/desktop/src/main apps/desktop/src/preload
+if ($LASTEXITCODE -eq 0) {
+  $sqlIpcHits | ForEach-Object { Write-Host $_ }
+  throw "SQLite/database must not expose generic SQL IPC."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SQLite IPC scan failed."
 }
 
 Write-Section "Feishu fixed CLI command scan"

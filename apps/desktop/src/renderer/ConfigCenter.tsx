@@ -781,7 +781,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
             <Database size={18} />
             <div>
               <h2>本地存储</h2>
-              <p>当前使用本地 JSON；SQLite 留到后续阶段。</p>
+              <p>JSON 和案件文件仍是事实源；SQLite 只作为本地搜索镜像。</p>
             </div>
           </div>
           <div className="config-fields">
@@ -800,6 +800,22 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
             <label>
               <span>状态文件</span>
               <input value={draft.localStorage.stateJsonPath} readOnly />
+            </label>
+            <label>
+              <span>搜索数据库</span>
+              <input value={draft.localStorage.databasePath ?? "local-data/workbench/app.db"} readOnly />
+            </label>
+            <label>
+              <span>索引目录</span>
+              <input value={draft.localStorage.indexesDir} readOnly />
+            </label>
+            <label>
+              <span>日志目录</span>
+              <input value={draft.localStorage.logsDir} readOnly />
+            </label>
+            <label>
+              <span>临时目录</span>
+              <input value={draft.localStorage.tempDir} readOnly />
             </label>
           </div>
         </section>

@@ -211,16 +211,31 @@ button {
 }
 
 .search-result b,
-.search-result small {
+.search-result small,
+.search-result p {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.search-result b,
+.search-result small {
   white-space: nowrap;
 }
 
 .search-result small {
   grid-column: 2;
   color: #6b7280;
+}
+
+.search-result p {
+  grid-column: 2;
+  margin: 0;
+  color: #4b5563;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
 .project-header button {

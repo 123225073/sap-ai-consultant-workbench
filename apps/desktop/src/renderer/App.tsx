@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   BookOpen,
@@ -156,6 +156,7 @@ function App() {
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
   const [notice, setNotice] = useState("Phase 6：知识库中心已接入本地人工确认闭环；仍不调用真实 SAP / 飞书 / 模型。");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
   const project = activeProject(state);
@@ -419,7 +420,7 @@ function App() {
         <aside className="sidebar">
           <div className="primary-nav">
             <button onClick={createCase} title="创建一个新的本地案件文件夹"><PenLine size={18} />新案件</button>
-            <button title="当前只搜索本地项目、案件和文件名"><Search size={18} />搜索</button>
+            <button onClick={() => searchInputRef.current?.focus()} title="聚焦本地搜索框，可搜索项目、案件、文件和知识摘要"><Search size={18} />搜索</button>
             <button className={activeView === "config" ? "active" : ""} onClick={() => setActiveView("config")} title="保存当前项目的非密钥配置草稿"><Settings size={18} />配置中心</button>
             <button className={activeView === "standards" ? "active" : ""} onClick={() => setActiveView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
             <button className={activeView === "knowledge" ? "active" : ""} onClick={() => setActiveView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
@@ -427,7 +428,7 @@ function App() {
 
           <label className="sidebar-search">
             <Search size={15} />
-            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索本地项目、案件、文件名" />
+            <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索项目、案件、文件、知识摘要" />
           </label>
 
           {searchResults.length > 0 ? (
@@ -438,6 +439,7 @@ function App() {
                   <span>{result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件"}</span>
                   <b>{result.title}</b>
                   <small>{result.location}</small>
+                  <p>{result.snippet}</p>
                 </div>
               ))}
             </section>

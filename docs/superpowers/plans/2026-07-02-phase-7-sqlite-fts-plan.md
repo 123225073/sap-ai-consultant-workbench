@@ -4,9 +4,9 @@
 
 **Goal:** Add a verified local SQLite + FTS5 persistence/search foundation without breaking the existing JSON-backed workbench flow.
 
-**Architecture:** Keep `WorkspaceStore` as the current source of truth during Phase 7 and add SQLite as a local searchable mirror first. A new `databaseService.ts` owns database initialization, schema migration, FTS5 capability probing, and safe indexing. Search reads from SQLite when the probe succeeds and falls back to the existing in-memory/file search when unavailable.
+**Architecture:** Keep `WorkspaceStore` as the current source of truth during Phase 7 and add SQLite as a local searchable mirror first. A new `databaseService.ts` owns database initialization, schema migration, FTS5 capability probing, safe indexing, and manual persistence to `app.db`. Search keeps the existing substring search as the first user-facing result source, then merges SQLite FTS results as a supplemental index.
 
-**Tech Stack:** Electron main process, React + TypeScript renderer, local filesystem, `@sqlite.org/sqlite-wasm` as the first candidate SQLite runtime, SQLite FTS5 virtual tables, existing PowerShell security preflight.
+**Tech Stack:** Electron main process, React + TypeScript renderer, local filesystem, `@sqlite.org/sqlite-wasm`, SQLite FTS5 virtual tables, manual `sqlite3_js_db_export()` persistence to `local-data/workbench/app.db`, existing PowerShell security preflight.
 
 ---
 
@@ -24,6 +24,14 @@ Therefore Phase 7 must optimize for:
 - no change to SAP, Feishu, model, or knowledge-publish boundaries
 
 SQLite FTS5 will follow the official SQLite FTS5 virtual table model: create a virtual table with searchable text columns, write index rows, query with `MATCH`, and order by rank where supported.
+
+Implementation discovery:
+
+- `@sqlite.org/sqlite-wasm` supports FTS5 in Node in-memory mode.
+- Its README warns that Node does not provide automatic persisted database storage.
+- Phase 7 therefore persists by exporting the database bytes with `sqlite3_js_db_export()` after index refreshes and writing them to ignored `local-data/workbench/app.db`.
+- Node's experimental `node:sqlite` exists on the local Node 23 runtime, but its current build does not include FTS5 (`no such module: fts5`), so it is not used.
+- Existing substring search remains primary because default SQLite FTS tokenization does not reliably match Chinese substrings like `演示BOM` inside `演示BOM筛选规则`.
 
 ## 2. File Structure
 
@@ -94,16 +102,16 @@ CREATE VIRTUAL TABLE IF NOT EXISTS search_documents_fts USING fts5(
   location,
   snippet,
   source_path,
-  content='search_documents',
-  content_rowid='rowid'
+  content
 );
 ```
 
 Required mirror rule:
 
 - `search_documents` contains only searchable metadata and summaries.
+- `search_documents_fts.content` contains bounded index text assembled from user-visible metadata and summaries.
 - It must not store raw secrets, encrypted blobs, SAP session artifacts, API keys, Feishu tokens, or large SAP source.
-- It may store local case titles, file names, knowledge summaries, and user-visible snippets already shown in the app.
+- It may store local case titles, file names, knowledge summaries, source labels, status labels, and SAP object names.
 
 ## 5. Task 1: Add SQLite Dependency And Capability Probe
 
@@ -293,7 +301,7 @@ Implement `replaceSearchDocuments(records)` as a transaction:
 DELETE FROM search_documents_fts;
 DELETE FROM search_documents;
 INSERT INTO search_documents (...);
-INSERT INTO search_documents_fts(rowid, title, location, snippet, source_path) VALUES (...);
+INSERT INTO search_documents_fts(rowid, title, location, snippet, source_path, content) VALUES (...);
 ```
 
 Use deterministic rowids from insert order. Do not store raw case message bodies in FTS during Phase 7.
@@ -359,7 +367,7 @@ Expected preserved behavior:
 - case results
 - knowledge results labeled as `knowledge`
 - file results from current case tree
-- max 20 results
+- max 12 results, matching the sidebar search panel
 
 - [ ] **Step 3: Add SQLite path**
 
@@ -371,7 +379,7 @@ FROM search_documents_fts
 JOIN search_documents ON search_documents_fts.rowid = search_documents.rowid
 WHERE search_documents_fts MATCH ?
 ORDER BY rank
-LIMIT 20;
+LIMIT 12;
 ```
 
 If the query fails, return fallback search and store no secret-bearing error.

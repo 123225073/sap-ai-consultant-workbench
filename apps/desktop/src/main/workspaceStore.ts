@@ -33,8 +33,10 @@ import {
   renderProjectKnowledgeJson,
   renderProjectKnowledgeMarkdown
 } from "./knowledgeService";
+import { DatabaseService } from "./databaseService";
+import { buildSearchDocuments, searchWorkbench } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, KnowledgeItemStatus, KnowledgeItemType, KnowledgeSourceType, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -54,29 +56,6 @@ const directories = [
   "evidence",
   "technical"
 ];
-
-const knowledgeStatusLabels: Record<KnowledgeItemStatus, string> = {
-  draft: "草稿",
-  pending: "待确认",
-  published: "已发布",
-  conflicted: "有冲突",
-  expired: "已失效"
-};
-
-const knowledgeTypeLabels: Record<KnowledgeItemType, string> = {
-  qa: "QA 问答",
-  doc: "文档知识",
-  sap_object: "SAP 对象说明",
-  case_note: "案件经验",
-  timeline_fact: "时间线事实"
-};
-
-const knowledgeSourceLabels: Record<KnowledgeSourceType, string> = {
-  "case-candidate": "案件候选",
-  "document-import": "文档导入",
-  "qa-import": "QA 导入",
-  manual: "人工维护"
-};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -200,7 +179,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
       stateJsonPath: "local-data/workbench/app-state.json",
       projectDir: `local-data/workbench/projects/${projectDir}`,
       casesDir: `local-data/workbench/projects/${projectDir}/cases/${caseDir}`,
-      databasePath: null,
+      databasePath: "local-data/workbench/app.db",
       indexesDir: "local-data/workbench/indexes",
       logsDir: "local-data/workbench/logs",
       tempDir: "local-data/workbench/temp",
@@ -332,15 +311,19 @@ function normalizeModels(value: unknown): ModelSummary[] {
 export class WorkspaceStore {
   private readonly workspaceRoot: string;
   private readonly statePath: string;
+  private readonly database: DatabaseService;
+  private databaseInitialized = false;
 
   constructor(repoRoot: string) {
     this.workspaceRoot = path.join(repoRoot, "local-data", "workbench");
     this.statePath = path.join(this.workspaceRoot, "app-state.json");
+    this.database = new DatabaseService(this.workspaceRoot);
   }
 
   async getState(): Promise<WorkbenchState> {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -354,6 +337,7 @@ export class WorkspaceStore {
     state.activeCaseId = DEMO_CASE_ID;
     await this.saveState(state);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -367,6 +351,7 @@ export class WorkspaceStore {
     state.activeCaseId = DEMO_CASE_ID;
     await this.saveState(state);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -404,6 +389,7 @@ export class WorkspaceStore {
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
     await this.writeCaseMarkdown(state, currentCase, artifacts);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -414,87 +400,9 @@ export class WorkspaceStore {
   }
 
   async search(query: string): Promise<SearchResult[]> {
-    const trimmed = query.trim().toLowerCase();
-    if (!trimmed) return [];
     const state = await this.loadOrCreateState();
     const files = await this.readCaseTree(state);
-    const results: SearchResult[] = [];
-
-    for (const project of state.projects) {
-      if (project.name.toLowerCase().includes(trimmed) || project.systemLabel.toLowerCase().includes(trimmed)) {
-        results.push({
-          id: `project-${project.id}`,
-          title: project.name,
-          type: "project",
-          location: project.systemLabel,
-          snippet: "来自本地项目列表"
-        });
-      }
-
-      for (const caseItem of project.cases) {
-        if (caseItem.title.toLowerCase().includes(trimmed) || caseItem.currentSummary.toLowerCase().includes(trimmed)) {
-          results.push({
-            id: `case-${caseItem.id}`,
-            title: caseItem.title,
-            type: "case",
-            location: project.name,
-            snippet: caseItem.currentSummary
-          });
-        }
-      }
-
-      for (const item of project.knowledge.items) {
-        const statusLabel = knowledgeStatusLabels[item.status];
-        const typeLabel = knowledgeTypeLabels[item.type];
-        const sourceLabel = knowledgeSourceLabels[item.sourceType];
-        const sourceParts = [
-          project.name,
-          statusLabel,
-          sourceLabel,
-          item.sourceCaseId ? `案件 ${item.sourceCaseId}` : "",
-          item.sourceFilePath ? `来源文件 ${item.sourceFilePath}` : ""
-        ].filter(Boolean);
-        const searchable = [
-          item.title,
-          item.summary,
-          item.content,
-          item.status,
-          statusLabel,
-          item.type,
-          typeLabel,
-          sourceLabel,
-          item.sourceFilePath ?? "",
-          ...item.sapObjects
-        ].join(" ").toLowerCase();
-        if (searchable.includes(trimmed)) {
-          results.push({
-            id: `knowledge-${item.id}`,
-            title: item.title,
-            type: "knowledge",
-            location: sourceParts.join(" · "),
-            snippet: item.summary
-          });
-        }
-      }
-    }
-
-    const flatten = (nodes: CaseFileNode[]) => {
-      for (const node of nodes) {
-        if (node.name.toLowerCase().includes(trimmed) || node.relativePath.toLowerCase().includes(trimmed)) {
-          results.push({
-            id: `file-${node.relativePath}`,
-            title: node.name,
-            type: "file",
-            location: node.relativePath,
-            snippet: `当前案件文件：${node.purpose}`
-          });
-        }
-        if (node.children) flatten(node.children);
-      }
-    };
-    flatten(files);
-
-    return results.slice(0, 12);
+    return searchWorkbench(this.database, state.projects, files, query);
   }
 
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
@@ -510,6 +418,7 @@ export class WorkspaceStore {
 
     await this.saveState(state);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -611,6 +520,7 @@ export class WorkspaceStore {
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -627,6 +537,7 @@ export class WorkspaceStore {
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -643,6 +554,7 @@ export class WorkspaceStore {
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
     await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
     return this.withFiles(state);
   }
 
@@ -764,6 +676,7 @@ export class WorkspaceStore {
 
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
+    await this.initializeDatabase();
     try {
       const raw = await fs.readFile(this.statePath, "utf8");
       const parsed = JSON.parse(raw) as StoredState;
@@ -782,6 +695,22 @@ export class WorkspaceStore {
   private async saveState(state: StoredState): Promise<void> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
     await this.writeJsonAtomic(this.statePath, state);
+  }
+
+  private async initializeDatabase(): Promise<void> {
+    if (this.databaseInitialized) return;
+    this.databaseInitialized = true;
+    await this.database.initialize();
+  }
+
+  private async refreshSearchIndex(state: StoredState): Promise<void> {
+    if (!this.database.getHealth().ok) return;
+    try {
+      const files = await this.readCaseTree(state);
+      await this.database.replaceSearchDocuments(buildSearchDocuments(state.projects, files));
+    } catch {
+      return;
+    }
   }
 
   private normalizeState(state: StoredState): StoredState {
