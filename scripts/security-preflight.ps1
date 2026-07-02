@@ -120,6 +120,7 @@ $allowedIpc = @(
   "workbench:create-demo-case",
   "workbench:append-message",
   "workbench:get-case-files",
+  "workbench:preview-current-case-file",
   "workbench:search",
   "workbench:save-project-config",
   "workbench:save-project-secret",
@@ -151,7 +152,7 @@ foreach ($line in $ipcHits) {
 }
 
 Write-Section "Dangerous IPC name scan"
-$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|get-api-key|read-api-key|export-api-key|resolve-api-key|list-models|chat-completions|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path" apps/desktop/src/main apps/desktop/src/preload
+$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|get-api-key|read-api-key|export-api-key|resolve-api-key|list-models|chat-completions|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path|preview-any-file|open-file|open-path|read-current-file|readFileArbitrary" apps/desktop/src/main apps/desktop/src/preload
 if ($LASTEXITCODE -eq 0) {
   $dangerousIpcHits | ForEach-Object { Write-Host $_ }
   throw "Dangerous IPC-like name found."
@@ -238,6 +239,60 @@ foreach ($marker in $caseRootMarkers) {
   } else {
     throw "Case root safety marker is missing: $($marker.Pattern)"
   }
+}
+
+Write-Section "Case file preview safety scan"
+$previewMarkers = @(
+  @{ Pattern = "previewCurrentCaseFile"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertPreviewRelativePath"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertSafePreviewFileType"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "redactPreviewContent"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "MAX_PREVIEW_BYTES"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "MAX_PREVIEW_FILE_BYTES"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "SAFE_PREVIEW_EXTENSIONS"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "BLOCKED_PREVIEW_FILENAMES"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "realpath"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "lstat"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:preview-current-case-file"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "previewCurrentCaseFile"; Path = "apps/desktop/src/preload/preload.ts" }
+)
+foreach ($marker in $previewMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK preview marker: $($marker.Pattern)"
+  } else {
+    throw "Case file preview safety marker is missing: $($marker.Pattern)"
+  }
+}
+
+$rendererFileReadHits = rg -n -- "node:fs|from ['""]fs['""]|require\(['""]fs['""]\)|readFile\(" apps/desktop/src/renderer apps/desktop/src/preload
+if ($LASTEXITCODE -eq 0) {
+  $rendererFileReadHits | ForEach-Object { Write-Host $_ }
+  throw "Renderer/preload must not read files directly."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Renderer/preload file-read scan failed."
+}
+
+$desktopOpenHits = rg -n -- "shell\.openPath|shell\.openExternal|dialog\.showOpenDialog|showOpenDialog|openExternal|openPath" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $desktopOpenHits | ForEach-Object { Write-Host $_ }
+  throw "Desktop app must not expose system file or URL openers in Phase 9."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Desktop opener scan failed."
+}
+
+$previewUnsafePathHits = rg -n -- "SAP ABAP|SAPUILandscape|saplogon\.ini|\.sap-adt-cli|\.sap-abap-cli" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $previewUnsafePathHits) {
+    if ($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\]workspaceStore\.ts") {
+      Write-Host "OK preview blocks old SAP workspace marker: $line"
+    } else {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Desktop source must not reference old SAP workspace or local SAP credential paths."
+    }
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Old SAP workspace path scan failed."
 }
 
 Write-Section "Standards center safety scan"

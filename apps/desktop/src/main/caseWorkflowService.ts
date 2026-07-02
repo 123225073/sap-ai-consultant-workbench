@@ -8,7 +8,7 @@ export const TASK_MODE_LABELS: Record<TaskMode, string> = {
   "flow-diagram": "画流程图"
 };
 
-const CASE_OUTPUT_PHASE = "Phase 8";
+const CASE_OUTPUT_PHASE = "Phase 9";
 const LOCAL_WORKFLOW_BOUNDARY = "本地草稿工作流：不读取真实 SAP、不调用真实模型、不创建或发布飞书文档。";
 
 export interface CaseWorkflowArtifacts {

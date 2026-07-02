@@ -37,7 +37,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -57,6 +57,36 @@ const directories = [
   "evidence",
   "technical"
 ];
+const MAX_PREVIEW_FILE_BYTES = 256 * 1024;
+const MAX_PREVIEW_BYTES = 64 * 1024;
+const SAFE_PREVIEW_EXTENSIONS = new Set([".md", ".txt", ".csv", ".mmd"]);
+const BLOCKED_PREVIEW_FILENAMES = new Set(["messages.json", "metadata.json", "project.json", "app-state.json"]);
+
+function redactPreviewContent(input: string): { content: string; redactions: number } {
+  const patterns = [
+    /bearer\s+[a-z0-9._-]{12,}/gi,
+    /authorization\s*[:=]\s*[^\n\r]+/gi,
+    /cookie\s*[:=]\s*[^\n\r]+/gi,
+    new RegExp("SAP_" + "SESSIONID\\s*[:=]\\s*[^\\s]+", "gi"),
+    new RegExp("MYSAP" + "SSO2\\s*[:=]\\s*[^\\s]+", "gi"),
+    /secure-store:sec_[a-f0-9]{32}/gi,
+    /sk-[a-z0-9]{20,}/gi,
+    /api[_-]?key\s*[:=]\s*[^\s]+/gi,
+    /tenant[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+    /user[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+    new RegExp("device_" + "code\\s*[:=]\\s*[^\\s]+", "gi"),
+    new RegExp("verification_" + "uri\\s*[:=]\\s*[^\\s]+", "gi")
+  ];
+  let redactions = 0;
+  let content = input;
+  for (const pattern of patterns) {
+    content = content.replace(pattern, () => {
+      redactions += 1;
+      return "[已脱敏]";
+    });
+  }
+  return { content, redactions };
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -448,6 +478,49 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     return this.readCaseTree(state);
+  }
+
+  async previewCurrentCaseFile(input: unknown): Promise<CaseFilePreview> {
+    const state = await this.loadOrCreateState();
+    await this.ensureCaseFiles(state);
+    const relativePath = this.assertPreviewRelativePath(input);
+    this.assertSafePreviewFileType(relativePath);
+
+    const caseFiles = await this.readCaseTree(state);
+    const node = this.findCaseFileNode(caseFiles, relativePath);
+    if (!node || node.kind !== "file") {
+      throw new Error("只能预览当前案件文件树中已经存在的文件。");
+    }
+
+    const caseRoot = this.caseRoot(state);
+    const target = this.assertInsideWorkspace(path.join(caseRoot, relativePath));
+    const resolvedCaseRoot = await fs.realpath(caseRoot);
+    const stat = await fs.lstat(target);
+    if (stat.isSymbolicLink() || !stat.isFile()) {
+      throw new Error("只能预览当前案件里的普通文本文件。");
+    }
+    if (stat.size > MAX_PREVIEW_FILE_BYTES) {
+      throw new Error("文件超过预览大小限制，请在本地案件文件夹中打开。");
+    }
+
+    const realTarget = await fs.realpath(target);
+    if (realTarget !== resolvedCaseRoot && !realTarget.startsWith(`${resolvedCaseRoot}${path.sep}`)) {
+      throw new Error("文件真实路径超出当前案件目录，已阻止预览。");
+    }
+
+    const buffer = await fs.readFile(realTarget);
+    const truncated = buffer.length > MAX_PREVIEW_BYTES;
+    const previewBuffer = buffer.subarray(0, MAX_PREVIEW_BYTES);
+    const redacted = redactPreviewContent(previewBuffer.toString("utf8"));
+    return {
+      relativePath,
+      displayName: path.basename(relativePath),
+      fileType: path.extname(relativePath).replace(".", "").toLowerCase() || "text",
+      sizeBytes: stat.size,
+      truncated,
+      content: redacted.content,
+      redactions: redacted.redactions
+    };
   }
 
   async search(query: string): Promise<SearchResult[]> {
@@ -1007,6 +1080,67 @@ export class WorkspaceStore {
       throw new Error("案件目录超出当前项目 cases 目录，已阻止。");
     }
     return resolvedTarget;
+  }
+
+  private assertPreviewRelativePath(input: unknown): string {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("文件预览请求无效。");
+    }
+    const keys = Object.keys(input);
+    if (keys.length !== 1 || keys[0] !== "relativePath") {
+      throw new Error("文件预览请求只允许包含 relativePath。");
+    }
+    const relativePath = (input as { relativePath?: unknown }).relativePath;
+    if (typeof relativePath !== "string") {
+      throw new Error("文件预览请求缺少相对路径。");
+    }
+
+    if (/[\u0000-\u001f\u007f]/.test(relativePath)) {
+      throw new Error("文件预览路径包含不安全字符。");
+    }
+    const trimmed = relativePath.trim();
+    if (
+      !trimmed ||
+      trimmed.includes("\\") ||
+      trimmed.startsWith("/") ||
+      /^[a-zA-Z]:\//.test(trimmed) ||
+      /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+    ) {
+      throw new Error("只能预览当前案件里的相对文件路径。");
+    }
+
+    const parts = trimmed.split("/");
+    if (parts.some((part) => !part || part === "." || part === "..")) {
+      throw new Error("文件预览路径无效。");
+    }
+    if (parts.some((part) => part === ".sap-adt-cli" || part === ".sap-abap-cli" || part.toLowerCase().includes("secure-store"))) {
+      throw new Error("该路径不允许在案件预览中读取。");
+    }
+    return trimmed;
+  }
+
+  private assertSafePreviewFileType(relativePath: string): void {
+    const basename = path.basename(relativePath).toLowerCase();
+    const extension = path.extname(relativePath).toLowerCase();
+    if (BLOCKED_PREVIEW_FILENAMES.has(basename) || basename.includes("credential") || basename.includes("secret")) {
+      throw new Error("该文件属于内部状态或凭据相关文件，不能在界面预览。");
+    }
+    if (!SAFE_PREVIEW_EXTENSIONS.has(extension)) {
+      throw new Error("当前只支持预览 Markdown、文本、CSV 和 Mermaid 文件。");
+    }
+  }
+
+  private findCaseFileNode(nodes: CaseFileNode[], relativePath: string): CaseFileNode | null {
+    for (const node of nodes) {
+      if (node.relativePath === relativePath) {
+        return node;
+      }
+      if (node.children) {
+        const child = this.findCaseFileNode(node.children, relativePath);
+        if (child) return child;
+      }
+    }
+    return null;
   }
 
   private generatedFileTarget(caseRoot: string, file: CaseGeneratedFile): string {

@@ -401,6 +401,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
   ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(store.appendMessage(input)));
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
+  ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));

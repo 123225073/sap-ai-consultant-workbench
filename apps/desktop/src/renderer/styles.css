@@ -467,7 +467,8 @@ button {
   margin-top: 24px;
 }
 
-.file-chips a {
+.file-chips a,
+.file-chips button {
   width: 170px;
   min-height: 64px;
   display: grid;
@@ -480,6 +481,13 @@ button {
   color: #111827;
   text-decoration: none;
   background: #ffffff;
+  text-align: left;
+}
+
+.file-chips a:hover,
+.file-chips button:hover {
+  border-color: #8bb6ff;
+  background: #f8fbff;
 }
 
 .file-chips span {
@@ -596,7 +604,7 @@ button {
   border-right: 0;
   border-left: 1px solid #dde3ea;
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  grid-template-rows: auto auto minmax(160px, 1fr) minmax(180px, 0.9fr) auto;
   padding: 26px 22px 20px;
 }
 
@@ -651,6 +659,18 @@ button {
   font-size: 14px;
 }
 
+.file-row-button {
+  width: 100%;
+  border-radius: 7px;
+  text-align: left;
+}
+
+.file-row-button:hover,
+.file-row-button.selected {
+  background: #eaf2ff;
+  color: #1d4ed8;
+}
+
 .file-row span {
   min-width: 0;
   overflow: hidden;
@@ -681,6 +701,89 @@ button {
 
 .file-folder svg {
   color: #6b7280;
+}
+
+.file-preview {
+  min-height: 0;
+  border-top: 1px solid #e5e9f0;
+  margin-top: 14px;
+  padding-top: 14px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.file-preview-heading {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.file-preview-heading strong,
+.file-preview-heading span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-heading strong {
+  font-size: 14px;
+}
+
+.file-preview-heading span {
+  margin-top: 4px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.file-preview-heading svg {
+  color: #2563eb;
+}
+
+.file-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.file-preview-meta span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 6px;
+  padding: 0 7px;
+  color: #4b5563;
+  background: #eef2f7;
+  font-size: 12px;
+}
+
+.file-preview pre {
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #ffffff;
+  color: #111827;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.55 Consolas, "Microsoft YaHei UI", monospace;
+}
+
+.file-preview p {
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.file-preview-blocked p {
+  color: #9a3412;
 }
 
 .files-footer {

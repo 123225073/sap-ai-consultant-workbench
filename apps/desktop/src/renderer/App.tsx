@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Eye,
   File,
   FileSpreadsheet,
   Folder,
@@ -24,7 +25,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes: { id: TaskMode; label: string }[] = [
   { id: "problem-analysis", label: "问题分析" },
@@ -96,19 +97,37 @@ function activeCase(state: WorkbenchState | null) {
   return activeProject(state)?.cases.find((caseItem) => caseItem.id === state?.activeCaseId);
 }
 
-function FileRows({ nodes, level = 0 }: { nodes: CaseFileNode[]; level?: number }) {
+function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFileNode[]; level?: number; selectedPath: string | null; onPreview: (node: CaseFileNode) => void }) {
   return (
     <>
       {nodes.map((node) => {
         const Icon = fileIcon(node);
+        const isSelected = node.relativePath === selectedPath;
+        const rowContent = (
+          <>
+            <Icon size={18} />
+            <span title={node.relativePath}>{node.name}</span>
+            <em>{node.kind === "directory" ? "" : `${formatSize(node.sizeBytes)} · 预览`}</em>
+          </>
+        );
         return (
           <div className="file-node" id={fileAnchorId(node.relativePath)} key={node.relativePath}>
-            <div className={`file-row file-${node.kind}`} style={{ paddingLeft: `${level * 16}px` }}>
-              <Icon size={18} />
-              <span title={node.relativePath}>{node.name}</span>
-              <em>{node.kind === "directory" ? "" : formatSize(node.sizeBytes)}</em>
-            </div>
-            {node.children?.length ? <FileRows nodes={node.children} level={level + 1} /> : null}
+            {node.kind === "file" ? (
+              <button
+                type="button"
+                className={`file-row file-row-button file-${node.kind}${isSelected ? " selected" : ""}`}
+                style={{ paddingLeft: `${level * 16}px` }}
+                onClick={() => onPreview(node)}
+                title="预览当前案件文件"
+              >
+                {rowContent}
+              </button>
+            ) : (
+              <div className={`file-row file-${node.kind}`} style={{ paddingLeft: `${level * 16}px` }}>
+                {rowContent}
+              </div>
+            )}
+            {node.children?.length ? <FileRows nodes={node.children} level={level + 1} selectedPath={selectedPath} onPreview={onPreview} /> : null}
           </div>
         );
       })}
@@ -116,7 +135,7 @@ function FileRows({ nodes, level = 0 }: { nodes: CaseFileNode[]; level?: number 
   );
 }
 
-function MessageBubble({ message, files }: { message: CaseMessage; files: CaseFileNode[] }) {
+function MessageBubble({ message, files, onPreview }: { message: CaseMessage; files: CaseFileNode[]; onPreview: (node: CaseFileNode) => void }) {
   if (message.role === "user") {
     return (
       <div className="user-message">
@@ -143,11 +162,11 @@ function MessageBubble({ message, files }: { message: CaseMessage; files: CaseFi
           {linkedFiles.map((node) => {
             const Icon = fileIcon(node);
             return (
-              <a href={`#${fileAnchorId(node.relativePath)}`} key={node.relativePath}>
+              <button type="button" onClick={() => onPreview(node)} key={node.relativePath} title="打开本地只读预览">
                 <Icon size={22} />
                 {node.name}
-                <span>{formatSize(node.sizeBytes)}</span>
-              </a>
+                <span>{formatSize(node.sizeBytes)} · 预览</span>
+              </button>
             );
           })}
         </div>
@@ -162,11 +181,14 @@ function App() {
   const [message, setMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [fileSearchQuery, setFileSearchQuery] = useState("");
+  const [selectedPreviewPath, setSelectedPreviewPath] = useState<string | null>(null);
+  const [filePreview, setFilePreview] = useState<CaseFilePreview | null>(null);
+  const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 8：当前会生成可编辑的本地案件输出文件；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
+  const [notice, setNotice] = useState("Phase 9：当前支持本地案件文件只读预览；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -176,6 +198,7 @@ function App() {
   const filteredCaseFiles = useMemo(() => filterFileNodes(state?.activeCaseFiles ?? [], fileSearchQuery), [state, fileSearchQuery]);
   const filteredFileCount = useMemo(() => flattenFiles(filteredCaseFiles).filter((node) => node.kind === "file").length, [filteredCaseFiles]);
   const fileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file").length, [flatFiles]);
+  const selectedPreviewNode = useMemo(() => selectedPreviewPath ? flatFiles.find((node) => node.relativePath === selectedPreviewPath) ?? null : null, [flatFiles, selectedPreviewPath]);
 
   async function applyResponse<T extends WorkbenchState>(responsePromise: Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
     const response = await responsePromise;
@@ -238,6 +261,30 @@ function App() {
     }
     await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: "local-workflow" }));
     setMessage("");
+  }
+
+  async function previewCaseFile(node: CaseFileNode) {
+    if (node.kind !== "file") return;
+    document.getElementById(fileAnchorId(node.relativePath))?.scrollIntoView({ block: "center" });
+    setSelectedPreviewPath(node.relativePath);
+    setFilePreview(null);
+    setFilePreviewError(null);
+
+    if (!bridge) {
+      const error = "请在桌面应用中预览当前案件文件。";
+      setFilePreviewError(error);
+      setNotice(error);
+      return;
+    }
+
+    const response = await bridge.previewCurrentCaseFile({ relativePath: node.relativePath });
+    if (response.ok) {
+      setFilePreview(response.data);
+      setNotice("已读取当前案件文件的本地只读预览。");
+    } else {
+      setFilePreviewError(response.error);
+      setNotice(response.error);
+    }
   }
 
   async function saveProjectConfig(projectId: string, config: ProjectSummary["config"]) {
@@ -426,7 +473,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 8"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 9"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -547,7 +594,7 @@ function App() {
 
           <div className="conversation-flow">
             {(currentCase?.messages ?? []).map((item) => (
-              <MessageBubble message={item} files={flatFiles} key={item.id} />
+              <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
             ))}
 
             {state?.activeCaseFiles.length ? (
@@ -558,11 +605,11 @@ function App() {
                   {flatFiles.filter((node) => node.kind === "file").slice(0, 3).map((node) => {
                     const Icon = fileIcon(node);
                     return (
-                      <a href={`#${fileAnchorId(node.relativePath)}`} key={node.relativePath}>
+                      <button type="button" onClick={() => previewCaseFile(node)} key={node.relativePath} title="打开本地只读预览">
                         <Icon size={22} />
                         {node.name}
-                        <span>{formatSize(node.sizeBytes)}</span>
-                      </a>
+                        <span>{formatSize(node.sizeBytes)} · 预览</span>
+                      </button>
                     );
                   })}
                 </div>
@@ -573,7 +620,7 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 8 会按该模式生成可编辑本地案件文件；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 9 会按该模式生成可编辑本地案件文件，并支持当前案件文件只读预览；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>
@@ -581,7 +628,7 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 8 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 9 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
                 <button type="button" aria-label="添加附件暂不可用" title="当前阶段暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
                 <button type="button" aria-label="语音输入暂不可用" title="当前阶段暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
@@ -602,9 +649,33 @@ function App() {
           </label>
           <div className="file-tree">
             {state?.activeCaseFiles.length ? (
-              filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} /> : <div className="empty-state">没有匹配的当前案件文件。</div>
+              filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} selectedPath={selectedPreviewPath} onPreview={previewCaseFile} /> : <div className="empty-state">没有匹配的当前案件文件。</div>
             ) : <div className="empty-state">请在桌面应用中创建本地案件。</div>}
           </div>
+          <section className={`file-preview${filePreviewError ? " file-preview-blocked" : ""}`}>
+            <div className="file-preview-heading">
+              <div>
+                <strong>{filePreview?.displayName ?? selectedPreviewNode?.displayName ?? "本地只读预览"}</strong>
+                <span>{filePreview?.relativePath ?? selectedPreviewNode?.relativePath ?? "点击上方文件查看安全文本预览"}</span>
+              </div>
+              <Eye size={16} />
+            </div>
+            {filePreview ? (
+              <>
+                <div className="file-preview-meta">
+                  <span>{filePreview.fileType || "text"}</span>
+                  <span>{formatSize(filePreview.sizeBytes)}</span>
+                  {filePreview.truncated ? <span>已截断</span> : null}
+                  {filePreview.redactions > 0 ? <span>已脱敏 {filePreview.redactions} 处</span> : null}
+                </div>
+                <pre>{filePreview.content}</pre>
+              </>
+            ) : filePreviewError ? (
+              <p>{filePreviewError}</p>
+            ) : (
+              <p>只支持预览当前案件里的 Markdown、文本、CSV 和 Mermaid 文件；不会打开电脑上的任意路径。</p>
+            )}
+          </section>
           <div className="files-footer">
             <span>{fileSearchQuery.trim() ? `${filteredFileCount} / ${fileCount} 个文件` : `${fileCount} 个文件`}</span>
             <span><ShieldCheck size={15} />本地输出数据</span>

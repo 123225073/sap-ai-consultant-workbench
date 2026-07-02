@@ -475,6 +475,20 @@ export interface CaseFileNode {
   children?: CaseFileNode[];
 }
 
+export interface CaseFilePreviewInput {
+  relativePath: string;
+}
+
+export interface CaseFilePreview {
+  relativePath: string;
+  displayName: string;
+  fileType: string;
+  sizeBytes: number;
+  truncated: boolean;
+  content: string;
+  redactions: number;
+}
+
 export interface SearchResult {
   id: string;
   title: string;
