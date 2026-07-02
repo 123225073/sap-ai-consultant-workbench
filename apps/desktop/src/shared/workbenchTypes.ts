@@ -14,6 +14,17 @@ export type AdtVerificationErrorCode =
   | "status-failed"
   | "minimal-read-failed"
   | "unexpected-error";
+export type ModelCapability = "vision" | "reasoning" | "tools" | "web" | "free" | "chat";
+export type ModelProviderVerificationStepId = "models" | "chat";
+export type ModelProviderVerificationErrorCode =
+  | "missing-config"
+  | "invalid-base-url"
+  | "missing-credential"
+  | "secret-unavailable"
+  | "models-failed"
+  | "no-models"
+  | "chat-failed"
+  | "unexpected-error";
 
 export interface SecretHandle {
   secretRef: string | null;
@@ -99,6 +110,13 @@ export interface AdtVerificationResult {
   state: WorkbenchState;
 }
 
+export interface ModelSummary {
+  id: string;
+  displayName: string;
+  capabilities: ModelCapability[];
+  lastSeenAt: string;
+}
+
 export interface FeishuConfig {
   profile: string;
   cliPath: string;
@@ -115,9 +133,49 @@ export interface ApiProviderConfig {
   baseUrl: string;
   enabled: boolean;
   credential: SecretHandle;
+  models: ModelSummary[];
   modelSyncStatus: ConfigStatus;
   chatTestStatus: ConfigStatus;
   lastCheckedAt: string | null;
+}
+
+export interface ModelProviderRedactedInfo {
+  id: string;
+  name: string;
+  providerType: ApiProviderConfig["providerType"];
+  endpointHost: string;
+}
+
+export interface ModelProviderVerificationError {
+  code: ModelProviderVerificationErrorCode;
+  message: string;
+  suggestion: string;
+}
+
+export interface ModelProviderVerificationStep {
+  id: ModelProviderVerificationStepId;
+  title: string;
+  status: AdtVerificationStepStatus;
+  detail: string;
+  checkedAt: string;
+}
+
+export interface ModelProviderVerificationReport {
+  ok: boolean;
+  checkedAt: string;
+  mode: "fake" | "http";
+  provider: ModelProviderRedactedInfo;
+  steps: ModelProviderVerificationStep[];
+  modelSyncStatus: ConfigStatus;
+  chatTestStatus: ConfigStatus;
+  models: ModelSummary[];
+  selectedModelId: string | null;
+  errors: ModelProviderVerificationError[];
+}
+
+export interface ModelProviderVerificationResult {
+  report: ModelProviderVerificationReport;
+  state: WorkbenchState;
 }
 
 export interface CodexConfig {

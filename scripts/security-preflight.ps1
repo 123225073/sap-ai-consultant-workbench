@@ -79,6 +79,7 @@ $patterns = @(
   "github_pat_[A-Za-z0-9_]{20,}",
   "xox[baprs]-[A-Za-z0-9-]{20,}",
   "AKIA[0-9A-Z]{16}",
+  "secure-store:sec_[a-f0-9]{32}",
   "(?i)(password|passwd|api[_-]?key|secret|token)\s*[:=]\s*['""][^'""]{8,}['""]"
 )
 
@@ -107,7 +108,8 @@ $allowedIpc = @(
   "workbench:search",
   "workbench:save-project-config",
   "workbench:save-project-secret",
-  "workbench:adt-verify-readonly"
+  "workbench:adt-verify-readonly",
+  "workbench:model-provider-verify"
 )
 
 $ipcHits = rg -n -- 'ipcMain\.handle\(\x22([^\x22]+)\x22' apps/desktop/src/main
@@ -125,7 +127,7 @@ foreach ($line in $ipcHits) {
 }
 
 Write-Section "Dangerous IPC name scan"
-$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path" apps/desktop/src/main apps/desktop/src/preload
+$dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|get-api-key|read-api-key|export-api-key|resolve-api-key|list-models|chat-completions|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path" apps/desktop/src/main apps/desktop/src/preload
 if ($LASTEXITCODE -eq 0) {
   $dangerousIpcHits | ForEach-Object { Write-Host $_ }
   throw "Dangerous IPC-like name found."
@@ -134,7 +136,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Secret resolution boundary"
-$resolveHits = rg -n -- "resolveValue\(" apps/desktop/src
+$resolveHits = rg -n -- "resolve(Value|ProjectSecret)\(" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $resolveHits) {
     if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|secureSecretStore)\.ts") {
@@ -147,6 +149,15 @@ if ($LASTEXITCODE -eq 0) {
   throw "Secret resolution boundary scan failed."
 }
 
+Write-Section "Renderer secret-ref scan"
+$rendererSecretRefHits = rg -n -- "secretRef|secure-store:sec_" apps/desktop/src/renderer apps/desktop/src/preload
+if ($LASTEXITCODE -eq 0) {
+  $rendererSecretRefHits | ForEach-Object { Write-Host $_ }
+  throw "Renderer/preload must not access secretRef values."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Renderer secret-ref scan failed."
+}
+
 Write-Section "SAP write-operation scan"
 $sapWriteHits = rg -n -- "run-sql|execute-sql|CALL\s+TRANSACTION|SUBMIT\s+|INSERT\s+INTO|UPDATE\s+[A-Za-z0-9_/]+|MODIFY\s+[A-Za-z0-9_/]+|DELETE\s+FROM|activateObject|releaseTransport|createTransport|transportRequest" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
@@ -157,12 +168,67 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Raw connector output scan"
-$rawOutputHits = rg -n -- "rawStdout|rawStderr|responseBody|SAP_SESSIONID|MYSAPSSO2" apps/desktop/src
+$rawOutputHits = rg -n -- "rawStdout|rawStderr|rawResponse|rawBody|rawHeaders|responseBody|responseText|set-cookie|www-authenticate|SAP_SESSIONID|MYSAPSSO2" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   $rawOutputHits | ForEach-Object { Write-Host $_ }
   throw "Raw connector output or session field found."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Raw connector output scan failed."
+}
+
+Write-Section "Generic proxy IPC scan"
+$proxyIpcHits = rg -n -- "fetch-url|proxy-request|http-proxy|network-request|open-url|request-any-url|fetchUrl|proxyRequest|openUrl" apps/desktop/src/main apps/desktop/src/preload
+if ($LASTEXITCODE -eq 0) {
+  $proxyIpcHits | ForEach-Object { Write-Host $_ }
+  throw "Generic network proxy IPC-like name found."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Generic proxy IPC scan failed."
+}
+
+Write-Section "Model base URL safety guard scan"
+$modelGuardHits = rg -n -- "isUnsafeModelHost|isDemoModelHost|metadata\.google|169\.254|真实模型渠道必须使用 HTTPS" apps/desktop/src/main/main.ts
+if ($LASTEXITCODE -eq 0) {
+  Write-Host "OK model URL guard markers found."
+} elseif ($LASTEXITCODE -eq 1) {
+  throw "Model provider validation is missing URL safety guard markers."
+} else {
+  throw "Model base URL guard scan failed."
+}
+
+Write-Section "Model connector boundary scan"
+$modelContextHits = rg -n -- "CaseMessage|conversation|caseItem|readCaseTree|caseFiles|activeCase|workspaceStore|readFile|readdir|fs\." apps/desktop/src/main/modelProviderConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $modelContextHits | ForEach-Object { Write-Host $_ }
+  throw "Model provider connector must not read case conversation or files."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Model connector context scan failed."
+}
+
+$messageHits = rg -n -- "messages:" apps/desktop/src/main/modelProviderConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $messageHits) {
+    if ($line -notmatch 'messages:\s*\[\{\s*role:\s*"user",\s*content:\s*"ping"\s*\}\]') {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Model provider connector may only send the fixed ping chat test."
+    }
+    Write-Host "OK fixed model chat test: $line"
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Model connector message scan failed."
+}
+
+Write-Section "Authorization boundary scan"
+$authHits = rg -n -- "Authorization|Bearer|apiKey" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $authHits) {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector)\.ts") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Authorization/API key material outside approved main-process files."
+    }
+    Write-Host "OK auth boundary: $line"
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Authorization boundary scan failed."
 }
 
 Write-Section "Desktop delete-operation scan"

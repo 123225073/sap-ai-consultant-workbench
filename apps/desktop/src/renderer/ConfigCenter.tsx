@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Database, KeyRound, Lock, PlugZap, Save, ShieldCheck, Terminal, Workflow } from "lucide-react";
-import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
 
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
@@ -23,6 +23,17 @@ function statusTone(status: ConfigStatus): "neutral" | "blue" | "orange" | "gree
 
 function ConfigStatusPill({ status }: { status: ConfigStatus }) {
   return <span className={`status-pill status-${statusTone(status)}`}>{statusLabels[status]}</span>;
+}
+
+function ModelStatusPill({ status }: { status: ConfigStatus }) {
+  const labels: Record<ConfigStatus, string> = {
+    "not-configured": "未配置",
+    saved: "渠道草稿",
+    "pending-verification": "待渠道验证",
+    verified: "最小对话通过",
+    failed: "验证失败"
+  };
+  return <span className={`status-pill status-${statusTone(status)}`}>{labels[status]}</span>;
 }
 
 function SecretStatusPill({ handle }: { handle: SecretHandle }) {
@@ -67,6 +78,18 @@ function stepLabel(status: "passed" | "failed" | "skipped"): string {
   if (status === "passed") return "通过";
   if (status === "failed") return "失败";
   return "待验证";
+}
+
+function capabilityLabel(capability: ModelCapability): string {
+  const labels: Record<ModelCapability, string> = {
+    chat: "文本",
+    vision: "名称含视觉",
+    reasoning: "名称含推理",
+    tools: "名称含工具",
+    web: "名称含联网",
+    free: "名称含免费"
+  };
+  return labels[capability];
 }
 
 function AdtVerificationReportView({ config, report }: { config: ProjectConfig; report: AdtVerificationReport | null }) {
@@ -161,6 +184,98 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
   );
 }
 
+function ModelProviderReportView({ provider, report }: { provider: ApiProviderConfig; report: ModelProviderVerificationReport | null }) {
+  const steps = report?.steps ?? [
+    {
+      id: "models" as const,
+      title: "获取模型列表",
+      status: stepStatusFromConfig(provider.modelSyncStatus),
+      detail: "读取模型服务的模型摘要，不保存原始响应。",
+      checkedAt: provider.lastCheckedAt ?? ""
+    },
+    {
+      id: "chat" as const,
+      title: "最小对话测试",
+      status: stepStatusFromConfig(provider.chatTestStatus),
+      detail: "只验证模型服务能回复基础请求，尚未进入案件任务编排。",
+      checkedAt: provider.lastCheckedAt ?? ""
+    }
+  ];
+  const firstError = report?.errors[0];
+  const models = report?.models ?? provider.models;
+  const selectedModelId = report?.selectedModelId ?? null;
+
+  return (
+    <div className="adt-verification-report">
+      <div className="verification-steps model-steps">
+        {steps.map((item) => (
+          <div className={`verification-step step-${item.status}`} key={item.id}>
+            <span>{item.title}</span>
+            <strong>{stepLabel(item.status)}</strong>
+            <small>{item.detail}</small>
+          </div>
+        ))}
+      </div>
+
+      <dl className="verification-details">
+        <div>
+          <dt>渠道名称</dt>
+          <dd>{report?.provider.name || provider.name || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>渠道类型</dt>
+          <dd>{provider.providerType === "deepseek" ? "DeepSeek" : provider.providerType === "custom" ? "自定义" : "OpenAI 兼容"}</dd>
+        </div>
+        <div>
+          <dt>服务主机</dt>
+          <dd>{report?.provider.endpointHost || "执行验证后显示脱敏主机"}</dd>
+        </div>
+        <div>
+          <dt>模型数量</dt>
+          <dd>{models.length} 个</dd>
+        </div>
+        <div>
+          <dt>测试模型</dt>
+          <dd>{selectedModelId || "验证后显示"}</dd>
+        </div>
+        <div>
+          <dt>最后验证时间</dt>
+          <dd>{formatCheckedAt(report?.checkedAt ?? provider.lastCheckedAt)}</dd>
+        </div>
+        <div>
+          <dt>验证结论</dt>
+          <dd>{report ? (report.ok ? "最小对话测试通过，尚未进入案件任务编排。" : "未通过，不能作为候选模型使用。") : "尚未执行本轮验证。"}</dd>
+        </div>
+      </dl>
+
+      {models.length > 0 ? (
+        <div className="model-list">
+          <div className="model-list-note">
+            <span>仅显示前 {Math.min(models.length, 8)} 个模型；标签来自模型名称推断，不代表能力已验证。</span>
+          </div>
+          {models.slice(0, 8).map((model) => (
+            <div className="model-row" key={model.id}>
+              <strong title={model.id}>{model.displayName}</strong>
+              <span>
+                {model.capabilities.slice(0, 5).map((capability) => (
+                  <em key={capability}>{capabilityLabel(capability)}</em>
+                ))}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {firstError ? (
+        <div className="verification-error">
+          <strong>{firstError.message}</strong>
+          <span>{firstError.suggestion}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 interface ConfigCenterProps {
   project?: ProjectSummary;
   notice: string;
@@ -168,14 +283,17 @@ interface ConfigCenterProps {
   onSave: (projectId: string, config: ProjectConfig) => Promise<void>;
   onSaveSecret: (projectId: string, input: ProjectSecretInput) => Promise<boolean>;
   onVerifyAdt: (projectId: string) => Promise<AdtVerificationReport | null>;
+  onVerifyModelProvider: (projectId: string, providerId: string) => Promise<ModelProviderVerificationReport | null>;
 }
 
-function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyAdt }: ConfigCenterProps) {
+function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyAdt, onVerifyModelProvider }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
   const [adtEntry, setAdtEntry] = useState("");
   const [apiEntry, setApiEntry] = useState("");
   const [adtReport, setAdtReport] = useState<AdtVerificationReport | null>(null);
+  const [modelReport, setModelReport] = useState<ModelProviderVerificationReport | null>(null);
   const [verifyingAdt, setVerifyingAdt] = useState(false);
+  const [verifyingModel, setVerifyingModel] = useState(false);
 
   useEffect(() => {
     setDraft(project ? cloneConfig(project.config) : null);
@@ -185,6 +303,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
 
   useEffect(() => {
     setAdtReport(null);
+    setModelReport(null);
   }, [project?.id]);
 
   if (!project || !draft) {
@@ -204,6 +323,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
   }
 
   const provider = firstProvider(draft);
+  const hasUnsavedConfig = JSON.stringify(draft) !== JSON.stringify(project.config);
 
   function saveDraft() {
     if (draft && project) void onSave(project.id, draft);
@@ -214,6 +334,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
   }
 
   function updateAdt(field: keyof ProjectConfig["adt"], value: string) {
+    setAdtReport(null);
     updateDraft((current) => ({ ...current, adt: { ...current.adt, [field]: value } }));
   }
 
@@ -226,6 +347,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
   }
 
   function updateProvider(field: keyof ApiProviderConfig, value: string | boolean) {
+    setModelReport(null);
     updateDraft((current) => {
       const currentProvider = firstProvider(current);
       const nextProvider = { ...currentProvider, [field]: value };
@@ -240,7 +362,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
   }
 
   async function verifyAdt() {
-    if (!project || verifyingAdt) return;
+    if (!project || verifyingAdt || hasUnsavedConfig) return;
     setVerifyingAdt(true);
     try {
       const report = await onVerifyAdt(project.id);
@@ -254,6 +376,17 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
     if (!project || !apiEntry) return;
     const saved = await onSaveSecret(project.id, { target: { kind: "api-key", providerId: provider.id }, value: apiEntry });
     if (saved) setApiEntry("");
+  }
+
+  async function verifyModelProvider() {
+    if (!project || verifyingModel || hasUnsavedConfig) return;
+    setVerifyingModel(true);
+    try {
+      const report = await onVerifyModelProvider(project.id, provider.id);
+      if (report) setModelReport(report);
+    } finally {
+      setVerifyingModel(false);
+    }
   }
 
   return (
@@ -271,6 +404,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
           <ShieldCheck size={16} />
           <span>{notice}</span>
         </div>
+        {hasUnsavedConfig ? <p className="inline-warning">屏幕上有未保存草稿。验证只读取已保存配置，请先保存非密钥草稿。</p> : null}
 
         <section className="config-section">
           <div className="config-section-title">
@@ -368,7 +502,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
             <button onClick={() => void saveAdtSecret()} disabled={!adtEntry} title="只保存到系统安全存储，不执行连接验证"><Lock size={16} />{draft.adt.credential.state === "set-in-secure-store" ? "替换安全密钥" : "保存到系统安全存储"}</button>
-            <button onClick={() => void verifyAdt()} disabled={verifyingAdt} title="执行配置检查、ADT status 和固定 T000 最小读取"><PlugZap size={16} />{verifyingAdt ? "验证中" : "执行只读验证"}</button>
+            <button onClick={() => void verifyAdt()} disabled={verifyingAdt || hasUnsavedConfig} title={hasUnsavedConfig ? "请先保存非密钥草稿；验证只读取已保存配置" : "执行配置检查、ADT status 和固定 T000 最小读取"}><PlugZap size={16} />{verifyingAdt ? "验证中" : hasUnsavedConfig ? "先保存再验证" : "执行只读验证"}</button>
           </div>
           <AdtVerificationReportView config={draft} report={adtReport} />
         </section>
@@ -410,7 +544,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
             <KeyRound size={18} />
             <div>
               <h2>API 与模型</h2>
-              <p>只保存渠道类型和 Base URL；不保存 Key，不拉模型列表。</p>
+              <p>验证模型服务可用性；API Key 只在主进程临时使用。</p>
             </div>
           </div>
           <div className="config-fields two-columns">
@@ -431,16 +565,24 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
               <input value={provider.baseUrl} onChange={(event) => updateProvider("baseUrl", event.target.value)} />
             </label>
             <label className="checkbox-row">
-              <span>启用草稿</span>
+              <span>保留为候选渠道</span>
               <input type="checkbox" checked={provider.enabled} onChange={(event) => updateProvider("enabled", event.target.checked)} />
             </label>
             <label>
               <span>模型列表</span>
-              <div className="readonly-row"><ConfigStatusPill status={provider.modelSyncStatus} /></div>
+              <div className="readonly-row"><ModelStatusPill status={provider.modelSyncStatus} /></div>
             </label>
             <label>
               <span>最小对话测试</span>
-              <div className="readonly-row"><ConfigStatusPill status={provider.chatTestStatus} /></div>
+              <div className="readonly-row"><ModelStatusPill status={provider.chatTestStatus} /></div>
+            </label>
+            <label>
+              <span>已获取模型</span>
+              <input value={`${provider.models.length} 个`} readOnly />
+            </label>
+            <label>
+              <span>最后验证时间</span>
+              <input value={formatCheckedAt(provider.lastCheckedAt)} readOnly />
             </label>
             <label>
               <span>API Key 状态</span>
@@ -458,8 +600,9 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
             <button onClick={() => void saveApiSecret()} disabled={!apiEntry} title="只保存到系统安全存储，不获取模型列表"><Lock size={16} />{provider.credential.state === "set-in-secure-store" ? "替换安全密钥" : "保存到系统安全存储"}</button>
-            <button disabled title={disabledReason("获取模型列表")}><KeyRound size={16} />获取模型</button>
+            <button onClick={() => void verifyModelProvider()} disabled={verifyingModel || hasUnsavedConfig} title={hasUnsavedConfig ? "请先保存非密钥草稿；验证只读取已保存渠道" : "获取模型列表并执行最小对话测试"}><KeyRound size={16} />{verifyingModel ? "验证中" : hasUnsavedConfig ? "先保存再验证" : "验证已保存渠道"}</button>
           </div>
+          <ModelProviderReportView provider={provider} report={modelReport} />
         </section>
 
         <section className="config-section">
@@ -542,7 +685,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
           <ul>
             <li>ADT：最小读取成功后才可改变状态。</li>
             <li>飞书：CLI 与权限都要单独验证。</li>
-            <li>模型：模型列表和最小对话分开验证。</li>
+            <li>模型：模型列表和最小对话分开验证，不代表已进入案件任务。</li>
             <li>Codex：只允许明确白名单能力。</li>
           </ul>
         </section>

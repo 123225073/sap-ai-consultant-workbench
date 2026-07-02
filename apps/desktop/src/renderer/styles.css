@@ -720,6 +720,13 @@ button {
   margin: 0 0 12px;
 }
 
+.inline-warning {
+  margin: 0 0 12px;
+  color: #9a3412;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .config-section {
   border-top: 1px solid #e5e9f0;
   padding: 26px 0;
@@ -959,6 +966,65 @@ button {
   line-height: 1.5;
 }
 
+.model-steps {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.model-list {
+  margin-top: 12px;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.model-list-note {
+  padding: 9px 12px;
+  background: #f8fafc;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.model-row {
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  border-top: 1px solid #eef2f7;
+  padding: 8px 12px;
+  background: #ffffff;
+}
+
+.model-row:first-child {
+  border-top: 0;
+}
+
+.model-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.model-row span {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.model-row em {
+  border-radius: 6px;
+  background: #eef2f7;
+  color: #4b5563;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-style: normal;
+  white-space: nowrap;
+}
+
 .config-side {
   min-width: 0;
   border-left: 1px solid #dde3ea;
@@ -1000,5 +1066,27 @@ button {
   .verification-steps,
   .verification-details {
     grid-template-columns: 1fr;
+  }
+
+  .config-fields.two-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .config-actions button {
+    flex: 1 1 180px;
+    justify-content: center;
+  }
+
+  .model-row {
+    grid-template-columns: 1fr;
+  }
+
+  .model-row span {
+    justify-content: flex-start;
+  }
+
+  .verification-details dd {
+    white-space: normal;
+    overflow-wrap: anywhere;
   }
 }

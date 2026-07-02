@@ -1,10 +1,10 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { createAdtReadonlyConnector, createAdtValidationFailureReport, type AdtConnectorInput } from "./adtReadonlyConnector";
+import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
-import { isManagedSecretRef } from "../shared/secretHandle";
-import type { AdtVerificationErrorCode, AdtVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -12,7 +12,8 @@ const SENSITIVE_ERROR_PATTERNS = [
   /cookie:\s*[^\s]+/gi,
   /x-csrf-token:\s*[^\s]+/gi,
   /secure-store:sec_[a-f0-9]{32}/gi,
-  /sk-[a-z0-9]{20,}/gi
+  /sk-[a-z0-9]{20,}/gi,
+  /api[_-]?key\s*[:=]\s*[^\s]+/gi
 ];
 
 function safeErrorMessage(error: unknown): string {
@@ -43,6 +44,62 @@ function adtInputWithoutPassword(config: ProjectConfig): Omit<AdtConnectorInput,
 
 function adtValidationFailure(config: ProjectConfig, code: AdtVerificationErrorCode, message: string, suggestion: string) {
   return createAdtValidationFailureReport(adtInputWithoutPassword(config), code, message, suggestion);
+}
+
+function modelProviderInputWithoutKey(provider: ApiProviderConfig): Omit<ModelProviderConnectorInput, "apiKey"> {
+  return {
+    id: provider.id,
+    name: provider.name,
+    providerType: provider.providerType,
+    baseUrl: provider.baseUrl
+  };
+}
+
+function modelProviderFailure(provider: ApiProviderConfig, code: ModelProviderVerificationErrorCode, message: string, suggestion: string) {
+  return createModelProviderValidationFailureReport(modelProviderInputWithoutKey(provider), code, message, suggestion);
+}
+
+function normalizedHostname(value: string): string {
+  return value.trim().toLowerCase().replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
+}
+
+function isDemoModelHost(hostname: string): boolean {
+  const host = normalizedHostname(hostname);
+  return host === "api-demo.example.com" || host === "fake-models.local" || host === "fake-models.test";
+}
+
+function ipv4Parts(hostname: string): number[] | null {
+  const parts = hostname.split(".");
+  if (parts.length !== 4) return null;
+  const numbers = parts.map((part) => Number(part));
+  if (numbers.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return numbers;
+}
+
+function isUnsafeModelHost(hostname: string): boolean {
+  const host = normalizedHostname(hostname);
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return true;
+  if (host === "metadata.google.internal" || host === "metadata.google" || host === "metadata") return true;
+  if (host.startsWith("::ffff:")) {
+    const mapped = ipv4Parts(host.slice("::ffff:".length));
+    return mapped ? isUnsafeModelHost(mapped.join(".")) : true;
+  }
+  if (host.includes(":") && (host === "::" || host === "::1" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd"))) return true;
+
+  const parts = ipv4Parts(host);
+  if (!parts) return false;
+  const [a, b] = parts;
+  return (
+    a === 0 ||
+    a === 10 ||
+    a === 127 ||
+    (a === 100 && b >= 64 && b <= 127) ||
+    (a === 169 && b === 254) ||
+    (a === 172 && b >= 16 && b <= 31) ||
+    (a === 192 && b === 168) ||
+    (a === 198 && (b === 18 || b === 19)) ||
+    a >= 224
+  );
 }
 
 function validateAdtConfig(config: ProjectConfig): { ok: true } | { ok: false; code: AdtVerificationErrorCode; message: string; suggestion: string } {
@@ -86,12 +143,77 @@ function validateAdtConfig(config: ProjectConfig): { ok: true } | { ok: false; c
     };
   }
 
-  if (config.adt.credential.state !== "set-in-secure-store" || !isManagedSecretRef(config.adt.credential.secretRef)) {
+  if (config.adt.credential.state !== "set-in-secure-store") {
     return {
       ok: false,
       code: "missing-credential",
       message: "当前项目还没有保存 SAP 密码到系统安全存储。",
       suggestion: "请先保存或替换 SAP 密码；保存后仍需再次执行只读验证。"
+    };
+  }
+
+  return { ok: true };
+}
+
+function validateModelProvider(provider: ApiProviderConfig): { ok: true } | { ok: false; code: ModelProviderVerificationErrorCode; message: string; suggestion: string } {
+  const missing = [
+    ["渠道名称", provider.name],
+    ["Base URL", provider.baseUrl]
+  ].filter(([, value]) => typeof value !== "string" || value.trim().length === 0).map(([label]) => label);
+
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: `模型渠道配置不完整：${missing.join("、")} 还没有填写。`,
+      suggestion: "请先填写渠道名称和 Base URL，并保存后再验证模型渠道。"
+    };
+  }
+
+  try {
+    const parsed = new URL(provider.baseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error("unsupported protocol");
+    }
+    if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+      return {
+        ok: false,
+        code: "invalid-base-url",
+        message: "模型 Base URL 不能包含账号、密码、查询参数或片段。",
+        suggestion: "请只填写模型服务根地址，例如 https://api.example.com/v1，不要把 API Key 或参数放进 URL。"
+      };
+    }
+    if (!isDemoModelHost(parsed.host) && parsed.protocol !== "https:") {
+      return {
+        ok: false,
+        code: "invalid-base-url",
+        message: "真实模型渠道必须使用 HTTPS。",
+        suggestion: "请改用模型服务的 HTTPS 地址；本地、内网或明文 HTTP 地址不会携带 API Key 执行验证。"
+      };
+    }
+    if (!isDemoModelHost(parsed.host) && isUnsafeModelHost(parsed.hostname)) {
+      return {
+        ok: false,
+        code: "invalid-base-url",
+        message: "模型 Base URL 指向本机、内网或云元数据地址，已阻止验证。",
+        suggestion: "请填写公开模型服务的 HTTPS 根地址；本地调试渠道需要后续单独白名单能力。"
+      };
+    }
+  } catch {
+    return {
+      ok: false,
+      code: "invalid-base-url",
+      message: "模型 Base URL 格式不正确。",
+      suggestion: "请填写完整的 HTTP 或 HTTPS 地址，例如 https://api.example.com/v1。"
+    };
+  }
+
+  if (provider.credential.state !== "set-in-secure-store") {
+    return {
+      ok: false,
+      code: "missing-credential",
+      message: "当前模型渠道还没有保存 API Key 到系统安全存储。",
+      suggestion: "请先保存或替换 API Key；保存后仍需再次验证模型渠道。"
     };
   }
 
@@ -125,7 +247,7 @@ async function verifyAdtReadonly(store: WorkspaceStore, secretStore: SecureSecre
 
   let password = "";
   try {
-    password = await secretStore.resolveValue(config.adt.credential.secretRef as string);
+    password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password" });
   } catch {
     const report = adtValidationFailure(
       config,
@@ -143,6 +265,38 @@ async function verifyAdtReadonly(store: WorkspaceStore, secretStore: SecureSecre
   return { report, state };
 }
 
+async function verifyModelProvider(store: WorkspaceStore, secretStore: SecureSecretStore, projectId: unknown, providerId: unknown): Promise<ModelProviderVerificationResult> {
+  if (typeof projectId !== "string" || projectId.trim().length === 0 || typeof providerId !== "string" || providerId.trim().length === 0) {
+    throw new Error("模型渠道验证请求缺少项目或渠道 ID。");
+  }
+  const provider = await store.getApiProviderConfig(projectId, providerId);
+  const configCheck = validateModelProvider(provider);
+  if (!configCheck.ok) {
+    const report = modelProviderFailure(provider, configCheck.code, configCheck.message, configCheck.suggestion);
+    const state = await store.updateModelProviderVerification(projectId, providerId, report);
+    return { report, state };
+  }
+
+  let apiKey = "";
+  try {
+    apiKey = await secretStore.resolveProjectSecret(projectId, { kind: "api-key", providerId });
+  } catch {
+    const report = modelProviderFailure(
+      provider,
+      "secret-unavailable",
+      "系统安全存储里的 API Key 无法读取。",
+      "请重新保存当前模型渠道的 API Key，然后再执行验证。"
+    );
+    const state = await store.updateModelProviderVerification(projectId, providerId, report);
+    return { report, state };
+  }
+
+  const connector = createModelProviderConnector(provider.baseUrl);
+  const report = await connector.verify({ ...modelProviderInputWithoutKey(provider), apiKey });
+  const state = await store.updateModelProviderVerification(projectId, providerId, report);
+  return { report, state };
+}
+
 function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore): void {
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
   ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
@@ -153,6 +307,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
   ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));
+  ipcMain.handle("workbench:model-provider-verify", (_event, projectId: unknown, providerId: unknown) => response(verifyModelProvider(store, secretStore, projectId, providerId)));
 }
 
 function createMainWindow(): void {

@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, CaseFileNode, ProjectConfig, ProjectSecretInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -17,6 +17,7 @@ interface WorkbenchBridge {
   saveProjectConfig: (projectId: string, config: ProjectConfig) => Promise<WorkbenchResponse<WorkbenchState>>;
   saveProjectSecret: (projectId: string, input: ProjectSecretInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   verifyAdtReadonly: (projectId: string) => Promise<WorkbenchResponse<AdtVerificationResult>>;
+  verifyModelProvider: (projectId: string, providerId: string) => Promise<WorkbenchResponse<ModelProviderVerificationResult>>;
 }
 
 declare global {

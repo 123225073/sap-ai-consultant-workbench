@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { emptySecretHandle, isManagedSecretRef } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import { emptySecretHandle } from "../shared/secretHandle";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -133,6 +133,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
         baseUrl: "https://api-demo.example.com/v1",
         enabled: false,
         credential: emptySecretHandle("api-key"),
+        models: [],
         modelSyncStatus: "pending-verification",
         chatTestStatus: "pending-verification",
         lastCheckedAt: null
@@ -245,9 +246,9 @@ function normalizeConnectionState(value: unknown): ProjectSummary["connectionSta
 function normalizeSecretHandle(value: unknown, kind: SecretKind): SecretHandle {
   if (value && typeof value === "object") {
     const candidate = value as Partial<SecretHandle>;
-    if (candidate.state === "set-in-secure-store" && candidate.kind === kind && isManagedSecretRef(candidate.secretRef)) {
+    if (candidate.state === "set-in-secure-store" && candidate.kind === kind) {
       return {
-        secretRef: candidate.secretRef,
+        secretRef: null,
         kind,
         store: "electron-safe-storage",
         state: "set-in-secure-store",
@@ -256,6 +257,25 @@ function normalizeSecretHandle(value: unknown, kind: SecretKind): SecretHandle {
     }
   }
   return emptySecretHandle(kind);
+}
+
+function normalizeModels(value: unknown): ModelSummary[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 200).flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const candidate = item as Partial<ModelSummary>;
+    const id = text(candidate.id);
+    if (!id) return [];
+    const capabilities = Array.isArray(candidate.capabilities)
+      ? candidate.capabilities.filter((capability): capability is ModelSummary["capabilities"][number] => capability === "vision" || capability === "reasoning" || capability === "tools" || capability === "web" || capability === "free" || capability === "chat")
+      : ["chat" as const];
+    return [{
+      id,
+      displayName: text(candidate.displayName, id),
+      capabilities,
+      lastSeenAt: nullableIso(candidate.lastSeenAt) ?? nowIso()
+    }];
+  });
 }
 
 export class WorkspaceStore {
@@ -415,6 +435,42 @@ export class WorkspaceStore {
     return this.withFiles(state);
   }
 
+  async getApiProviderConfig(projectId: string, providerId: string): Promise<ProjectConfig["apiProviders"][number]> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法验证模型渠道。");
+    }
+    const provider = project.config.apiProviders.find((item) => item.id === providerId);
+    if (!provider) {
+      throw new Error("未找到当前 API 渠道，无法验证模型。");
+    }
+    return provider;
+  }
+
+  async updateModelProviderVerification(projectId: string, providerId: string, report: ModelProviderVerificationReport): Promise<WorkbenchState> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存模型验证结果。");
+    }
+    const provider = project.config.apiProviders.find((item) => item.id === providerId);
+    if (!provider) {
+      throw new Error("未找到当前 API 渠道，无法保存模型验证结果。");
+    }
+
+    provider.models = report.models;
+    provider.modelSyncStatus = report.modelSyncStatus;
+    provider.chatTestStatus = report.chatTestStatus;
+    provider.lastCheckedAt = report.checkedAt;
+    project.config.updatedAt = nowIso();
+    project.updatedAt = nowIso();
+
+    await this.saveState(state);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
   async prepareProjectSecret(projectId: string, targetInput: unknown): Promise<{ target: ProjectSecretTarget; existingRef: string | null }> {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -462,7 +518,11 @@ export class WorkspaceStore {
     try {
       const raw = await fs.readFile(this.statePath, "utf8");
       const parsed = JSON.parse(raw) as StoredState;
-      return this.normalizeState(parsed);
+      const normalized = this.normalizeState(parsed);
+      if (raw.includes("secure-store:sec_")) {
+        await this.saveState(normalized);
+      }
+      return normalized;
     } catch {
       const state = emptyState();
       await this.saveState(state);
@@ -632,6 +692,7 @@ export class WorkspaceStore {
           baseUrl,
           enabled: bool(provider.enabled, false),
           credential: normalizeSecretHandle(existingProvider?.credential, "api-key"),
+          models: preserveVerification ? normalizeModels(provider.models) : [],
           modelSyncStatus: preserveVerification ? normalizeConfigStatus(provider.modelSyncStatus, "pending-verification") : "pending-verification",
           chatTestStatus: preserveVerification ? normalizeConfigStatus(provider.chatTestStatus, "pending-verification") : "pending-verification",
           lastCheckedAt: preserveVerification ? nullableIso(provider.lastCheckedAt) : null

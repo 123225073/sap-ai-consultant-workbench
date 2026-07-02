@@ -61,7 +61,8 @@ export class SecureSecretStore {
     this.assertProviderReady();
     const normalizedProjectId = cleanSegment(projectId, "project");
     const targetId = targetIdFor(target);
-    const ref = isManagedSecretRef(existingRef) ? existingRef : this.createRef();
+    const existingTargetRef = await this.findLatestRef(normalizedProjectId, target.kind, targetId);
+    const ref = isManagedSecretRef(existingRef) ? existingRef : existingTargetRef ?? this.createRef();
     const updatedAt = nowIso();
     const encryptedValue = this.encrypt(value);
     const blob: StoredSecretBlob = {
@@ -97,6 +98,17 @@ export class SecureSecretStore {
     return this.provider.decryptString(Buffer.from(blob.encryptedValue, "base64"));
   }
 
+  async resolveProjectSecret(projectId: string, target: ProjectSecretTarget): Promise<string> {
+    this.assertProviderReady();
+    const normalizedProjectId = cleanSegment(projectId, "project");
+    const targetId = targetIdFor(target);
+    const ref = await this.findLatestRef(normalizedProjectId, target.kind, targetId);
+    if (!ref) {
+      throw new Error("安全存储里没有找到当前目标的密钥。");
+    }
+    return this.resolveValue(ref);
+  }
+
   private assertProviderReady(): void {
     if (!this.provider || !this.provider.isEncryptionAvailable()) {
       throw new Error("系统安全存储不可用，请检查当前桌面环境的安全存储能力。");
@@ -115,6 +127,33 @@ export class SecureSecretStore {
 
   private createRef(): string {
     return `${REF_PREFIX}sec_${crypto.randomBytes(16).toString("hex")}`;
+  }
+
+  private async findLatestRef(projectId: string, kind: SecretKind, targetId: string): Promise<string | null> {
+    let entries: string[] = [];
+    try {
+      entries = await fs.readdir(this.secureRoot);
+    } catch {
+      return null;
+    }
+
+    const matches: StoredSecretBlob[] = [];
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue;
+      try {
+        const blobPath = this.assertInsideSecureRoot(path.join(this.secureRoot, entry));
+        const raw = await fs.readFile(blobPath, "utf8");
+        const blob = JSON.parse(raw) as StoredSecretBlob;
+        if (blob.projectId === projectId && blob.kind === kind && blob.targetId === targetId && isManagedSecretRef(blob.ref)) {
+          matches.push(blob);
+        }
+      } catch {
+        continue;
+      }
+    }
+
+    matches.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    return matches[0]?.ref ?? null;
   }
 
   private assertInsideSecureRoot(target: string): string {
