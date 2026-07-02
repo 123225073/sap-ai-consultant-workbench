@@ -95,6 +95,10 @@ button {
   grid-template-columns: 300px minmax(640px, 1fr) 360px;
 }
 
+.workspace.files-collapsed {
+  grid-template-columns: 300px minmax(640px, 1fr);
+}
+
 .sidebar,
 .files-panel {
   background: #fbfcfe;
@@ -357,6 +361,12 @@ button {
   align-items: center;
   justify-content: space-between;
   padding: 0 28px;
+}
+
+.case-heading-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .case-heading h1 {

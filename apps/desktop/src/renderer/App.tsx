@@ -22,9 +22,21 @@ import {
   Sparkles
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, FeishuVerificationReport, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, FeishuVerificationReport, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
-const modes = ["问题分析", "ABAP开发", "文档生成", "画流程图"];
+const modes: { id: TaskMode; label: string }[] = [
+  { id: "problem-analysis", label: "问题分析" },
+  { id: "abap-development", label: "ABAP开发" },
+  { id: "document-generation", label: "文档生成" },
+  { id: "flow-diagram", label: "画流程图" }
+];
+
+const modePlaceholder: Record<TaskMode, string> = {
+  "problem-analysis": "描述 SAP 问题或补充现象；本阶段会沉淀到当前案件文件",
+  "abap-development": "描述 ABAP 开发或修改需求；本阶段会生成只读开发说明和快照占位",
+  "document-generation": "说明要生成的文档；本阶段会生成本地 Markdown 草稿",
+  "flow-diagram": "描述业务流程或逻辑；本阶段会生成 Mermaid 流程图草稿"
+};
 
 function StatusPill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "green" | "orange" | "blue" }) {
   return <span className={`status-pill status-${tone}`}>{label}</span>;
@@ -50,6 +62,17 @@ function fileIcon(node: CaseFileNode) {
 
 function flattenFiles(nodes: CaseFileNode[]): CaseFileNode[] {
   return nodes.flatMap((node) => [node, ...(node.children ? flattenFiles(node.children) : [])]);
+}
+
+function filterFileNodes(nodes: CaseFileNode[], query: string): CaseFileNode[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return nodes;
+  return nodes.flatMap((node) => {
+    const children = node.children ? filterFileNodes(node.children, query) : [];
+    const matched = node.name.toLowerCase().includes(normalized) || node.relativePath.toLowerCase().includes(normalized);
+    if (!matched && children.length === 0) return [];
+    return [{ ...node, children }];
+  });
 }
 
 function activeProject(state: WorkbenchState | null): ProjectSummary | undefined {
@@ -80,7 +103,7 @@ function FileRows({ nodes, level = 0 }: { nodes: CaseFileNode[]; level?: number 
   );
 }
 
-function MessageBubble({ message }: { message: CaseMessage }) {
+function MessageBubble({ message, files }: { message: CaseMessage; files: CaseFileNode[] }) {
   if (message.role === "user") {
     return (
       <div className="user-message">
@@ -90,14 +113,32 @@ function MessageBubble({ message }: { message: CaseMessage }) {
     );
   }
 
+  const linkedFiles = message.linkedFileIds
+    .map((fileId) => files.find((file) => file.relativePath === fileId))
+    .filter((file): file is CaseFileNode => Boolean(file));
+
   return (
     <article className="assistant-message">
       <div className="run-time">本地演示回复 · {formatTime(message.createdAt)} &gt;</div>
       <p>{message.content}</p>
       <ul>
-        <li><strong>边界：</strong>当前仅保存本地案件文件，不调用真实模型。</li>
-        <li><strong>安全：</strong>SAP、飞书、API 尚未接入，所有文件位于被忽略的 local-data。</li>
+        <li><strong>边界：</strong>当前仅保存本地案件文件，不调用真实模型、SAP 或飞书。</li>
+        <li><strong>安全：</strong>所有文件位于被忽略的 local-data，候选知识不会自动入库。</li>
       </ul>
+      {linkedFiles.length > 0 ? (
+        <div className="file-chips">
+          {linkedFiles.map((node) => {
+            const Icon = fileIcon(node);
+            return (
+              <a href={`#${node.relativePath}`} key={node.relativePath}>
+                <Icon size={22} />
+                {node.name}
+                <span>{formatSize(node.sizeBytes)}</span>
+              </a>
+            );
+          })}
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -107,14 +148,20 @@ function App() {
   const [state, setState] = useState<WorkbenchState | null>(null);
   const [message, setMessage] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
+  const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [activeView, setActiveView] = useState<"case" | "config">("case");
-  const [notice, setNotice] = useState("Phase 2：配置中心只保存非密钥草稿，未执行真实 SAP / 飞书 / 模型 API 验证。");
+  const [filesPanelVisible, setFilesPanelVisible] = useState(true);
+  const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
+  const [notice, setNotice] = useState("Phase 4：本地案件工作流会保存对话、时间线、上下文包和模式输出；不调用真实 SAP / 飞书 / 模型。");
 
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
-  const fileCount = useMemo(() => flattenFiles(state?.activeCaseFiles ?? []).filter((node) => node.kind === "file").length, [state]);
+  const flatFiles = useMemo(() => flattenFiles(state?.activeCaseFiles ?? []), [state]);
+  const filteredCaseFiles = useMemo(() => filterFileNodes(state?.activeCaseFiles ?? [], fileSearchQuery), [state, fileSearchQuery]);
+  const filteredFileCount = useMemo(() => flattenFiles(filteredCaseFiles).filter((node) => node.kind === "file").length, [filteredCaseFiles]);
+  const fileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file").length, [flatFiles]);
 
   async function applyResponse<T extends WorkbenchState>(responsePromise: Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
     const response = await responsePromise;
@@ -175,7 +222,7 @@ function App() {
       setNotice("浏览器预览不会写入本地文件；请用桌面应用发送。");
       return;
     }
-    await applyResponse(bridge.appendMessage(message));
+    await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: "local-workflow" }));
     setMessage("");
   }
 
@@ -273,7 +320,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 2"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 4"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -282,13 +329,13 @@ function App() {
         </div>
       </header>
 
-      <section className="workspace">
+      <section className={`workspace ${filesPanelVisible ? "" : "files-collapsed"}`}>
         <aside className="sidebar">
           <div className="primary-nav">
             <button onClick={createCase} title="创建一个新的本地案件文件夹"><PenLine size={18} />新案件</button>
             <button title="当前只搜索本地项目、案件和文件名"><Search size={18} />搜索</button>
             <button className={activeView === "config" ? "active" : ""} onClick={() => setActiveView("config")} title="保存当前项目的非密钥配置草稿"><Settings size={18} />配置中心</button>
-            <button title="Phase 2 暂不编辑真实规范"><BookOpen size={18} />规范中心</button>
+            <button title="Phase 4 暂不编辑真实规范"><BookOpen size={18} />规范中心</button>
             <button title="候选知识后续人工确认入库"><Archive size={18} />知识库</button>
           </div>
 
@@ -313,7 +360,7 @@ function App() {
           <div className="project-header">
             <span>项目</span>
             <button onClick={createProject} title="创建本地演示项目，不连接真实 SAP"><Plus size={16} />添加演示项目</button>
-            <button aria-label="项目更多" title="Phase 2 暂无更多项目动作"><ChevronDown size={16} /></button>
+            <button aria-label="项目更多" title="Phase 4 暂无更多项目动作"><ChevronDown size={16} /></button>
           </div>
 
           <div className="project-list">
@@ -347,7 +394,7 @@ function App() {
               <strong>演示用户</strong>
               <span>本地个人版</span>
             </div>
-            <button aria-label="编辑个人信息" className="icon-button" title="Phase 2 暂不编辑个人信息"><PenLine size={15} /></button>
+            <button aria-label="编辑个人信息" className="icon-button" title="Phase 4 暂不编辑个人信息"><PenLine size={15} /></button>
           </footer>
         </aside>
 
@@ -361,7 +408,10 @@ function App() {
               <h1>{currentCase?.title ?? "本地演示案件"}</h1>
               <p>{project ? `${project.name} · ${project.systemLabel} · 本地演示` : "请创建本地演示项目"}</p>
             </div>
-            <button aria-label="当前案件帮助" title="案件=对话+文件夹+可追溯成果" className="icon-button"><HelpCircle size={18} /></button>
+            <div className="case-heading-actions">
+              {!filesPanelVisible ? <button aria-label="显示文件面板" title="显示当前案件文件" className="icon-button" onClick={() => setFilesPanelVisible(true)}><PanelLeft size={18} /></button> : null}
+              <button aria-label="当前案件帮助" title="案件=对话+文件夹+可追溯成果" className="icon-button"><HelpCircle size={18} /></button>
+            </div>
           </div>
 
           <div className="phase-notice">
@@ -371,7 +421,7 @@ function App() {
 
           <div className="conversation-flow">
             {(currentCase?.messages ?? []).map((item) => (
-              <MessageBubble message={item} key={item.id} />
+              <MessageBubble message={item} files={flatFiles} key={item.id} />
             ))}
 
             {state?.activeCaseFiles.length ? (
@@ -379,7 +429,7 @@ function App() {
                 <div className="run-time">本地文件树已读取 &gt;</div>
                 <p>当前案件目录已经生成，右侧文件面板来自真实本地目录。</p>
                 <div className="file-chips">
-                  {flattenFiles(state.activeCaseFiles).filter((node) => node.kind === "file").slice(0, 3).map((node) => {
+                  {flatFiles.filter((node) => node.kind === "file").slice(0, 3).map((node) => {
                     const Icon = fileIcon(node);
                     return (
                       <a href={`#${node.relativePath}`} key={node.relativePath}>
@@ -397,41 +447,43 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={index === 0 ? "selected" : ""} type="button" key={mode} title="Phase 2 仍仅保存本地案件对话">
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 4 会按该模式生成本地案件文件" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
-                  {mode}
+                  {mode.label}
                 </button>
               ))}
             </div>
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder="继续追问；Phase 2 会保存到当前案件 conversation.md" />
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 2 未接入真实模型" disabled>本地演示 · 未接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 4 仍不调用真实模型">本地工作流 · 不接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
-                <button type="button" aria-label="添加附件暂不可用" title="Phase 2 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
-                <button type="button" aria-label="语音输入暂不可用" title="Phase 2 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
+                <button type="button" aria-label="添加附件暂不可用" title="Phase 4 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
+                <button type="button" aria-label="语音输入暂不可用" title="Phase 4 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
                 <button type="submit" aria-label="保存到当前案件" className="send-button"><Send size={18} /></button>
               </div>
             </div>
           </form>
         </section>
 
-        <aside className="files-panel">
+        {filesPanelVisible ? <aside className="files-panel">
           <div className="files-heading">
             <h2>当前案件文件</h2>
-            <button aria-label="隐藏文件面板" title="只隐藏显示，不影响文件保存" className="icon-button"><PanelLeft size={17} /></button>
+            <button aria-label="隐藏文件面板" title="只隐藏显示，不影响文件保存" className="icon-button" onClick={() => setFilesPanelVisible(false)}><PanelLeft size={17} /></button>
           </div>
           <label className="file-search">
             <Search size={16} />
-            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索当前案件文件名" />
+            <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索当前案件文件名" />
           </label>
           <div className="file-tree">
-            {state?.activeCaseFiles.length ? <FileRows nodes={state.activeCaseFiles} /> : <div className="empty-state">请在桌面应用中创建本地演示案件。</div>}
+            {state?.activeCaseFiles.length ? (
+              filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} /> : <div className="empty-state">没有匹配的当前案件文件。</div>
+            ) : <div className="empty-state">请在桌面应用中创建本地演示案件。</div>}
           </div>
           <div className="files-footer">
-            <span>{fileCount} 个文件</span>
+            <span>{fileSearchQuery.trim() ? `${filteredFileCount} / ${fileCount} 个文件` : `${fileCount} 个文件`}</span>
             <span><ShieldCheck size={15} />本地演示数据</span>
           </div>
-        </aside>
+        </aside> : null}
         </>
         )}
       </section>

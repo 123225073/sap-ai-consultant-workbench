@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, CaseFileNode, FeishuVerificationResult, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseWorkflowInput, FeishuVerificationResult, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -11,7 +11,7 @@ interface WorkbenchBridge {
   getState: () => Promise<WorkbenchResponse<WorkbenchState>>;
   createDemoProject: () => Promise<WorkbenchResponse<WorkbenchState>>;
   createDemoCase: () => Promise<WorkbenchResponse<WorkbenchState>>;
-  appendMessage: (content: string) => Promise<WorkbenchResponse<WorkbenchState>>;
+  appendMessage: (input: CaseWorkflowInput | string) => Promise<WorkbenchResponse<WorkbenchState>>;
   getCaseFiles: () => Promise<WorkbenchResponse<CaseFileNode[]>>;
   search: (query: string) => Promise<WorkbenchResponse<SearchResult[]>>;
   saveProjectConfig: (projectId: string, config: ProjectConfig) => Promise<WorkbenchResponse<WorkbenchState>>;

@@ -3,6 +3,8 @@ export type ConfigStatus = "not-configured" | "saved" | "pending-verification" |
 export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-token";
 export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "failed" | "needs-rotation";
 export type SecretStoreKind = "electron-safe-storage";
+export type TaskMode = "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
+export type CaseGeneratedFilePurpose = "output" | "candidate_knowledge" | "technical" | "evidence" | "snapshot";
 export type AdtVerificationStepId = "config" | "status" | "t000";
 export type AdtVerificationStepStatus = "passed" | "failed" | "skipped";
 export type AdtVerificationErrorCode =
@@ -260,12 +262,24 @@ export interface ProjectConfig {
   localStorage: LocalStorageConfig;
 }
 
+export interface CaseWorkflowInput {
+  content: string;
+  taskMode: TaskMode;
+  modelId: string;
+}
+
+export interface CaseGeneratedFile {
+  relativePath: string;
+  purpose: CaseGeneratedFilePurpose;
+  content: string;
+}
+
 export interface CaseMessage {
   id: string;
   caseId: string;
   role: "user" | "assistant";
   content: string;
-  taskMode: "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
+  taskMode: TaskMode;
   modelId: string;
   linkedFileIds: string[];
   createdAt: string;

@@ -392,7 +392,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
   ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
   ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
-  ipcMain.handle("workbench:append-message", (_event, content: string) => response(store.appendMessage(content)));
+  ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(store.appendMessage(input)));
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));

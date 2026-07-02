@@ -98,6 +98,21 @@ if ($hits.Count -gt 0) {
   throw "High-confidence secret scan found possible secrets. Review before committing."
 }
 
+Write-Section "Runtime local data secret scan"
+if (Test-Path "local-data/workbench") {
+  $runtimePatterns = "secure-store:sec_|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|tenant_access_token|user_access_token|Authorization|Cookie|SAP_SESSIONID|MYSAPSSO2|password\s*[:=]|api[_-]?key\s*[:=]|token\s*[:=]"
+  $runtimeHits = rg -n --no-ignore --hidden --glob "*.{md,json}" --glob "!**/secure-store/**" -- $runtimePatterns local-data/workbench
+  if ($LASTEXITCODE -eq 0) {
+    $runtimeHits | ForEach-Object { Write-Host $_ }
+    throw "Runtime local-data contains possible secrets or auth artifacts."
+  } elseif ($LASTEXITCODE -gt 1) {
+    throw "Runtime local data secret scan failed."
+  }
+  Write-Host "OK runtime local data scan."
+} else {
+  Write-Host "Skipped: local-data/workbench does not exist."
+}
+
 Write-Section "IPC whitelist"
 $allowedIpc = @(
   "workbench:get-state",
@@ -175,6 +190,24 @@ if ($LASTEXITCODE -eq 0) {
   throw "Raw connector output or session field found."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Raw connector output scan failed."
+}
+
+Write-Section "Case workflow safety scan"
+$caseWorkflowMarkers = rg -n -- "assertNoSensitiveCaseContent|generatedFileTarget|local-workflow|safeContentSummary" apps/desktop/src/main apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0 -and $caseWorkflowMarkers.Count -ge 4) {
+  Write-Host "OK case workflow safety markers found."
+} elseif ($LASTEXITCODE -eq 1) {
+  throw "Case workflow safety markers are missing."
+} else {
+  throw "Case workflow safety marker scan failed."
+}
+
+$unsafeCaseWorkflowHits = rg -n -- "path\.join\(caseRoot,\s*file\.relativePath|modelId:\s*text\(candidate\.modelId|：\$\{message\.content|用户输入：\$\{input\.content|\$\{input\.content\}" apps/desktop/src/main
+if ($LASTEXITCODE -eq 0) {
+  $unsafeCaseWorkflowHits | ForEach-Object { Write-Host $_ }
+  throw "Case workflow may copy raw input or write generated files without path guard."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Case workflow unsafe pattern scan failed."
 }
 
 Write-Section "Feishu auth artifact scan"

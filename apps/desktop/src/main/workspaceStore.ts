@@ -1,7 +1,16 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {
+  assertNoSensitiveCaseContent,
+  buildAssistantContent,
+  buildCaseMaintenanceArtifacts,
+  buildCaseWorkflowArtifacts,
+  createCaseMessage,
+  parseCaseWorkflowInput,
+  type CaseWorkflowArtifacts
+} from "./caseWorkflowService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -24,19 +33,6 @@ const directories = [
 
 function nowIso(): string {
   return new Date().toISOString();
-}
-
-function createMessage(role: CaseMessage["role"], content: string): CaseMessage {
-  return {
-    id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    caseId: DEMO_CASE_ID,
-    role,
-    content,
-    taskMode: "problem-analysis",
-    modelId: "demo-model",
-    linkedFileIds: [],
-    createdAt: nowIso()
-  };
 }
 
 function demoCase(): CaseSummary {
@@ -319,18 +315,37 @@ export class WorkspaceStore {
     return this.withFiles(state);
   }
 
-  async appendMessage(content: string): Promise<WorkbenchState> {
-    const trimmed = content.trim();
-    if (!trimmed) {
+  async appendMessage(input: unknown): Promise<WorkbenchState> {
+    const workflowInput = parseCaseWorkflowInput(input);
+    if (!workflowInput.content) {
       throw new Error("请输入案件问题或补充说明。");
     }
+    assertNoSensitiveCaseContent(workflowInput.content);
+
     const state = await this.loadOrCreateState();
     const currentCase = this.getActiveCase(state);
-    currentCase.messages.push(createMessage("user", trimmed));
+    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, workflowInput).generatedFiles;
+    const userMessage = createCaseMessage("user", currentCase.id, workflowInput.content, workflowInput.taskMode, workflowInput.modelId);
+    const assistantMessage = createCaseMessage(
+      "assistant",
+      currentCase.id,
+      buildAssistantContent(workflowInput, previewFiles),
+      workflowInput.taskMode,
+      "local-workflow",
+      previewFiles.map((file) => file.relativePath)
+    );
+
+    currentCase.messages.push(userMessage, assistantMessage);
+    currentCase.currentSummary = `已按「${workflowInput.taskMode === "abap-development" ? "ABAP 开发" : workflowInput.taskMode === "document-generation" ? "文档生成" : workflowInput.taskMode === "flow-diagram" ? "画流程图" : "问题分析"}」模式处理最新输入，并生成 ${previewFiles.length} 个本地案件文件。`;
+    currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
     currentCase.lastOpenedAt = nowIso();
+    const artifacts = buildCaseWorkflowArtifacts(project, currentCase, workflowInput);
+    currentCase.currentSummary = artifacts.currentSummary;
+    currentCase.summary = artifacts.currentSummary;
     await this.saveState(state);
-    await this.writeCaseMarkdown(state, currentCase);
+    await this.writeCaseMarkdown(state, currentCase, artifacts);
     return this.withFiles(state);
   }
 
@@ -773,81 +788,62 @@ export class WorkspaceStore {
     return resolvedTarget;
   }
 
+  private generatedFileTarget(caseRoot: string, file: CaseGeneratedFile): string {
+    const normalizedRelative = file.relativePath.replaceAll("\\", "/");
+    if (
+      normalizedRelative.startsWith("/") ||
+      /^[a-zA-Z]:\//.test(normalizedRelative) ||
+      normalizedRelative.split("/").some((part) => part === ".." || part.length === 0)
+    ) {
+      throw new Error("生成文件路径无效，已阻止写入当前案件目录之外。");
+    }
+
+    const allowedByPurpose: Record<CaseGeneratedFile["purpose"], string[]> = {
+      output: ["outputs/"],
+      candidate_knowledge: ["knowledge_candidates/"],
+      technical: ["technical/"],
+      evidence: ["evidence/"],
+      snapshot: ["snapshots/"]
+    };
+    if (!allowedByPurpose[file.purpose].some((prefix) => normalizedRelative.startsWith(prefix))) {
+      throw new Error("生成文件目录和文件用途不匹配，已阻止写入。");
+    }
+
+    const resolvedCaseRoot = path.resolve(caseRoot);
+    const resolvedTarget = this.assertInsideWorkspace(path.join(caseRoot, normalizedRelative));
+    if (resolvedTarget !== resolvedCaseRoot && !resolvedTarget.startsWith(`${resolvedCaseRoot}${path.sep}`)) {
+      throw new Error("生成文件路径超出当前案件目录，已阻止。");
+    }
+    return resolvedTarget;
+  }
+
   private async ensureCaseFiles(state: StoredState): Promise<void> {
     const caseRoot = this.caseRoot(state);
     for (const directory of directories) {
       await fs.mkdir(this.assertInsideWorkspace(path.join(caseRoot, directory)), { recursive: true });
     }
-    await this.writeCaseMarkdown(state, this.getActiveCase(state));
+    const requiredFiles = ["README.md", "conversation.md", "timeline.md", "context_pack.md", "metadata.json"];
+    const missingRequired = await Promise.all(requiredFiles.map(async (file) => {
+      try {
+        await fs.access(this.assertInsideWorkspace(path.join(caseRoot, file)));
+        return false;
+      } catch {
+        return true;
+      }
+    }));
+    if (missingRequired.some(Boolean)) {
+      const caseItem = this.getActiveCase(state);
+      const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+      await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem));
+    }
   }
 
-  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary): Promise<void> {
+  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
     const caseRoot = this.caseRoot(state);
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
     await fs.mkdir(caseRoot, { recursive: true });
     const projectRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id));
     await fs.mkdir(projectRoot, { recursive: true });
-
-    const readme = `# ${caseItem.title}
-
-## 当前结论
-
-${caseItem.currentSummary}
-
-## 项目
-
-- 项目：${project.name}
-- 系统标签：${project.systemLabel}
-- 模式：本地演示，只读占位
-
-## 交付物
-
-- outputs/演示BOM核对.md
-- outputs/逻辑说明图.mmd
-- outputs/开发说明书.md
-
-## 知识沉淀
-
-- knowledge_candidates/演示BOM筛选规则.md
-`;
-
-    const conversation = caseItem.messages
-      .map((message) => `## ${message.role === "user" ? "用户" : "AI"} · ${message.createdAt}\n\n${message.content}\n`)
-      .join("\n");
-
-    const timeline = `# 时间线
-
-- ${caseItem.updatedAt}：更新案件本地状态。
-- ${nowIso()}：刷新本地案件文件。
-`;
-
-    const contextPack = `# 上下文恢复包
-
-## 当前案件目标
-
-分析演示BOM清单中部分工厂没有数据的原因。
-
-## 已确认事实
-
-- 当前阶段只使用演示数据。
-- SAP、飞书和模型 API 尚未接入。
-- 文件均保存到当前案件目录。
-
-## 待办
-
-- Phase 2 验证配置中心草稿保存。
-`;
-
-    const metadata = {
-      schemaVersion: SCHEMA_VERSION,
-      caseId: caseItem.id,
-      projectId: project.id,
-      title: caseItem.title,
-      status: caseItem.status,
-      updatedAt: caseItem.updatedAt,
-      phase: "Phase 2",
-      safety: "demo-only-readonly-placeholder"
-    };
     const projectJson = {
       schemaVersion: SCHEMA_VERSION,
       id: project.id,
@@ -860,19 +856,21 @@ ${caseItem.currentSummary}
       config: project.config,
       safety: "no-secrets-demo-project"
     };
+    const generatedWrites = artifacts.generatedFiles.map(async (file) => {
+      const target = this.generatedFileTarget(caseRoot, file);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, file.content, "utf8");
+    });
 
     await Promise.all([
       this.writeJsonAtomic(path.join(projectRoot, "project.json"), projectJson),
       this.writeJsonAtomic(path.join(caseRoot, "messages.json"), caseItem.messages),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "README.md")), readme, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "conversation.md")), conversation, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "timeline.md")), timeline, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "context_pack.md")), contextPack, "utf8"),
-      this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), metadata),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "演示BOM核对.md")), "# 演示BOM核对\n\n这是本地演示交付物，不包含真实 SAP 数据。\n", "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "逻辑说明图.mmd")), "flowchart TD\n  A[演示输入] --> B[筛选口径]\n  B --> C[输出核对结论]\n", "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "outputs", "开发说明书.md")), "# 开发说明书\n\nPhase 2 仅生成本地演示文档和配置草稿，不写 SAP。\n", "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "knowledge_candidates", "演示BOM筛选规则.md")), "# 演示BOM筛选规则\n\n状态：待确认。\n\n候选知识必须人工确认后才能正式入库。\n", "utf8")
+      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "README.md")), artifacts.readme, "utf8"),
+      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "conversation.md")), artifacts.conversation, "utf8"),
+      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "timeline.md")), artifacts.timeline, "utf8"),
+      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "context_pack.md")), artifacts.contextPack, "utf8"),
+      this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), artifacts.metadata),
+      ...generatedWrites
     ]);
   }
 
