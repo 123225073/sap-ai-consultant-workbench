@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -427,6 +427,24 @@ export class WorkspaceStore {
     project.config.adt.connectionStatus = report.connectionStatus;
     project.config.adt.minimalReadStatus = report.minimalReadStatus;
     project.config.adt.lastCheckedAt = report.checkedAt;
+    project.config.updatedAt = nowIso();
+    project.updatedAt = nowIso();
+
+    await this.saveState(state);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async updateFeishuVerification(projectId: string, report: FeishuVerificationReport): Promise<WorkbenchState> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存飞书验证结果。");
+    }
+
+    project.config.feishu.authStatus = report.authStatus;
+    project.config.feishu.docPermissionStatus = report.docPermissionStatus;
+    project.config.feishu.lastCheckedAt = report.checkedAt;
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
 

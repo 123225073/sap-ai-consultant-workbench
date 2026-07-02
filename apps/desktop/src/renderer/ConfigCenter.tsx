@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, Database, KeyRound, Lock, PlugZap, Save, ShieldCheck, Terminal, Workflow } from "lucide-react";
-import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, FeishuVerificationReport, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle } from "../shared/workbenchTypes";
 
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
@@ -23,6 +23,26 @@ function statusTone(status: ConfigStatus): "neutral" | "blue" | "orange" | "gree
 
 function ConfigStatusPill({ status }: { status: ConfigStatus }) {
   return <span className={`status-pill status-${statusTone(status)}`}>{statusLabels[status]}</span>;
+}
+
+function FeishuStatusPill({ status, kind }: { status: ConfigStatus; kind: "auth" | "docs" }) {
+  const labels: Record<"auth" | "docs", Record<ConfigStatus, string>> = {
+    auth: {
+      "not-configured": "未配置",
+      saved: "配置草稿",
+      "pending-verification": "待登录验证",
+      verified: "登录已验证",
+      failed: "登录未通过"
+    },
+    docs: {
+      "not-configured": "未配置",
+      saved: "配置草稿",
+      "pending-verification": "待权限验证",
+      verified: "权限未发现缺失",
+      failed: "权限需检查"
+    }
+  };
+  return <span className={`status-pill status-${statusTone(status)}`}>{labels[kind][status]}</span>;
 }
 
 function ModelStatusPill({ status }: { status: ConfigStatus }) {
@@ -184,6 +204,88 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
   );
 }
 
+function FeishuVerificationReportView({ config, report, hasUnsavedDraft }: { config: ProjectConfig; report: FeishuVerificationReport | null; hasUnsavedDraft: boolean }) {
+  const authStatus = report?.authStatus ?? config.feishu.authStatus;
+  const docPermissionStatus = report?.docPermissionStatus ?? config.feishu.docPermissionStatus;
+  const steps = report?.steps ?? [
+    {
+      id: "cli" as const,
+      title: "CLI 检测",
+      status: authStatus === "verified" || docPermissionStatus === "verified" ? "passed" as const : "skipped" as const,
+      detail: "检查 lark-cli / feishu-cli 是否可执行，不读取授权值。",
+      checkedAt: config.feishu.lastCheckedAt ?? ""
+    },
+    {
+      id: "auth" as const,
+      title: "登录状态",
+      status: stepStatusFromConfig(authStatus),
+      detail: "验证当前 Profile 是否已登录，不启动新的授权流程。",
+      checkedAt: config.feishu.lastCheckedAt ?? ""
+    },
+    {
+      id: "docs" as const,
+      title: "文档权限",
+      status: stepStatusFromConfig(docPermissionStatus),
+      detail: "只判断是否发现缺少文档权限，本阶段不创建或更新真实文档。",
+      checkedAt: config.feishu.lastCheckedAt ?? ""
+    }
+  ];
+  const firstError = report?.errors[0];
+  const conclusion = report
+    ? (report.ok ? "CLI、登录和文档权限未发现问题；尚未创建或发布文档。" : "未通过，不能用于后续飞书文档流程。")
+    : hasUnsavedDraft
+      ? "飞书配置已修改，保存后需要重新验证。"
+      : "本页尚未重新验证；上次结果见上方状态。";
+
+  return (
+    <div className="adt-verification-report">
+      <div className="verification-steps">
+        {steps.map((item) => (
+          <div className={`verification-step step-${item.status}`} key={item.id}>
+            <span>{item.title}</span>
+            <strong>{stepLabel(item.status)}</strong>
+            <small>{item.detail}</small>
+          </div>
+        ))}
+      </div>
+
+      <dl className="verification-details">
+        <div>
+          <dt>CLI</dt>
+          <dd>{report?.cli.cliName || config.feishu.cliPath || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>Profile</dt>
+          <dd>{report?.cli.profile || config.feishu.profile || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>登录状态</dt>
+          <dd>{authStatus === "verified" ? "登录已验证" : authStatus === "failed" ? "登录未通过" : "待验证"}</dd>
+        </div>
+        <div>
+          <dt>文档权限</dt>
+          <dd>{docPermissionStatus === "verified" ? "未发现缺失权限" : docPermissionStatus === "failed" ? "权限不足或不可判断" : "待验证"}</dd>
+        </div>
+        <div>
+          <dt>最后验证时间</dt>
+          <dd>{formatCheckedAt(report?.checkedAt ?? config.feishu.lastCheckedAt)}</dd>
+        </div>
+        <div>
+          <dt>验证结论</dt>
+          <dd>{conclusion}</dd>
+        </div>
+      </dl>
+
+      {firstError ? (
+        <div className="verification-error">
+          <strong>{firstError.message}</strong>
+          <span>{firstError.suggestion}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ModelProviderReportView({ provider, report }: { provider: ApiProviderConfig; report: ModelProviderVerificationReport | null }) {
   const steps = report?.steps ?? [
     {
@@ -283,16 +385,19 @@ interface ConfigCenterProps {
   onSave: (projectId: string, config: ProjectConfig) => Promise<void>;
   onSaveSecret: (projectId: string, input: ProjectSecretInput) => Promise<boolean>;
   onVerifyAdt: (projectId: string) => Promise<AdtVerificationReport | null>;
+  onVerifyFeishu: (projectId: string) => Promise<FeishuVerificationReport | null>;
   onVerifyModelProvider: (projectId: string, providerId: string) => Promise<ModelProviderVerificationReport | null>;
 }
 
-function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyAdt, onVerifyModelProvider }: ConfigCenterProps) {
+function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyAdt, onVerifyFeishu, onVerifyModelProvider }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
   const [adtEntry, setAdtEntry] = useState("");
   const [apiEntry, setApiEntry] = useState("");
   const [adtReport, setAdtReport] = useState<AdtVerificationReport | null>(null);
+  const [feishuReport, setFeishuReport] = useState<FeishuVerificationReport | null>(null);
   const [modelReport, setModelReport] = useState<ModelProviderVerificationReport | null>(null);
   const [verifyingAdt, setVerifyingAdt] = useState(false);
+  const [verifyingFeishu, setVerifyingFeishu] = useState(false);
   const [verifyingModel, setVerifyingModel] = useState(false);
 
   useEffect(() => {
@@ -303,6 +408,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
 
   useEffect(() => {
     setAdtReport(null);
+    setFeishuReport(null);
     setModelReport(null);
   }, [project?.id]);
 
@@ -324,6 +430,18 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
 
   const provider = firstProvider(draft);
   const hasUnsavedConfig = JSON.stringify(draft) !== JSON.stringify(project.config);
+  const hasUnsavedFeishuConfig = draft.feishu.cliPath !== project.config.feishu.cliPath || draft.feishu.profile !== project.config.feishu.profile;
+  const visibleFeishuConfig: ProjectConfig = hasUnsavedFeishuConfig
+    ? {
+        ...draft,
+        feishu: {
+          ...draft.feishu,
+          authStatus: "pending-verification",
+          docPermissionStatus: "pending-verification",
+          lastCheckedAt: null
+        }
+      }
+    : draft;
 
   function saveDraft() {
     if (draft && project) void onSave(project.id, draft);
@@ -339,6 +457,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
   }
 
   function updateFeishu(field: keyof ProjectConfig["feishu"], value: string) {
+    setFeishuReport(null);
     updateDraft((current) => ({ ...current, feishu: { ...current.feishu, [field]: value } }));
   }
 
@@ -376,6 +495,17 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
     if (!project || !apiEntry) return;
     const saved = await onSaveSecret(project.id, { target: { kind: "api-key", providerId: provider.id }, value: apiEntry });
     if (saved) setApiEntry("");
+  }
+
+  async function verifyFeishu() {
+    if (!project || verifyingFeishu || hasUnsavedConfig) return;
+    setVerifyingFeishu(true);
+    try {
+      const report = await onVerifyFeishu(project.id);
+      if (report) setFeishuReport(report);
+    } finally {
+      setVerifyingFeishu(false);
+    }
   }
 
   async function verifyModelProvider() {
@@ -526,17 +656,23 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
             </label>
             <label>
               <span>授权状态</span>
-              <div className="readonly-row"><ConfigStatusPill status={draft.feishu.authStatus} /></div>
+              <div className="readonly-row"><FeishuStatusPill status={visibleFeishuConfig.feishu.authStatus} kind="auth" /></div>
             </label>
             <label>
               <span>文档权限</span>
-              <div className="readonly-row"><ConfigStatusPill status={draft.feishu.docPermissionStatus} /></div>
+              <div className="readonly-row"><FeishuStatusPill status={visibleFeishuConfig.feishu.docPermissionStatus} kind="docs" /></div>
+            </label>
+            <label>
+              <span>最后验证时间</span>
+              <input value={hasUnsavedFeishuConfig ? "未保存，需保存后重新验证" : formatCheckedAt(draft.feishu.lastCheckedAt)} readOnly />
             </label>
           </div>
+          {hasUnsavedFeishuConfig ? <p className="inline-warning">飞书 CLI 或 Profile 有未保存改动；保存后需要重新验证。</p> : null}
           <div className="config-actions">
             <button onClick={saveDraft}><Save size={16} />保存非密钥草稿</button>
-            <button disabled title={disabledReason("验证飞书授权")}><Terminal size={16} />验证飞书</button>
+            <button onClick={() => void verifyFeishu()} disabled={verifyingFeishu || hasUnsavedConfig} title={hasUnsavedConfig ? "请先保存非密钥草稿；验证只读取已保存飞书配置" : "检测 CLI、登录状态和文档权限，不创建文档"}><Terminal size={16} />{verifyingFeishu ? "验证中" : hasUnsavedConfig ? "先保存再验证" : "验证飞书 CLI"}</button>
           </div>
+          <FeishuVerificationReportView config={visibleFeishuConfig} report={feishuReport} hasUnsavedDraft={hasUnsavedFeishuConfig} />
         </section>
 
         <section className="config-section">

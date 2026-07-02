@@ -22,7 +22,7 @@ import {
   Sparkles
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, FeishuVerificationReport, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes = ["问题分析", "ABAP开发", "文档生成", "画流程图"];
 
@@ -224,6 +224,22 @@ function App() {
     return null;
   }
 
+  async function verifyFeishuCli(projectId: string): Promise<FeishuVerificationReport | null> {
+    if (!bridge) {
+      setNotice("请在桌面应用中验证飞书 CLI。");
+      return null;
+    }
+    const response = await bridge.verifyFeishuCli(projectId);
+    if (response.ok) {
+      setState(response.data.state);
+      const firstError = response.data.report.errors[0];
+      setNotice(response.data.report.ok ? "飞书 CLI 验证通过：仅代表 CLI、登录和权限状态可用，尚未创建或发布文档。" : `飞书 CLI 验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
+      return response.data.report;
+    }
+    setNotice(response.error);
+    return null;
+  }
+
   async function verifyModelProvider(projectId: string, providerId: string): Promise<ModelProviderVerificationReport | null> {
     if (!bridge) {
       setNotice("请在桌面应用中验证模型渠道。");
@@ -336,7 +352,7 @@ function App() {
         </aside>
 
         {activeView === "config" ? (
-          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} onSaveSecret={saveProjectSecret} onVerifyAdt={verifyAdtReadonly} onVerifyModelProvider={verifyModelProvider} />
+          <ConfigCenter project={project} notice={notice} onBack={() => setActiveView("case")} onSave={saveProjectConfig} onSaveSecret={saveProjectSecret} onVerifyAdt={verifyAdtReadonly} onVerifyFeishu={verifyFeishuCli} onVerifyModelProvider={verifyModelProvider} />
         ) : (
         <>
         <section className="conversation-panel">

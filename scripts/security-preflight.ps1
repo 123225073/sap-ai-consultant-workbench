@@ -109,6 +109,7 @@ $allowedIpc = @(
   "workbench:save-project-config",
   "workbench:save-project-secret",
   "workbench:adt-verify-readonly",
+  "workbench:feishu-verify-cli",
   "workbench:model-provider-verify"
 )
 
@@ -174,6 +175,52 @@ if ($LASTEXITCODE -eq 0) {
   throw "Raw connector output or session field found."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Raw connector output scan failed."
+}
+
+Write-Section "Feishu auth artifact scan"
+$feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $feishuAuthHits) {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Feishu auth artifact pattern outside main-process error redaction."
+    }
+    Write-Host "OK Feishu redaction marker: $line"
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Feishu auth artifact scan failed."
+}
+
+Write-Section "Child process boundary scan"
+$childProcessHits = rg -n -- "execFile\(|spawn\(|exec\(" apps/desktop/src/main
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $childProcessHits) {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]feishuCliConnector\.ts") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Child process execution outside approved Feishu connector."
+    }
+    Write-Host "OK child process boundary: $line"
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Child process boundary scan failed."
+}
+
+Write-Section "Feishu fixed CLI command scan"
+$fixedCliMarkers = rg -n -- "REAL_FEISHU_CLI_COMMANDS|toFixedCliCommand|execFile\(cliCommand" apps/desktop/src/main/feishuCliConnector.ts
+if ($LASTEXITCODE -eq 0 -and $fixedCliMarkers.Count -ge 3) {
+  Write-Host "OK Feishu connector uses fixed CLI command markers."
+} elseif ($LASTEXITCODE -eq 1) {
+  throw "Feishu connector is missing fixed CLI command markers."
+} else {
+  throw "Feishu fixed CLI command marker scan failed."
+}
+
+$unsafeFeishuCliHits = rg -n -- "execFile\((input|config|.*Path)|runFixedCli\(input\.cliPath|runFixedCli\(config\.cliPath|function runFixedCli\(cliPath|allowedCliNames|cliBaseName" apps/desktop/src/main
+if ($LASTEXITCODE -eq 0) {
+  $unsafeFeishuCliHits | ForEach-Object { Write-Host $_ }
+  throw "Feishu CLI execution must not use configured paths or basename-only allowlists."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Feishu unsafe CLI execution scan failed."
 }
 
 Write-Section "Generic proxy IPC scan"

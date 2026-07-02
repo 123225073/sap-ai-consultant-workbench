@@ -1,10 +1,11 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
 import { createAdtReadonlyConnector, createAdtValidationFailureReport, type AdtConnectorInput } from "./adtReadonlyConnector";
+import { createFeishuCliConnector, createFeishuValidationFailureReport, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
-import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -13,7 +14,11 @@ const SENSITIVE_ERROR_PATTERNS = [
   /x-csrf-token:\s*[^\s]+/gi,
   /secure-store:sec_[a-f0-9]{32}/gi,
   /sk-[a-z0-9]{20,}/gi,
-  /api[_-]?key\s*[:=]\s*[^\s]+/gi
+  /api[_-]?key\s*[:=]\s*[^\s]+/gi,
+  /tenant[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+  /user[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+  /verification_uri\s*[:=]\s*[^\s]+/gi,
+  /device_code\s*[:=]\s*[^\s]+/gi
 ];
 
 function safeErrorMessage(error: unknown): string {
@@ -44,6 +49,17 @@ function adtInputWithoutPassword(config: ProjectConfig): Omit<AdtConnectorInput,
 
 function adtValidationFailure(config: ProjectConfig, code: AdtVerificationErrorCode, message: string, suggestion: string) {
   return createAdtValidationFailureReport(adtInputWithoutPassword(config), code, message, suggestion);
+}
+
+function feishuInput(config: FeishuConfig): FeishuCliConnectorInput {
+  return {
+    cliPath: config.cliPath,
+    profile: config.profile
+  };
+}
+
+function feishuFailure(config: FeishuConfig, code: FeishuVerificationErrorCode, message: string, suggestion: string) {
+  return createFeishuValidationFailureReport(feishuInput(config), code, message, suggestion);
 }
 
 function modelProviderInputWithoutKey(provider: ApiProviderConfig): Omit<ModelProviderConnectorInput, "apiKey"> {
@@ -100,6 +116,63 @@ function isUnsafeModelHost(hostname: string): boolean {
     (a === 198 && (b === 18 || b === 19)) ||
     a >= 224
   );
+}
+
+function validateFeishuConfig(config: FeishuConfig): { ok: true } | { ok: false; code: FeishuVerificationErrorCode; message: string; suggestion: string } {
+  const missing = [
+    ["CLI 路径", config.cliPath],
+    ["Profile", config.profile]
+  ].filter(([, value]) => typeof value !== "string" || value.trim().length === 0).map(([label]) => label);
+
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: `飞书 CLI 配置不完整：${missing.join("、")} 还没有填写。`,
+      suggestion: "请先填写 CLI 路径和 Profile，并保存后再验证飞书 CLI。"
+    };
+  }
+
+  if (/[\u0000-\u001f\u007f]/.test(config.cliPath) || /^https?:\/\//i.test(config.cliPath.trim())) {
+    return {
+      ok: false,
+      code: "invalid-cli-path",
+      message: "飞书 CLI 路径格式不安全。",
+      suggestion: "请填写固定命令 lark-cli 或 feishu-cli，不要填写 URL、本地文件路径或带控制字符的内容。"
+    };
+  }
+
+  const cliCommand = config.cliPath.trim().toLowerCase();
+  const allowedRealCliCommands = new Set(["lark-cli", "lark-cli.exe", "feishu-cli", "feishu-cli.exe"]);
+  const fakeCliAllowed = process.env.WORKBENCH_ALLOW_FAKE_FEISHU_CLI === "1";
+  if (cliCommand === "fake-lark-cli" && !fakeCliAllowed) {
+    return {
+      ok: false,
+      code: "invalid-cli-path",
+      message: "演示飞书 CLI 只允许开发自测使用。",
+      suggestion: "请把 CLI 配置改为 lark-cli 或 feishu-cli；正式配置不会执行 fake-lark-cli。"
+    };
+  }
+
+  if (cliCommand !== "fake-lark-cli" && !allowedRealCliCommands.has(cliCommand)) {
+    return {
+      ok: false,
+      code: "invalid-cli-path",
+      message: "当前只允许验证固定的 lark-cli 或 feishu-cli 命令。",
+      suggestion: "请把 CLI 配置改为 lark-cli 或 feishu-cli；本功能不会执行任意本地路径或其他程序。"
+    };
+  }
+
+  if (!/^[A-Za-z0-9._-]{1,80}$/.test(config.profile.trim())) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: "飞书 Profile 名称格式不支持。",
+      suggestion: "请使用 1-80 位英文、数字、点、下划线或短横线作为 Profile 名称。"
+    };
+  }
+
+  return { ok: true };
 }
 
 function validateAdtConfig(config: ProjectConfig): { ok: true } | { ok: false; code: AdtVerificationErrorCode; message: string; suggestion: string } {
@@ -265,6 +338,24 @@ async function verifyAdtReadonly(store: WorkspaceStore, secretStore: SecureSecre
   return { report, state };
 }
 
+async function verifyFeishuCli(store: WorkspaceStore, projectId: unknown): Promise<FeishuVerificationResult> {
+  if (typeof projectId !== "string" || projectId.trim().length === 0) {
+    throw new Error("飞书 CLI 验证请求缺少项目 ID。");
+  }
+  const config = await store.getProjectConfig(projectId);
+  const configCheck = validateFeishuConfig(config.feishu);
+  if (!configCheck.ok) {
+    const report = feishuFailure(config.feishu, configCheck.code, configCheck.message, configCheck.suggestion);
+    const state = await store.updateFeishuVerification(projectId, report);
+    return { report, state };
+  }
+
+  const connector = createFeishuCliConnector(config.feishu);
+  const report = await connector.verify(feishuInput(config.feishu));
+  const state = await store.updateFeishuVerification(projectId, report);
+  return { report, state };
+}
+
 async function verifyModelProvider(store: WorkspaceStore, secretStore: SecureSecretStore, projectId: unknown, providerId: unknown): Promise<ModelProviderVerificationResult> {
   if (typeof projectId !== "string" || projectId.trim().length === 0 || typeof providerId !== "string" || providerId.trim().length === 0) {
     throw new Error("模型渠道验证请求缺少项目或渠道 ID。");
@@ -307,6 +398,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
   ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));
+  ipcMain.handle("workbench:feishu-verify-cli", (_event, projectId: unknown) => response(verifyFeishuCli(store, projectId)));
   ipcMain.handle("workbench:model-provider-verify", (_event, projectId: unknown, providerId: unknown) => response(verifyModelProvider(store, secretStore, projectId, providerId)));
 }
 

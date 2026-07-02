@@ -14,6 +14,16 @@ export type AdtVerificationErrorCode =
   | "status-failed"
   | "minimal-read-failed"
   | "unexpected-error";
+export type FeishuVerificationStepId = "cli" | "auth" | "docs";
+export type FeishuVerificationErrorCode =
+  | "missing-config"
+  | "invalid-cli-path"
+  | "cli-missing"
+  | "doctor-failed"
+  | "auth-failed"
+  | "missing-scope"
+  | "permission-unknown"
+  | "unexpected-error";
 export type ModelCapability = "vision" | "reasoning" | "tools" | "web" | "free" | "chat";
 export type ModelProviderVerificationStepId = "models" | "chat";
 export type ModelProviderVerificationErrorCode =
@@ -124,6 +134,41 @@ export interface FeishuConfig {
   authStatus: ConfigStatus;
   docPermissionStatus: ConfigStatus;
   lastCheckedAt: string | null;
+}
+
+export interface FeishuCliRedactedInfo {
+  cliName: string;
+  profile: string;
+}
+
+export interface FeishuVerificationError {
+  code: FeishuVerificationErrorCode;
+  message: string;
+  suggestion: string;
+}
+
+export interface FeishuVerificationStep {
+  id: FeishuVerificationStepId;
+  title: string;
+  status: AdtVerificationStepStatus;
+  detail: string;
+  checkedAt: string;
+}
+
+export interface FeishuVerificationReport {
+  ok: boolean;
+  checkedAt: string;
+  mode: "fake" | "cli";
+  cli: FeishuCliRedactedInfo;
+  steps: FeishuVerificationStep[];
+  authStatus: ConfigStatus;
+  docPermissionStatus: ConfigStatus;
+  errors: FeishuVerificationError[];
+}
+
+export interface FeishuVerificationResult {
+  report: FeishuVerificationReport;
+  state: WorkbenchState;
 }
 
 export interface ApiProviderConfig {
