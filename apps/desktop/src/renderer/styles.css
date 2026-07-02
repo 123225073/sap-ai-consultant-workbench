@@ -198,6 +198,23 @@ button {
   font-size: 13px;
 }
 
+.search-result-button {
+  width: 100%;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.search-result-button:hover b,
+.search-result-button:hover small {
+  color: #1d4ed8;
+}
+
 .search-result:first-of-type {
   border-top: 0;
 }

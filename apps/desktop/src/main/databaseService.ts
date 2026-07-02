@@ -30,9 +30,12 @@ export interface SearchDocumentRecord {
 interface SearchDocumentRow {
   id?: SqlValue;
   type?: SqlValue;
+  project_id?: SqlValue;
+  case_id?: SqlValue;
   title?: SqlValue;
   location?: SqlValue;
   snippet?: SqlValue;
+  source_path?: SqlValue;
 }
 
 const VIRTUAL_DB_PATH = "/workbench-app.db";
@@ -41,12 +44,20 @@ const MAX_INDEX_TEXT_LENGTH = 1200;
 const unsafeSearchPatterns = [
   /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i,
   /secure-store:sec_[a-f0-9]{32}/i,
-  /bearer\s+[a-z0-9._-]{12,}/i,
-  /authorization\s*[:=]/i,
-  /cookie\s*[:=]/i,
+  /bearer\s+[a-z0-9._~+/=-]{12,}/i,
+  /sk-(?:proj-)?[a-z0-9_-]{20,}/i,
+  /github_pat_[a-z0-9_]{20,}/i,
+  /ghp_[a-z0-9]{20,}/i,
+  /xox[baprs]-[a-z0-9-]{20,}/i,
+  /akia[0-9a-z]{16}/i,
+  /authorization\s*[:=]\s*[^\n\r]+/i,
+  /cookie\s*[:=]\s*[^\n\r]+/i,
   /sap_sessionid/i,
   /mysapsso2/i,
   /api[_-]?key\s*[:=]/i,
+  /client[_-]?secret\s*[:=]/i,
+  /access[_-]?key\s*[:=]/i,
+  /secret\s*[:=]/i,
   /password\s*[:=]/i,
   /token\s*[:=]/i,
   /\b(report|class|interface|function)\s+z[a-z0-9_]{2,}/i,
@@ -76,7 +87,6 @@ export class DatabaseService {
     await fs.mkdir(path.dirname(this.databasePath), { recursive: true });
     try {
       this.sqlite = await loadSqlite();
-      await this.importExistingDatabase();
       this.db = new this.sqlite.oo1.DB(VIRTUAL_DB_PATH, "cw");
       this.migrate();
       this.probeFts5();
@@ -134,7 +144,7 @@ export class DatabaseService {
     try {
       this.db.exec("BEGIN");
       transactionStarted = true;
-      this.db.exec("DELETE FROM search_documents_fts; DELETE FROM search_documents;");
+      this.recreateSearchIndexTables();
       const insertDocument = this.db.prepare(`
         INSERT INTO search_documents (
           rowid, id, type, project_id, case_id, title, location, snippet, source_path, status, updated_at
@@ -178,6 +188,7 @@ export class DatabaseService {
       }
       this.db.exec("COMMIT");
       transactionStarted = false;
+      this.db.exec("VACUUM");
       await this.persist();
     } catch (error) {
       if (transactionStarted) {
@@ -207,6 +218,7 @@ export class DatabaseService {
     const rows = this.db.exec({
       sql: `
         SELECT search_documents.id, search_documents.type, search_documents.title, search_documents.location, search_documents.snippet
+          , search_documents.project_id, search_documents.case_id, search_documents.source_path
         FROM search_documents_fts
         JOIN search_documents ON search_documents_fts.rowid = search_documents.rowid
         WHERE search_documents_fts MATCH ?
@@ -225,7 +237,10 @@ export class DatabaseService {
         type: row.type,
         title: row.title,
         location: row.location,
-        snippet: row.snippet
+        snippet: row.snippet,
+        projectId: typeof row.project_id === "string" ? row.project_id : undefined,
+        caseId: typeof row.case_id === "string" ? row.case_id : null,
+        sourcePath: typeof row.source_path === "string" ? row.source_path : null
       }];
     });
   }
@@ -235,17 +250,6 @@ export class DatabaseService {
       this.db.close();
     }
     this.db = null;
-  }
-
-  private async importExistingDatabase(): Promise<void> {
-    if (!this.sqlite) return;
-    try {
-      const bytes = await fs.readFile(this.databasePath);
-      this.sqlite.capi.sqlite3_js_posix_create_file(VIRTUAL_DB_PATH, bytes);
-    } catch (error) {
-      const code = typeof error === "object" && error && "code" in error ? (error as { code?: string }).code : "";
-      if (code !== "ENOENT") throw error;
-    }
   }
 
   private migrate(): void {
@@ -277,6 +281,8 @@ export class DatabaseService {
         content
       );
 
+      PRAGMA secure_delete = ON;
+
       CREATE INDEX IF NOT EXISTS idx_search_documents_type ON search_documents(type);
       CREATE INDEX IF NOT EXISTS idx_search_documents_project ON search_documents(project_id);
       CREATE INDEX IF NOT EXISTS idx_search_documents_case ON search_documents(case_id);
@@ -284,6 +290,38 @@ export class DatabaseService {
       INSERT INTO app_meta(key, value, updated_at)
       VALUES ('schema_version', '1', datetime('now'))
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+    `);
+  }
+
+  private recreateSearchIndexTables(): void {
+    this.assertOpen().exec(`
+      DROP TABLE IF EXISTS search_documents_fts;
+      DROP TABLE IF EXISTS search_documents;
+
+      CREATE TABLE search_documents (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL CHECK (type IN ('project', 'case', 'file', 'knowledge')),
+        project_id TEXT NOT NULL,
+        case_id TEXT,
+        title TEXT NOT NULL,
+        location TEXT NOT NULL,
+        snippet TEXT NOT NULL,
+        source_path TEXT,
+        status TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE VIRTUAL TABLE search_documents_fts USING fts5(
+        title,
+        location,
+        snippet,
+        source_path,
+        content
+      );
+
+      CREATE INDEX idx_search_documents_type ON search_documents(type);
+      CREATE INDEX idx_search_documents_project ON search_documents(project_id);
+      CREATE INDEX idx_search_documents_case ON search_documents(case_id);
     `);
   }
 
@@ -342,9 +380,14 @@ export class DatabaseService {
     const raw = error instanceof Error ? error.message : "SQLite database operation failed.";
     return raw
       .replace(/secure-store:sec_[a-f0-9]{32}/gi, "[secure-store-ref]")
-      .replace(/bearer\s+[a-z0-9._-]+/gi, "[authorization]")
-      .replace(/authorization\s*[:=]\s*[^\s]+/gi, "authorization=[redacted]")
-      .replace(/cookie\s*[:=]\s*[^\s]+/gi, "cookie=[redacted]");
+      .replace(/bearer\s+[a-z0-9._~+/=-]+/gi, "[authorization]")
+      .replace(/sk-(?:proj-)?[a-z0-9_-]{20,}/gi, "[api-key]")
+      .replace(/github_pat_[a-z0-9_]{20,}/gi, "[github-token]")
+      .replace(/ghp_[a-z0-9]{20,}/gi, "[github-token]")
+      .replace(/xox[baprs]-[a-z0-9-]{20,}/gi, "[slack-token]")
+      .replace(/akia[0-9a-z]{16}/gi, "[aws-access-key]")
+      .replace(/authorization\s*[:=]\s*[^\n\r]+/gi, "authorization=[redacted]")
+      .replace(/cookie\s*[:=]\s*[^\n\r]+/gi, "cookie=[redacted]");
   }
 }
 

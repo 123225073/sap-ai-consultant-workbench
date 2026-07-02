@@ -35,7 +35,7 @@ import {
   renderProjectKnowledgeMarkdown
 } from "./knowledgeService";
 import { DatabaseService } from "./databaseService";
-import { buildSearchDocuments, searchWorkbench } from "./searchService";
+import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
 import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
@@ -61,17 +61,29 @@ const MAX_PREVIEW_FILE_BYTES = 256 * 1024;
 const MAX_PREVIEW_BYTES = 64 * 1024;
 const SAFE_PREVIEW_EXTENSIONS = new Set([".md", ".txt", ".csv", ".mmd"]);
 const BLOCKED_PREVIEW_FILENAMES = new Set(["messages.json", "metadata.json", "project.json", "app-state.json"]);
+const SAFE_INDEX_DIRECTORIES = new Set(["outputs"]);
+const SAFE_INDEX_EXTENSIONS = new Set([".md", ".txt", ".csv", ".mmd"]);
+const MAX_INDEX_FILE_BYTES = 128 * 1024;
+const MAX_INDEX_READ_BYTES = 32 * 1024;
+const MAX_INDEX_SUMMARY_CHARS = 600;
 
 function redactPreviewContent(input: string): { content: string; redactions: number } {
   const patterns = [
-    /bearer\s+[a-z0-9._-]{12,}/gi,
     /authorization\s*[:=]\s*[^\n\r]+/gi,
+    /bearer\s+[a-z0-9._~+/=-]{12,}/gi,
     /cookie\s*[:=]\s*[^\n\r]+/gi,
     new RegExp("SAP_" + "SESSIONID\\s*[:=]\\s*[^\\s]+", "gi"),
     new RegExp("MYSAP" + "SSO2\\s*[:=]\\s*[^\\s]+", "gi"),
     /secure-store:sec_[a-f0-9]{32}/gi,
-    /sk-[a-z0-9]{20,}/gi,
+    /sk-(?:proj-)?[a-z0-9_-]{20,}/gi,
+    /github_pat_[a-z0-9_]{20,}/gi,
+    /ghp_[a-z0-9]{20,}/gi,
+    /xox[baprs]-[a-z0-9-]{20,}/gi,
+    /akia[0-9a-z]{16}/gi,
     /api[_-]?key\s*[:=]\s*[^\s]+/gi,
+    /client[_-]?secret\s*[:=]\s*[^\s]+/gi,
+    /access[_-]?key\s*[:=]\s*[^\s]+/gi,
+    /secret\s*[:=]\s*[^\s]+/gi,
     /tenant[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
     /user[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
     new RegExp("device_" + "code\\s*[:=]\\s*[^\\s]+", "gi"),
@@ -86,6 +98,84 @@ function redactPreviewContent(input: string): { content: string; redactions: num
     });
   }
   return { content, redactions };
+}
+
+function redactIndexableText(input: string): { content: string; redactions: number } {
+  const patterns = [
+    /bearer\s+[a-z0-9._~+/=-]{12,}/gi,
+    /authorization\s*[:=]\s*[^\n\r]+/gi,
+    /cookie\s*[:=]\s*[^\n\r]+/gi,
+    new RegExp("SAP_" + "SESSIONID\\s*[:=]\\s*[^\\s]+", "gi"),
+    new RegExp("MYSAP" + "SSO2\\s*[:=]\\s*[^\\s]+", "gi"),
+    /secure-store:sec_[a-f0-9]{32}/gi,
+    /sk-(?:proj-)?[a-z0-9_-]{20,}/gi,
+    /github_pat_[a-z0-9_]{20,}/gi,
+    /ghp_[a-z0-9]{20,}/gi,
+    /xox[baprs]-[a-z0-9-]{20,}/gi,
+    /akia[0-9a-z]{16}/gi,
+    /api[_-]?key\s*[:=]\s*[^\s]+/gi,
+    /client[_-]?secret\s*[:=]\s*[^\s]+/gi,
+    /access[_-]?key\s*[:=]\s*[^\s]+/gi,
+    /secret\s*[:=]\s*[^\s]+/gi,
+    /password\s*[:=]\s*[^\s]+/gi,
+    /tenant[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+    /user[_-]?access[_-]?token\s*[:=]\s*[^\s]+/gi,
+    /token\s*[:=]\s*[^\s]+/gi,
+    new RegExp("device_" + "code\\s*[:=]\\s*[^\\s]+", "gi"),
+    new RegExp("verification_" + "uri\\s*[:=]\\s*[^\\s]+", "gi"),
+    /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/gi
+  ];
+  let redactions = 0;
+  let content = input;
+  for (const pattern of patterns) {
+    content = content.replace(pattern, () => {
+      redactions += 1;
+      return "[已脱敏]";
+    });
+  }
+  return { content, redactions };
+}
+
+function hasUnsafeIndexableContent(input: string): boolean {
+  const unsafePatterns = [
+    /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i,
+    /secure-store:sec_[a-f0-9]{32}/i,
+    /bearer\s+[a-z0-9._~+/=-]{12,}/i,
+    /sk-(?:proj-)?[a-z0-9_-]{20,}/i,
+    /github_pat_[a-z0-9_]{20,}/i,
+    /ghp_[a-z0-9]{20,}/i,
+    /xox[baprs]-[a-z0-9-]{20,}/i,
+    /akia[0-9a-z]{16}/i,
+    /authorization\s*[:=]/i,
+    /cookie\s*[:=]/i,
+    /sap_sessionid/i,
+    /mysapsso2/i,
+    /api[_-]?key\s*[:=]/i,
+    /client[_-]?secret\s*[:=]/i,
+    /access[_-]?key\s*[:=]/i,
+    /secret\s*[:=]/i,
+    /password\s*[:=]/i,
+    /token\s*[:=]/i,
+    /^\s*(REPORT|PROGRAM|CLASS|INTERFACE|FUNCTION)\s+[\w/]+/im,
+    /^\s*(FORM|MODULE|METHOD)\s+[\w/]+/im,
+    /\bENDCLASS\b|\bENDFUNCTION\b|\bENDFORM\b|\bENDMETHOD\b/i,
+    /\bSELECT\s+[\s\S]{0,300}\s+FROM\s+[\w/]+/i,
+    /\bCALL\s+(FUNCTION|TRANSACTION)\b/i,
+    /\bINSERT\s+[\w/]+\b|\bUPDATE\s+[\w/]+\b|\bMODIFY\s+[\w/]+\b|\bDELETE\s+FROM\s+[\w/]+\b/i
+  ];
+  if (unsafePatterns.some((pattern) => pattern.test(input))) return true;
+
+  const lines = input.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const structuredRows = lines.filter((line) => line.split(/\t|,|\|/).filter((cell) => cell.trim().length > 0).length >= 5);
+  return structuredRows.length >= 6;
+}
+
+function safeIndexSummary(input: string): string {
+  return input
+    .replace(/[`*_>#|,[\]{}()]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, MAX_INDEX_SUMMARY_CHARS);
 }
 
 function nowIso(): string {
@@ -525,8 +615,10 @@ export class WorkspaceStore {
 
   async search(query: string): Promise<SearchResult[]> {
     const state = await this.loadOrCreateState();
+    await this.refreshSearchIndex(state);
     const files = await this.readCaseTree(state);
-    return searchWorkbench(this.database, state.projects, files, query);
+    const safeOutputSummaries = await this.readAllSafeOutputSummaries(state, files);
+    return searchWorkbench(this.database, state.projects, files, safeOutputSummaries, query);
   }
 
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
@@ -831,7 +923,8 @@ export class WorkspaceStore {
     if (!this.database.getHealth().ok) return;
     try {
       const files = await this.readCaseTree(state);
-      await this.database.replaceSearchDocuments(buildSearchDocuments(state.projects, files));
+      const safeOutputSummaries = await this.readAllSafeOutputSummaries(state, files);
+      await this.database.replaceSearchDocuments(buildSearchDocuments(state.projects, files, safeOutputSummaries));
     } catch {
       return;
     }
@@ -1060,6 +1153,10 @@ export class WorkspaceStore {
   private caseRoot(state: StoredState): string {
     const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
     const caseItem = this.getActiveCase(state);
+    return this.caseRootFor(project, caseItem);
+  }
+
+  private caseRootFor(project: ProjectSummary, caseItem: CaseSummary): string {
     const casesRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "cases"));
     return this.assertInsideCasesRoot(casesRoot, path.join(casesRoot, caseItem.folderName));
   }
@@ -1128,6 +1225,95 @@ export class WorkspaceStore {
     if (!SAFE_PREVIEW_EXTENSIONS.has(extension)) {
       throw new Error("当前只支持预览 Markdown、文本、CSV 和 Mermaid 文件。");
     }
+  }
+
+  private async readAllSafeOutputSummaries(state: StoredState, activeFiles: CaseFileNode[]): Promise<SafeOutputSummaryRecord[]> {
+    const summaries: SafeOutputSummaryRecord[] = [];
+    for (const project of state.projects) {
+      for (const caseItem of project.cases) {
+        const files = project.id === state.activeProjectId && caseItem.id === state.activeCaseId
+          ? activeFiles
+          : await this.readCaseTreeForCase(project, caseItem).catch(() => []);
+        summaries.push(...await this.readSafeOutputSummariesForCase(project, caseItem, files));
+      }
+    }
+    return summaries;
+  }
+
+  private async readSafeOutputSummariesForCase(project: ProjectSummary, caseItem: CaseSummary, files: CaseFileNode[]): Promise<SafeOutputSummaryRecord[]> {
+    const summaries: SafeOutputSummaryRecord[] = [];
+    for (const node of this.flattenCaseFileNodes(files)) {
+      if (node.kind !== "file") continue;
+      const summary = await this.readSafeOutputSummary(project, caseItem, node);
+      if (summary) summaries.push(summary);
+    }
+    return summaries;
+  }
+
+  private async readSafeOutputSummary(project: ProjectSummary, caseItem: CaseSummary, node: CaseFileNode): Promise<SafeOutputSummaryRecord | null> {
+    try {
+      const relativePath = this.assertPreviewRelativePath({ relativePath: node.relativePath });
+      const parts = relativePath.split("/");
+      if (parts.length !== 2 || !SAFE_INDEX_DIRECTORIES.has(parts[0])) return null;
+
+      const extension = path.extname(relativePath).toLowerCase();
+      const basename = path.basename(relativePath).toLowerCase();
+      if (!SAFE_INDEX_EXTENSIONS.has(extension)) return null;
+      if (BLOCKED_PREVIEW_FILENAMES.has(basename) || basename.includes("credential") || basename.includes("secret")) return null;
+
+      const caseRoot = this.caseRootFor(project, caseItem);
+      const target = this.assertInsideWorkspace(path.join(caseRoot, relativePath));
+      const resolvedCaseRoot = await fs.realpath(caseRoot);
+      const stat = await fs.lstat(target);
+      if (stat.isSymbolicLink() || !stat.isFile() || stat.size > MAX_INDEX_FILE_BYTES) return null;
+
+      const realTarget = await fs.realpath(target);
+      if (realTarget !== resolvedCaseRoot && !realTarget.startsWith(`${resolvedCaseRoot}${path.sep}`)) return null;
+
+      const handle = await fs.open(realTarget, "r");
+      let raw = "";
+      try {
+        const buffer = Buffer.alloc(Math.min(stat.size, MAX_INDEX_READ_BYTES));
+        const readResult = await handle.read(buffer, 0, buffer.length, 0);
+        raw = buffer.subarray(0, readResult.bytesRead).toString("utf8");
+      } finally {
+        await handle.close();
+      }
+      if (hasUnsafeIndexableContent(raw)) return null;
+
+      const redacted = redactIndexableText(raw);
+      if (redacted.redactions > 0 || hasUnsafeIndexableContent(redacted.content)) return null;
+
+      const summary = safeIndexSummary(redacted.content);
+      if (!summary) return null;
+
+      return {
+        projectId: project.id,
+        caseId: caseItem.id,
+        projectName: project.name,
+        caseTitle: caseItem.title,
+        relativePath,
+        displayName: path.basename(relativePath),
+        fileType: extension.replace(".", "") || "text",
+        sizeBytes: stat.size,
+        snippet: summary,
+        content: summary,
+        updatedAt: stat.mtime.toISOString()
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private flattenCaseFileNodes(nodes: CaseFileNode[]): CaseFileNode[] {
+    const flattened: CaseFileNode[] = [];
+    for (const node of nodes) {
+      flattened.push(node);
+      if (node.children) {
+        flattened.push(...this.flattenCaseFileNodes(node.children));
+      }
+    }
+    return flattened;
   }
 
   private findCaseFileNode(nodes: CaseFileNode[], relativePath: string): CaseFileNode | null {
@@ -1287,6 +1473,11 @@ export class WorkspaceStore {
   private async readCaseTree(state: StoredState): Promise<CaseFileNode[]> {
     const caseRoot = this.caseRoot(state);
     return this.readDirectory(caseRoot, "", this.getActiveCase(state).id);
+  }
+
+  private async readCaseTreeForCase(project: ProjectSummary, caseItem: CaseSummary): Promise<CaseFileNode[]> {
+    const caseRoot = this.caseRootFor(project, caseItem);
+    return this.readDirectory(caseRoot, "", caseItem.id);
   }
 
   private async readDirectory(directory: string, relativeBase: string, caseId: string): Promise<CaseFileNode[]> {

@@ -64,6 +64,21 @@ function formatSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function searchResultLabel(result: SearchResult): string {
+  if (result.id.startsWith("file-summary-")) return "安全摘要";
+  return result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件";
+}
+
+function searchResultPreviewPath(result: SearchResult, state: WorkbenchState | null): string | null {
+  if (
+    result.type !== "file" ||
+    !result.sourcePath ||
+    result.projectId !== state?.activeProjectId ||
+    result.caseId !== state?.activeCaseId
+  ) return null;
+  return result.sourcePath;
+}
+
 function fileIcon(node: CaseFileNode) {
   if (node.kind === "directory") return Folder;
   if (node.fileType === "xlsx" || node.fileType === "xls" || node.fileType === "csv" || node.name.includes("核对") || node.name.includes("清单")) return FileSpreadsheet;
@@ -188,7 +203,7 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 9：当前支持本地案件文件只读预览；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
+  const [notice, setNotice] = useState("Phase 10：当前支持本地案件安全输出摘要搜索和本地案件文件只读预览；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -285,6 +300,13 @@ function App() {
       setFilePreviewError(response.error);
       setNotice(response.error);
     }
+  }
+
+  async function previewSearchResult(result: SearchResult) {
+    const previewPath = searchResultPreviewPath(result, state);
+    if (!previewPath) return;
+    const node = flatFiles.find((file) => file.kind === "file" && file.relativePath === previewPath);
+    if (node) await previewCaseFile(node);
   }
 
   async function saveProjectConfig(projectId: string, config: ProjectSummary["config"]) {
@@ -473,7 +495,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 9"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 10"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -486,7 +508,7 @@ function App() {
         <aside className="sidebar">
           <div className="primary-nav">
             <button onClick={createCase} title="创建一个新的本地案件文件夹"><PenLine size={18} />新案件</button>
-            <button onClick={() => searchInputRef.current?.focus()} title="聚焦本地搜索框，可搜索项目、案件、文件和知识摘要"><Search size={18} />搜索</button>
+            <button onClick={() => searchInputRef.current?.focus()} title="聚焦本地搜索框，可搜索项目、案件、文件名、知识和安全输出摘要"><Search size={18} />搜索</button>
             <button className={activeView === "config" ? "active" : ""} onClick={() => setActiveView("config")} title="保存当前项目的非密钥配置草稿"><Settings size={18} />配置中心</button>
             <button className={activeView === "standards" ? "active" : ""} onClick={() => setActiveView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
             <button className={activeView === "knowledge" ? "active" : ""} onClick={() => setActiveView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
@@ -494,20 +516,32 @@ function App() {
 
           <label className="sidebar-search">
             <Search size={15} />
-            <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索项目、案件、文件、知识摘要" />
+            <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索项目、案件、文件名、本地案件安全输出摘要" />
           </label>
 
           {searchResults.length > 0 ? (
             <section className="search-results">
-              <strong>搜索结果</strong>
-              {searchResults.map((result) => (
-                <div className="search-result" key={result.id}>
-                  <span>{result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件"}</span>
-                  <b>{result.title}</b>
-                  <small>{result.location}</small>
-                  <p>{result.snippet}</p>
-                </div>
-              ))}
+              <strong>搜索结果 · 含本地案件安全输出摘要</strong>
+              {searchResults.map((result) => {
+                const canPreview = Boolean(searchResultPreviewPath(result, state));
+                const content = (
+                  <>
+                    <span>{searchResultLabel(result)}</span>
+                    <b>{result.title}</b>
+                    <small>{result.location}</small>
+                    <p>{result.snippet}</p>
+                  </>
+                );
+                return canPreview ? (
+                  <button className="search-result search-result-button" type="button" onClick={() => void previewSearchResult(result)} title="在右侧打开当前案件只读预览" key={result.id}>
+                    {content}
+                  </button>
+                ) : (
+                  <div className="search-result" key={result.id}>
+                    {content}
+                  </div>
+                );
+              })}
             </section>
           ) : null}
 
@@ -620,7 +654,7 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 9 会按该模式生成可编辑本地案件文件，并支持当前案件文件只读预览；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 10 会按该模式生成可编辑本地案件文件，并支持本地案件安全输出摘要搜索；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>
@@ -628,7 +662,7 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 9 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 10 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
                 <button type="button" aria-label="添加附件暂不可用" title="当前阶段暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
                 <button type="button" aria-label="语音输入暂不可用" title="当前阶段暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>

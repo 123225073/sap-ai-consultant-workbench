@@ -495,6 +495,9 @@ export interface SearchResult {
   type: "project" | "case" | "file" | "knowledge";
   location: string;
   snippet: string;
+  projectId?: string;
+  caseId?: string | null;
+  sourcePath?: string | null;
 }
 
 export interface WorkbenchState {
