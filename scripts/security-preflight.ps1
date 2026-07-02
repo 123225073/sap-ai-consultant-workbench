@@ -85,7 +85,7 @@ $patterns = @(
 
 $hits = @()
 foreach ($pattern in $patterns) {
-  $result = rg -n --hidden --glob "!.git/**" --glob "!node_modules/**" --glob "!dist/**" --glob "!build/**" --glob "!out/**" -- $pattern .
+  $result = rg -n --no-ignore --hidden --glob "!.git/**" --glob "!**/node_modules/**" --glob "!**/dist/**" --glob "!**/build/**" --glob "!**/out/**" --glob "!local-data/**" -- $pattern .
   if ($LASTEXITCODE -eq 0) {
     $hits += $result
   } elseif ($LASTEXITCODE -gt 1) {
@@ -99,9 +99,9 @@ if ($hits.Count -gt 0) {
 }
 
 Write-Section "Runtime local data secret scan"
-if (Test-Path "local-data/workbench") {
-  $runtimePatterns = "secure-store:sec_|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|tenant_access_token|user_access_token|Authorization|Cookie|SAP_SESSIONID|MYSAPSSO2|password\s*[:=]|api[_-]?key\s*[:=]|token\s*[:=]"
-  $runtimeHits = rg -n --no-ignore --hidden --glob "*.{md,json}" --glob "!**/secure-store/**" -- $runtimePatterns local-data/workbench
+if (Test-Path "local-data") {
+  $runtimePatterns = "secure-store:sec_|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|tenant_access_token|user_access_token|Authorization\s*[:=]|Cookie\s*[:=]|SAP_SESSIONID\s*[:=]|MYSAPSSO2\s*[:=]|password\s*[:=]|api[_-]?key\s*[:=]|token\s*[:=]"
+  $runtimeHits = rg -n --no-ignore --hidden --glob "*.{md,json}" --glob "!**/secure-store/**" -- $runtimePatterns local-data
   if ($LASTEXITCODE -eq 0) {
     $runtimeHits | ForEach-Object { Write-Host $_ }
     throw "Runtime local-data contains possible secrets or auth artifacts."
@@ -110,7 +110,7 @@ if (Test-Path "local-data/workbench") {
   }
   Write-Host "OK runtime local data scan."
 } else {
-  Write-Host "Skipped: local-data/workbench does not exist."
+  Write-Host "Skipped: local-data does not exist."
 }
 
 Write-Section "IPC whitelist"
@@ -129,7 +129,11 @@ $allowedIpc = @(
   "workbench:get-project-standards",
   "workbench:standards-copy-template",
   "workbench:standards-copy-project",
-  "workbench:standards-save"
+  "workbench:standards-save",
+  "workbench:get-project-knowledge",
+  "workbench:knowledge-publish",
+  "workbench:knowledge-mark-conflict",
+  "workbench:knowledge-expire"
 )
 
 $ipcHits = rg -n -- 'ipcMain\.handle\(\x22([^\x22]+)\x22' apps/desktop/src/main
@@ -246,6 +250,84 @@ if ($LASTEXITCODE -eq 0) {
   throw "Standards center must not publish formal knowledge directly."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Standards knowledge-boundary scan failed."
+}
+
+Write-Section "Knowledge center safety scan"
+$knowledgeMarkers = rg -n -- "assertNoSensitiveKnowledgeContent|normalizeProjectKnowledge|no-secrets-project-knowledge|project-knowledge\.json|project-knowledge\.md|appendKnowledgeCandidatesFromCase|publishKnowledgeItem" apps/desktop/src/main apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0 -and $knowledgeMarkers.Count -ge 7) {
+  Write-Host "OK knowledge center safety markers found."
+} elseif ($LASTEXITCODE -eq 1) {
+  throw "Knowledge center safety markers are missing."
+} else {
+  throw "Knowledge center safety marker scan failed."
+}
+
+$unsafeKnowledgePathHits = rg -n -- "knowledgeRoot.*input|knowledgeRoot.*relative|project-knowledge\.\$\{|path\.join\(knowledgeRoot,\s*(input|.*relative|.*path)" apps/desktop/src/main
+if ($LASTEXITCODE -eq 0) {
+  $unsafeKnowledgePathHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge center may accept user-controlled knowledge file paths."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge center path scan failed."
+}
+
+$knowledgeAutoPublishHits = rg -n -- "appendKnowledgeCandidatesFromCase|createKnowledgeCandidateFromCase|status:\s*`"published`"|status:\s*'published'" apps/desktop/src/main/caseWorkflowService.ts apps/desktop/src/main/workspaceStore.ts
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $knowledgeAutoPublishHits) {
+    if ($line -match "status:\s*(`"published`"|'published')") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Case workflow or workspace append path must not auto-publish knowledge."
+    }
+  }
+  Write-Host "OK knowledge append path does not auto-publish."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge auto-publish scan failed."
+}
+
+$knowledgeUnsafeContentHits = rg -n -- "message\.content|input\.content|currentContent|sourceContent|rawStdout|rawStderr" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/renderer/KnowledgeCenter.tsx
+if ($LASTEXITCODE -eq 0) {
+  $knowledgeUnsafeContentHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge center must not copy raw chat, standards body, or auth artifacts into knowledge records."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge unsafe content scan failed."
+}
+
+$knowledgeGuardMarkers = @(
+  @{ Pattern = 'item.status === "conflicted"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'item.status === "expired"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "item.conflictWithIds.length > 0"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'result.type === "knowledge"'; Path = "apps/desktop/src/renderer/App.tsx" }
+)
+foreach ($marker in $knowledgeGuardMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK knowledge guard marker: $($marker.Pattern)"
+  } else {
+    throw "Knowledge publish/search guard is missing: $($marker.Pattern)"
+  }
+}
+
+$knowledgeImportHits = rg -n -- "showOpenDialog|dialog\.show|readFile\(|fetch\(|execFile\(|spawn\(|exec\(|openExternal|loadURL|feishu-sync" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/renderer/KnowledgeCenter.tsx
+if ($LASTEXITCODE -eq 0) {
+  $knowledgeImportHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge import placeholders must not read files, call Feishu, run commands, or make network requests in Phase 6."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge import placeholder scan failed."
+}
+
+$knowledgeSourcePathHits = rg -n -- "readFile\(.*sourceFilePath|path\.join\(.*sourceFilePath|openPath\(.*sourceFilePath|shell\.openPath\(.*sourceFilePath" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $knowledgeSourcePathHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge sourceFilePath must not be used as a direct filesystem path."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge source path scan failed."
+}
+
+$knowledgeDeleteHits = rg -n -- "deleteKnowledge|removeKnowledge|knowledge\.items\s*=\s*.*filter|project\.knowledge\.items\s*=\s*.*filter|unlink|rm\(" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/main/workspaceStore.ts apps/desktop/src/renderer/KnowledgeCenter.tsx
+if ($LASTEXITCODE -eq 0) {
+  $knowledgeDeleteHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge center must preserve history and must not delete knowledge items."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge delete-history scan failed."
 }
 
 Write-Section "Feishu auth artifact scan"

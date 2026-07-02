@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, CaseFileNode, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationResult, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, ProjectStandardsView, SaveProjectStandardsInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationResult, KnowledgeItemActionInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SaveProjectStandardsInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -23,6 +23,10 @@ interface WorkbenchBridge {
   copyProjectStandardsTemplate: (projectId: string, input: CopyProjectStandardsInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   copyProjectStandardsFromProject: (projectId: string, input: CopyProjectStandardsFromProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   saveProjectStandards: (projectId: string, input: SaveProjectStandardsInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  getProjectKnowledge: (projectId: string) => Promise<WorkbenchResponse<ProjectKnowledgeView>>;
+  publishKnowledge: (projectId: string, input: KnowledgeItemActionInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  markKnowledgeConflicted: (projectId: string, input: KnowledgeItemActionInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  expireKnowledge: (projectId: string, input: KnowledgeItemActionInput) => Promise<WorkbenchResponse<WorkbenchState>>;
 }
 
 declare global {

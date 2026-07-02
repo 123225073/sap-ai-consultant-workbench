@@ -1,11 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AdtVerificationResult, CaseFileNode, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationResult, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, ProjectStandardsView, SaveProjectStandardsInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationResult, KnowledgeItemActionInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SaveProjectStandardsInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 contextBridge.exposeInMainWorld("workbench", {
   getAppInfo: () => ({
     name: "SAP AI 顾问工作台",
     edition: "个人版 MVP",
-    phase: "Phase 5"
+    phase: "Phase 6"
   }),
   getState: (): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:get-state"),
   createDemoProject: (): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-demo-project"),
@@ -21,5 +21,9 @@ contextBridge.exposeInMainWorld("workbench", {
   getProjectStandards: (projectId: string): Promise<WorkbenchResponse<ProjectStandardsView>> => ipcRenderer.invoke("workbench:get-project-standards", projectId),
   copyProjectStandardsTemplate: (projectId: string, input: CopyProjectStandardsInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:standards-copy-template", projectId, input),
   copyProjectStandardsFromProject: (projectId: string, input: CopyProjectStandardsFromProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:standards-copy-project", projectId, input),
-  saveProjectStandards: (projectId: string, input: SaveProjectStandardsInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:standards-save", projectId, input)
+  saveProjectStandards: (projectId: string, input: SaveProjectStandardsInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:standards-save", projectId, input),
+  getProjectKnowledge: (projectId: string): Promise<WorkbenchResponse<ProjectKnowledgeView>> => ipcRenderer.invoke("workbench:get-project-knowledge", projectId),
+  publishKnowledge: (projectId: string, input: KnowledgeItemActionInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:knowledge-publish", projectId, input),
+  markKnowledgeConflicted: (projectId: string, input: KnowledgeItemActionInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:knowledge-mark-conflict", projectId, input),
+  expireKnowledge: (projectId: string, input: KnowledgeItemActionInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:knowledge-expire", projectId, input)
 });

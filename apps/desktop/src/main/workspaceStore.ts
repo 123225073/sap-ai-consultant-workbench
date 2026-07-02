@@ -21,8 +21,20 @@ import {
   renderProjectStandardsMarkdown,
   updateProjectStandards
 } from "./standardsService";
+import {
+  appendKnowledgeCandidatesFromCase,
+  createProjectKnowledge,
+  expireKnowledgeItem,
+  markKnowledgeItemConflicted,
+  normalizeProjectKnowledge,
+  parseKnowledgeActionInput,
+  projectKnowledgeView,
+  publishKnowledgeItem,
+  renderProjectKnowledgeJson,
+  renderProjectKnowledgeMarkdown
+} from "./knowledgeService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, KnowledgeItemStatus, KnowledgeItemType, KnowledgeSourceType, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -42,6 +54,29 @@ const directories = [
   "evidence",
   "technical"
 ];
+
+const knowledgeStatusLabels: Record<KnowledgeItemStatus, string> = {
+  draft: "草稿",
+  pending: "待确认",
+  published: "已发布",
+  conflicted: "有冲突",
+  expired: "已失效"
+};
+
+const knowledgeTypeLabels: Record<KnowledgeItemType, string> = {
+  qa: "QA 问答",
+  doc: "文档知识",
+  sap_object: "SAP 对象说明",
+  case_note: "案件经验",
+  timeline_fact: "时间线事实"
+};
+
+const knowledgeSourceLabels: Record<KnowledgeSourceType, string> = {
+  "case-candidate": "案件候选",
+  "document-import": "文档导入",
+  "qa-import": "QA 导入",
+  manual: "人工维护"
+};
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -102,6 +137,7 @@ function demoProject(): ProjectSummary {
     updatedAt: nowIso(),
     config: defaultProjectConfig(DEMO_PROJECT_ID, projectDir, "demo001"),
     standards: createProjectStandards(DEMO_PROJECT_ID, "S4", "s4-default"),
+    knowledge: createProjectKnowledge(DEMO_PROJECT_ID, true),
     cases: [demoCase()]
   };
 }
@@ -363,7 +399,10 @@ export class WorkspaceStore {
     const artifacts = buildCaseWorkflowArtifacts(project, currentCase, workflowInput);
     currentCase.currentSummary = artifacts.currentSummary;
     currentCase.summary = artifacts.currentSummary;
+    project.knowledge = appendKnowledgeCandidatesFromCase(project, currentCase, artifacts.generatedFiles);
+    project.updatedAt = nowIso();
     await this.saveState(state);
+    await this.writeProjectKnowledge(project);
     await this.writeCaseMarkdown(state, currentCase, artifacts);
     return this.withFiles(state);
   }
@@ -400,6 +439,40 @@ export class WorkspaceStore {
             type: "case",
             location: project.name,
             snippet: caseItem.currentSummary
+          });
+        }
+      }
+
+      for (const item of project.knowledge.items) {
+        const statusLabel = knowledgeStatusLabels[item.status];
+        const typeLabel = knowledgeTypeLabels[item.type];
+        const sourceLabel = knowledgeSourceLabels[item.sourceType];
+        const sourceParts = [
+          project.name,
+          statusLabel,
+          sourceLabel,
+          item.sourceCaseId ? `案件 ${item.sourceCaseId}` : "",
+          item.sourceFilePath ? `来源文件 ${item.sourceFilePath}` : ""
+        ].filter(Boolean);
+        const searchable = [
+          item.title,
+          item.summary,
+          item.content,
+          item.status,
+          statusLabel,
+          item.type,
+          typeLabel,
+          sourceLabel,
+          item.sourceFilePath ?? "",
+          ...item.sapObjects
+        ].join(" ").toLowerCase();
+        if (searchable.includes(trimmed)) {
+          results.push({
+            id: `knowledge-${item.id}`,
+            title: item.title,
+            type: "knowledge",
+            location: sourceParts.join(" · "),
+            snippet: item.summary
           });
         }
       }
@@ -458,6 +531,15 @@ export class WorkspaceStore {
     return projectStandardsView(project.standards, project.sapVersion);
   }
 
+  async getProjectKnowledge(projectId: string): Promise<ProjectKnowledgeView> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法读取项目知识库。");
+    }
+    return projectKnowledgeView(project.knowledge);
+  }
+
   async copyProjectStandardsTemplate(projectId: string, input: unknown): Promise<WorkbenchState> {
     const copyInput = parseCopyProjectStandardsInput(input);
     const state = await this.loadOrCreateState();
@@ -512,6 +594,54 @@ export class WorkspaceStore {
     if (changed) {
       await this.writeProjectStandards(project);
     }
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async publishKnowledge(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const actionInput = parseKnowledgeActionInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法确认知识入库。");
+    }
+
+    project.knowledge = publishKnowledgeItem(project.knowledge, actionInput);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async markKnowledgeConflicted(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const actionInput = parseKnowledgeActionInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法标记知识冲突。");
+    }
+
+    project.knowledge = markKnowledgeItemConflicted(project.knowledge, actionInput);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async expireKnowledge(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const actionInput = parseKnowledgeActionInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法标记知识失效。");
+    }
+
+    project.knowledge = expireKnowledgeItem(project.knowledge, actionInput);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
   }
@@ -672,6 +802,7 @@ export class WorkspaceStore {
         updatedAt: text(project.updatedAt, nowIso()),
         config: project.config ?? defaultProjectConfig(safeId(project.id, DEMO_PROJECT_ID), safeId(project.projectDir, safeId(project.id, DEMO_PROJECT_ID)), firstCase.folderName || firstCase.id),
         standards: normalizeProjectStandards(safeId(project.id, DEMO_PROJECT_ID), sapVersion(project.sapVersion), (project as Partial<ProjectSummary>).standards),
+        knowledge: normalizeProjectKnowledge(safeId(project.id, DEMO_PROJECT_ID), (project as Partial<ProjectSummary>).knowledge, safeId(project.id, DEMO_PROJECT_ID) === DEMO_PROJECT_ID),
         cases
       };
       return {
@@ -907,6 +1038,7 @@ export class WorkspaceStore {
   private async ensureCaseFiles(state: StoredState): Promise<void> {
     const caseRoot = this.caseRoot(state);
     await Promise.all(state.projects.map((project) => this.ensureProjectStandardsFiles(project)));
+    await Promise.all(state.projects.map((project) => this.ensureProjectKnowledgeFiles(project)));
     for (const directory of directories) {
       await fs.mkdir(this.assertInsideWorkspace(path.join(caseRoot, directory)), { recursive: true });
     }
@@ -946,6 +1078,26 @@ export class WorkspaceStore {
     ]);
   }
 
+  private async ensureProjectKnowledgeFiles(project: ProjectSummary): Promise<void> {
+    const knowledgeRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "knowledge"));
+    const jsonPath = this.assertInsideWorkspace(path.join(knowledgeRoot, "project-knowledge.json"));
+    const markdownPath = this.assertInsideWorkspace(path.join(knowledgeRoot, "project-knowledge.md"));
+    try {
+      await Promise.all([fs.access(jsonPath), fs.access(markdownPath)]);
+    } catch {
+      await this.writeProjectKnowledge(project);
+    }
+  }
+
+  private async writeProjectKnowledge(project: ProjectSummary): Promise<void> {
+    const knowledgeRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "knowledge"));
+    await fs.mkdir(knowledgeRoot, { recursive: true });
+    await Promise.all([
+      this.writeJsonAtomic(path.join(knowledgeRoot, "project-knowledge.json"), renderProjectKnowledgeJson(project.knowledge)),
+      fs.writeFile(this.assertInsideWorkspace(path.join(knowledgeRoot, "project-knowledge.md")), renderProjectKnowledgeMarkdown(project.knowledge), "utf8")
+    ]);
+  }
+
   private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
     const caseRoot = this.caseRoot(state);
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
@@ -963,6 +1115,7 @@ export class WorkspaceStore {
       updatedAt: project.updatedAt,
       config: project.config,
       standards: project.standards,
+      knowledge: project.knowledge,
       safety: "no-secrets-demo-project"
     };
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {

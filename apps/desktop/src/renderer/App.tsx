@@ -22,8 +22,9 @@ import {
   Sparkles
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
+import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes: { id: TaskMode; label: string }[] = [
   { id: "problem-analysis", label: "问题分析" },
@@ -151,10 +152,10 @@ function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [fileSearchQuery, setFileSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [activeView, setActiveView] = useState<"case" | "config" | "standards">("case");
+  const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 5：规范中心已接入本地项目副本；任务仍不调用真实 SAP / 飞书 / 模型。");
+  const [notice, setNotice] = useState("Phase 6：知识库中心已接入本地人工确认闭环；仍不调用真实 SAP / 飞书 / 模型。");
 
   const bridge = window.workbench;
   const project = activeProject(state);
@@ -346,6 +347,48 @@ function App() {
     }
   }
 
+  async function publishKnowledge(projectId: string, input: KnowledgeItemActionInput) {
+    if (!bridge) {
+      setNotice("请在桌面应用中确认知识入库。");
+      return;
+    }
+    const response = await bridge.publishKnowledge(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("知识已人工确认入库；候选知识不会自动发布。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function markKnowledgeConflicted(projectId: string, input: KnowledgeItemActionInput) {
+    if (!bridge) {
+      setNotice("请在桌面应用中标记知识冲突。");
+      return;
+    }
+    const response = await bridge.markKnowledgeConflicted(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("知识已标记为有冲突，不会覆盖已发布知识。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function expireKnowledge(projectId: string, input: KnowledgeItemActionInput) {
+    if (!bridge) {
+      setNotice("请在桌面应用中标记知识失效。");
+      return;
+    }
+    const response = await bridge.expireKnowledge(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("知识已标记为失效，历史记录仍保留。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -363,7 +406,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 5"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 6"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -379,7 +422,7 @@ function App() {
             <button title="当前只搜索本地项目、案件和文件名"><Search size={18} />搜索</button>
             <button className={activeView === "config" ? "active" : ""} onClick={() => setActiveView("config")} title="保存当前项目的非密钥配置草稿"><Settings size={18} />配置中心</button>
             <button className={activeView === "standards" ? "active" : ""} onClick={() => setActiveView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
-            <button title="候选知识后续人工确认入库"><Archive size={18} />知识库</button>
+            <button className={activeView === "knowledge" ? "active" : ""} onClick={() => setActiveView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
           </div>
 
           <label className="sidebar-search">
@@ -392,7 +435,7 @@ function App() {
               <strong>搜索结果</strong>
               {searchResults.map((result) => (
                 <div className="search-result" key={result.id}>
-                  <span>{result.type === "project" ? "项目" : result.type === "case" ? "案件" : "文件"}</span>
+                  <span>{result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件"}</span>
                   <b>{result.title}</b>
                   <small>{result.location}</small>
                 </div>
@@ -403,7 +446,7 @@ function App() {
           <div className="project-header">
             <span>项目</span>
             <button onClick={createProject} title="创建本地演示项目，不连接真实 SAP"><Plus size={16} />添加演示项目</button>
-            <button aria-label="项目更多" title="Phase 5 暂无更多项目动作"><ChevronDown size={16} /></button>
+            <button aria-label="项目更多" title="Phase 6 暂无更多项目动作"><ChevronDown size={16} /></button>
           </div>
 
           <div className="project-list">
@@ -437,7 +480,7 @@ function App() {
               <strong>演示用户</strong>
               <span>本地个人版</span>
             </div>
-            <button aria-label="编辑个人信息" className="icon-button" title="Phase 5 暂不编辑个人信息"><PenLine size={15} /></button>
+            <button aria-label="编辑个人信息" className="icon-button" title="Phase 6 暂不编辑个人信息"><PenLine size={15} /></button>
           </footer>
         </aside>
 
@@ -452,6 +495,15 @@ function App() {
             onCopyTemplate={(projectId, templateId) => copyProjectStandardsTemplate(projectId, { templateId })}
             onCopyFromProject={(projectId, sourceProjectId) => copyProjectStandardsFromProject(projectId, { sourceProjectId })}
             onSave={saveProjectStandards}
+          />
+        ) : activeView === "knowledge" ? (
+          <KnowledgeCenter
+            project={project}
+            notice={notice}
+            onBack={() => setActiveView("case")}
+            onPublish={publishKnowledge}
+            onMarkConflict={markKnowledgeConflicted}
+            onExpire={expireKnowledge}
           />
         ) : (
         <>
@@ -500,7 +552,7 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 5 会按该模式生成本地案件文件；ABAP 模式会引用当前项目规范" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 6 会按该模式生成本地案件文件和待确认知识；ABAP 模式会引用当前项目规范" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>
@@ -508,10 +560,10 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 5 仍不调用真实模型">本地工作流 · 不接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 6 仍不调用真实模型">本地工作流 · 不接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
-                <button type="button" aria-label="添加附件暂不可用" title="Phase 5 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
-                <button type="button" aria-label="语音输入暂不可用" title="Phase 5 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
+                <button type="button" aria-label="添加附件暂不可用" title="Phase 6 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
+                <button type="button" aria-label="语音输入暂不可用" title="Phase 6 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
                 <button type="submit" aria-label="保存到当前案件" className="send-button"><Send size={18} /></button>
               </div>
             </div>

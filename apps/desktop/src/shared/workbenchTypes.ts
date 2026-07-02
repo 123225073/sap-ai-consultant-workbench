@@ -9,6 +9,11 @@ export type StandardsTemplateId = "s4-default" | "ecc-default";
 export type StandardsCategoryId = "abap" | "comments" | "request" | "alv" | "interface" | "document" | "diagram" | "excel";
 export type StandardsDiffStatus = "same" | "modified" | "project-only" | "template-only" | "not-applicable";
 export type StandardsSourceType = "sap-version-template" | "copied-project";
+export type KnowledgeItemType = "qa" | "doc" | "sap_object" | "case_note" | "timeline_fact";
+export type KnowledgeItemStatus = "draft" | "pending" | "published" | "conflicted" | "expired";
+export type KnowledgeSourceType = "case-candidate" | "document-import" | "qa-import" | "manual";
+export type KnowledgeDocumentJobStatus = "queued" | "parsed" | "needs-review" | "blocked";
+export type KnowledgeDocumentJobSource = "upload" | "qa-import";
 export type AdtVerificationStepId = "config" | "status" | "t000";
 export type AdtVerificationStepStatus = "passed" | "failed" | "skipped";
 export type AdtVerificationErrorCode =
@@ -317,6 +322,76 @@ export interface CopyProjectStandardsFromProjectInput {
   sourceProjectId: string;
 }
 
+export interface KnowledgeTimelineEvent {
+  id: string;
+  at: string;
+  action: "created" | "published" | "marked-conflicted" | "expired" | "edited" | "parsed";
+  note: string;
+}
+
+export interface KnowledgeItem {
+  id: string;
+  projectId: string;
+  title: string;
+  type: KnowledgeItemType;
+  status: KnowledgeItemStatus;
+  sourceType: KnowledgeSourceType;
+  sourceCaseId: string | null;
+  sourceFilePath: string | null;
+  sapObjects: string[];
+  summary: string;
+  content: string;
+  confidence: number | null;
+  effectiveFrom: string | null;
+  effectiveTo: string | null;
+  reviewer: string | null;
+  conflictWithIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  publishedAt: string | null;
+  timeline: KnowledgeTimelineEvent[];
+}
+
+export interface KnowledgeDocumentJob {
+  id: string;
+  projectId: string;
+  title: string;
+  source: KnowledgeDocumentJobSource;
+  status: KnowledgeDocumentJobStatus;
+  detail: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ProjectKnowledgeBase {
+  schemaVersion: 1;
+  projectId: string;
+  items: KnowledgeItem[];
+  documentJobs: KnowledgeDocumentJob[];
+  updatedAt: string;
+}
+
+export interface KnowledgeStatusCounts {
+  draft: number;
+  pending: number;
+  published: number;
+  conflicted: number;
+  expired: number;
+  total: number;
+}
+
+export interface ProjectKnowledgeView {
+  projectId: string;
+  counts: KnowledgeStatusCounts;
+  items: KnowledgeItem[];
+  documentJobs: KnowledgeDocumentJob[];
+}
+
+export interface KnowledgeItemActionInput {
+  itemId: string;
+  note?: string;
+}
+
 export interface ProjectConfig {
   schemaVersion: 2;
   projectId: string;
@@ -379,6 +454,7 @@ export interface ProjectSummary {
   updatedAt: string;
   config: ProjectConfig;
   standards: ProjectStandardsProfile;
+  knowledge: ProjectKnowledgeBase;
   cases: CaseSummary[];
 }
 
@@ -402,7 +478,7 @@ export interface CaseFileNode {
 export interface SearchResult {
   id: string;
   title: string;
-  type: "project" | "case" | "file";
+  type: "project" | "case" | "file" | "knowledge";
   location: string;
   snippet: string;
 }

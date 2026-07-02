@@ -88,6 +88,9 @@ export function assertNoSensitiveCaseContent(content: string): void {
 
   const abapSourceMarkers = [
     /^\s*(REPORT|PROGRAM|CLASS|INTERFACE|FUNCTION|FORM|MODULE|METHOD)\s+[\w/]+/im,
+    /^\s*(DATA|TYPES|CONSTANTS|SELECT-OPTIONS|PARAMETERS)\s*[:\s]/im,
+    /\bLOOP\s+AT\b|\bREAD\s+TABLE\b|\bAPPEND\s+.+\s+TO\b/i,
+    /^\s*\*&[-=]{3,}/m,
     /\bENDCLASS\b|\bENDFUNCTION\b|\bENDFORM\b|\bENDMETHOD\b/i,
     /\bSELECT\s+.+\s+FROM\s+[\w/]+/i,
     /\bCALL\s+(FUNCTION|TRANSACTION)\b/i,
@@ -107,8 +110,7 @@ export function assertNoSensitiveCaseContent(content: string): void {
 function safeContentSummary(content: string, sourceLabel: string): string {
   const singleLine = content.replace(/\s+/g, " ").trim();
   if (!singleLine) return `${sourceLabel}为空白内容。`;
-  const clipped = singleLine.slice(0, 80);
-  return `${sourceLabel}摘要（${content.length} 字，已通过本地敏感内容检查）：${clipped}${singleLine.length > clipped.length ? "..." : ""}`;
+  return `${sourceLabel}已记录在本地案件对话中（${content.length} 字），输出文件不重复复制原文摘要。`;
 }
 
 export function createCaseMessage(
@@ -140,7 +142,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     `- 任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
     `- 输入摘要：${safeContentSummary(input.content, "用户输入")}`,
     input.taskMode === "abap-development" ? `- 当前项目规范：${standardsSummary}` : null,
-    "- 执行边界：Phase 5 仅做本地案件沉淀和项目规范引用，不调用真实 SAP、模型或飞书。",
+    "- 执行边界：Phase 6 仅做本地案件沉淀、项目规范引用和待确认知识候选，不调用真实 SAP、模型或飞书。",
     ""
   ].filter(Boolean).join("\n");
 
@@ -193,17 +195,17 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     {
       relativePath: "outputs/问题分析_本地结论.md",
       purpose: "output",
-      content: `${header}${context}\n## 初步结论\n\n当前问题已记录到案件。Phase 5 会先沉淀对话、时间线、上下文包、候选知识和项目规范摘要，后续真实模式再接入 SAP 只读读取与模型分析。\n`
+      content: `${header}${context}\n## 初步结论\n\n当前问题已记录到案件。Phase 6 会先沉淀对话、时间线、上下文包、候选知识和项目规范摘要；候选知识必须人工确认后才会入库。后续真实模式再接入 SAP 只读读取与模型分析。\n`
     },
       {
         relativePath: "knowledge_candidates/案件经验候选.md",
         purpose: "candidate_knowledge",
-        content: `# 案件经验候选\n\n状态：待确认\n\n来源案件：${caseItem.title}\n\n候选内容：${safeContentSummary(input.content, "用户输入")}。该候选知识必须人工确认后才能正式入库。\n`
+        content: `# 案件经验候选\n\n状态：待确认\n\n来源案件：${caseItem.title}\n\n候选内容：本地工作流已为当前案件生成经验候选，但不会复制用户原文；必须人工确认、编辑后才能正式入库。\n`
       },
     {
       relativePath: "evidence/本地工作流记录.md",
       purpose: "evidence",
-      content: "# 本地工作流记录\n\nPhase 5 已记录一次问题分析模式的本地案件工作流。当前没有调用真实 SAP、飞书或模型服务。\n"
+      content: "# 本地工作流记录\n\nPhase 6 已记录一次问题分析模式的本地案件工作流和待确认知识候选。当前没有调用真实 SAP、飞书或模型服务。\n"
     }
   ];
 }
@@ -291,7 +293,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 当前边界",
     "",
-    "- Phase 5 只做本地案件工作流、文件沉淀和项目规范引用。",
+    "- Phase 6 只做本地案件工作流、文件沉淀、项目规范引用和待确认知识候选。",
     "- 未调用真实 SAP、模型 API、Codex 任务或飞书发布。",
     "- 候选知识必须人工确认后才能正式入库。",
     "",
