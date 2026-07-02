@@ -34,11 +34,18 @@ const modes: { id: TaskMode; label: string }[] = [
 ];
 
 const modePlaceholder: Record<TaskMode, string> = {
-  "problem-analysis": "描述 SAP 问题或补充现象；本阶段会沉淀到当前案件文件",
-  "abap-development": "描述 ABAP 开发或修改需求；本阶段会生成只读开发说明和快照占位",
-  "document-generation": "说明要生成的文档；本阶段会生成本地 Markdown 草稿",
-  "flow-diagram": "描述业务流程或逻辑；本阶段会生成 Mermaid 流程图草稿"
+  "problem-analysis": "描述 SAP 问题或补充现象；将生成结论、核对清单、证据和候选知识",
+  "abap-development": "描述 ABAP 开发或修改需求；将生成只读开发草稿、请求说明和快照说明",
+  "document-generation": "说明要生成的文档；将生成开发说明书、上线清单和飞书发布准备说明",
+  "flow-diagram": "描述业务流程或逻辑；将生成 Mermaid 图、说明和节点清单"
 };
+
+function verificationModeLabel(mode: "fake" | "cli" | "http" | undefined): string {
+  if (mode === "fake") return "模拟验证";
+  if (mode === "cli") return "真实 CLI 验证";
+  if (mode === "http") return "真实 HTTP 验证";
+  return "验证";
+}
 
 function StatusPill({ label, tone = "neutral" }: { label: string; tone?: "neutral" | "green" | "orange" | "blue" }) {
   return <span className={`status-pill status-${tone}`}>{label}</span>;
@@ -58,8 +65,12 @@ function formatSize(size: number): string {
 
 function fileIcon(node: CaseFileNode) {
   if (node.kind === "directory") return Folder;
-  if (node.fileType === "xlsx" || node.fileType === "xls" || node.name.includes("核对")) return FileSpreadsheet;
+  if (node.fileType === "xlsx" || node.fileType === "xls" || node.fileType === "csv" || node.name.includes("核对") || node.name.includes("清单")) return FileSpreadsheet;
   return File;
+}
+
+function fileAnchorId(relativePath: string): string {
+  return `file-${encodeURIComponent(relativePath)}`;
 }
 
 function flattenFiles(nodes: CaseFileNode[]): CaseFileNode[] {
@@ -91,7 +102,7 @@ function FileRows({ nodes, level = 0 }: { nodes: CaseFileNode[]; level?: number 
       {nodes.map((node) => {
         const Icon = fileIcon(node);
         return (
-          <div className="file-node" key={node.relativePath}>
+          <div className="file-node" id={fileAnchorId(node.relativePath)} key={node.relativePath}>
             <div className={`file-row file-${node.kind}`} style={{ paddingLeft: `${level * 16}px` }}>
               <Icon size={18} />
               <span title={node.relativePath}>{node.name}</span>
@@ -121,7 +132,7 @@ function MessageBubble({ message, files }: { message: CaseMessage; files: CaseFi
 
   return (
     <article className="assistant-message">
-      <div className="run-time">本地演示回复 · {formatTime(message.createdAt)} &gt;</div>
+      <div className="run-time">本地输出回复 · {formatTime(message.createdAt)} &gt;</div>
       <p>{message.content}</p>
       <ul>
         <li><strong>边界：</strong>当前仅保存本地案件文件，不调用真实模型、SAP 或飞书。</li>
@@ -132,7 +143,7 @@ function MessageBubble({ message, files }: { message: CaseMessage; files: CaseFi
           {linkedFiles.map((node) => {
             const Icon = fileIcon(node);
             return (
-              <a href={`#${node.relativePath}`} key={node.relativePath}>
+              <a href={`#${fileAnchorId(node.relativePath)}`} key={node.relativePath}>
                 <Icon size={22} />
                 {node.name}
                 <span>{formatSize(node.sizeBytes)}</span>
@@ -155,7 +166,7 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 6：知识库中心已接入本地人工确认闭环；仍不调用真实 SAP / 飞书 / 模型。");
+  const [notice, setNotice] = useState("Phase 8：当前会生成可编辑的本地案件输出文件；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -170,7 +181,7 @@ function App() {
     const response = await responsePromise;
     if (response.ok) {
       setState(response.data);
-      setNotice("本地案件文件已更新。");
+      setNotice("本地案件输出文件已更新，可在右侧文件面板查看。");
     } else {
       setNotice(response.error);
     }
@@ -206,7 +217,7 @@ function App() {
 
   async function createProject() {
     if (!bridge) {
-      setNotice("请在桌面应用中创建本地演示项目。");
+      setNotice("请在桌面应用中创建本地项目。");
       return;
     }
     await applyResponse(bridge.createDemoProject());
@@ -214,7 +225,7 @@ function App() {
 
   async function createCase() {
     if (!bridge) {
-      setNotice("请在桌面应用中创建本地演示案件。");
+      setNotice("请在桌面应用中创建本地案件。");
       return;
     }
     await applyResponse(bridge.createDemoCase());
@@ -267,7 +278,11 @@ function App() {
     if (response.ok) {
       setState(response.data.state);
       const firstError = response.data.report.errors[0];
-      setNotice(response.data.report.ok ? "ADT 只读验证通过：T000 最小读取已完成。" : `ADT 只读验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
+      setNotice(response.data.report.ok
+        ? response.data.report.mode === "fake"
+          ? "ADT 模拟验证通过：只证明本地验证流程可跑通，不代表真实 SAP 已连通。"
+          : "ADT 真实只读验证通过：T000 最小读取已完成。"
+        : `ADT 只读验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
       return response.data.report;
     }
     setNotice(response.error);
@@ -283,7 +298,7 @@ function App() {
     if (response.ok) {
       setState(response.data.state);
       const firstError = response.data.report.errors[0];
-      setNotice(response.data.report.ok ? "飞书 CLI 验证通过：仅代表 CLI、登录和权限状态可用，尚未创建或发布文档。" : `飞书 CLI 验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
+      setNotice(response.data.report.ok ? `${verificationModeLabel(response.data.report.mode)}通过：仅代表 CLI、登录和权限状态可用，尚未创建或发布文档。` : `飞书 CLI 验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
       return response.data.report;
     }
     setNotice(response.error);
@@ -299,7 +314,11 @@ function App() {
     if (response.ok) {
       setState(response.data.state);
       const firstError = response.data.report.errors[0];
-      setNotice(response.data.report.ok ? "模型渠道验证通过：仅代表渠道连通和最小对话通过，尚未进入案件任务。" : `模型渠道验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
+      setNotice(response.data.report.ok
+        ? response.data.report.mode === "fake"
+          ? "模型渠道模拟验证通过：只证明本地模型验证流程可跑通，不代表真实模型渠道已连通。"
+          : "模型渠道真实验证通过：仅代表渠道连通和最小对话通过，尚未进入案件任务。"
+        : `模型渠道验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
       return response.data.report;
     }
     setNotice(response.error);
@@ -407,7 +426,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 6"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 8"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -447,8 +466,8 @@ function App() {
 
           <div className="project-header">
             <span>项目</span>
-            <button onClick={createProject} title="创建本地演示项目，不连接真实 SAP"><Plus size={16} />添加演示项目</button>
-            <button aria-label="项目更多" title="Phase 6 暂无更多项目动作"><ChevronDown size={16} /></button>
+            <button onClick={createProject} title="创建本地项目，不连接真实 SAP"><Plus size={16} />添加本地项目</button>
+            <button aria-label="项目更多" title="当前阶段暂无更多项目动作"><ChevronDown size={16} /></button>
           </div>
 
           <div className="project-list">
@@ -459,7 +478,7 @@ function App() {
                     <strong>SAP&nbsp;&nbsp;{item.name}</strong>
                     <div className="project-tags">
                       <StatusPill label={item.systemLabel} tone="blue" />
-                      <StatusPill label={item.connectionState === "local-demo" ? "本地演示" : "未验证"} tone={item.connectionState === "local-demo" ? "blue" : "orange"} />
+                      <StatusPill label={item.connectionState === "local-demo" ? "本地模式" : "未验证"} tone={item.connectionState === "local-demo" ? "blue" : "orange"} />
                     </div>
                   </div>
                   <button aria-label={`${item.name} 设置`} className="icon-button" onClick={() => setActiveView("config")} title="打开当前项目配置"><Settings size={16} /></button>
@@ -482,7 +501,7 @@ function App() {
               <strong>演示用户</strong>
               <span>本地个人版</span>
             </div>
-            <button aria-label="编辑个人信息" className="icon-button" title="Phase 6 暂不编辑个人信息"><PenLine size={15} /></button>
+            <button aria-label="编辑个人信息" className="icon-button" title="当前阶段暂不编辑个人信息"><PenLine size={15} /></button>
           </footer>
         </aside>
 
@@ -512,8 +531,8 @@ function App() {
         <section className="conversation-panel">
           <div className="case-heading">
             <div>
-              <h1>{currentCase?.title ?? "本地演示案件"}</h1>
-              <p>{project ? `${project.name} · ${project.systemLabel} · 本地演示` : "请创建本地演示项目"}</p>
+              <h1>{currentCase?.title ?? "本地案件"}</h1>
+              <p>{project ? `${project.name} · ${project.systemLabel} · 本地输出` : "请创建本地项目"}</p>
             </div>
             <div className="case-heading-actions">
               {!filesPanelVisible ? <button aria-label="显示文件面板" title="显示当前案件文件" className="icon-button" onClick={() => setFilesPanelVisible(true)}><PanelLeft size={18} /></button> : null}
@@ -539,7 +558,7 @@ function App() {
                   {flatFiles.filter((node) => node.kind === "file").slice(0, 3).map((node) => {
                     const Icon = fileIcon(node);
                     return (
-                      <a href={`#${node.relativePath}`} key={node.relativePath}>
+                      <a href={`#${fileAnchorId(node.relativePath)}`} key={node.relativePath}>
                         <Icon size={22} />
                         {node.name}
                         <span>{formatSize(node.sizeBytes)}</span>
@@ -554,7 +573,7 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 6 会按该模式生成本地案件文件和待确认知识；ABAP 模式会引用当前项目规范" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 8 会按该模式生成可编辑本地案件文件；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>
@@ -562,10 +581,10 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 6 仍不调用真实模型">本地工作流 · 不接模型 <ChevronDown size={15} /></button>
+              <button type="button" className="model-select disabled" title="Phase 8 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
               <div className="composer-actions">
-                <button type="button" aria-label="添加附件暂不可用" title="Phase 6 暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
-                <button type="button" aria-label="语音输入暂不可用" title="Phase 6 暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
+                <button type="button" aria-label="添加附件暂不可用" title="当前阶段暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
+                <button type="button" aria-label="语音输入暂不可用" title="当前阶段暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>
                 <button type="submit" aria-label="保存到当前案件" className="send-button"><Send size={18} /></button>
               </div>
             </div>
@@ -584,11 +603,11 @@ function App() {
           <div className="file-tree">
             {state?.activeCaseFiles.length ? (
               filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} /> : <div className="empty-state">没有匹配的当前案件文件。</div>
-            ) : <div className="empty-state">请在桌面应用中创建本地演示案件。</div>}
+            ) : <div className="empty-state">请在桌面应用中创建本地案件。</div>}
           </div>
           <div className="files-footer">
             <span>{fileSearchQuery.trim() ? `${filteredFileCount} / ${fileCount} 个文件` : `${fileCount} 个文件`}</span>
-            <span><ShieldCheck size={15} />本地演示数据</span>
+            <span><ShieldCheck size={15} />本地输出数据</span>
           </div>
         </aside> : null}
         </>

@@ -155,7 +155,7 @@ function demoDocumentJobs(projectId: string): KnowledgeDocumentJob[] {
       title: "开发说明书_DEMO001.docx",
       source: "upload",
       status: "queued",
-      detail: "Phase 6 只保留后续解析入口，尚未读取或解析真实 Word 文档。",
+      detail: "当前只保留后续解析入口，尚未读取或解析真实 Word 文档。",
       createdAt: "2026-07-02T09:00:00.000Z",
       updatedAt: "2026-07-02T09:12:00.000Z"
     },

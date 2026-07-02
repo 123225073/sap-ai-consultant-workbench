@@ -8,6 +8,9 @@ export const TASK_MODE_LABELS: Record<TaskMode, string> = {
   "flow-diagram": "画流程图"
 };
 
+const CASE_OUTPUT_PHASE = "Phase 8";
+const LOCAL_WORKFLOW_BOUNDARY = "本地草稿工作流：不读取真实 SAP、不调用真实模型、不创建或发布飞书文档。";
+
 export interface CaseWorkflowArtifacts {
   currentSummary: string;
   generatedFiles: CaseGeneratedFile[];
@@ -24,6 +27,15 @@ function nowIso(): string {
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function csvCell(value: string): string {
+  const formulaSafeValue = /^[\s]*[=+\-@]/.test(value) ? `'${value}` : value;
+  return `"${formulaSafeValue.replaceAll("\"", "\"\"")}"`;
+}
+
+function csvRows(rows: string[][]): string {
+  return `${rows.map((row) => row.map(csvCell).join(",")).join("\n")}\n`;
 }
 
 export function normalizeTaskMode(value: unknown): TaskMode {
@@ -113,6 +125,31 @@ function safeContentSummary(content: string, sourceLabel: string): string {
   return `${sourceLabel}已记录在本地案件对话中（${content.length} 字），输出文件不重复复制原文摘要。`;
 }
 
+function commonContext(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary): string {
+  const standardsSummary = standardsSummaryForTask(project.standards);
+  return [
+    `- 项目：${project.name}`,
+    `- 案件：${caseItem.title}`,
+    `- 任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
+    `- 输入摘要：${safeContentSummary(input.content, "用户输入")}`,
+    input.taskMode === "abap-development" ? `- 当前项目规范摘要：${standardsSummary}` : null,
+    `- 执行边界：${CASE_OUTPUT_PHASE} ${LOCAL_WORKFLOW_BOUNDARY}`,
+    ""
+  ].filter(Boolean).join("\n");
+}
+
+function traceabilityCsv(project: ProjectSummary, caseItem: CaseSummary, taskMode: TaskMode): string {
+  return csvRows([
+    ["类型", "名称", "状态", "说明"],
+    ["项目", project.name, "已记录", `系统标签 ${project.systemLabel}`],
+    ["案件", caseItem.title, "已记录", "所有输出写入当前案件文件夹"],
+    ["任务模式", TASK_MODE_LABELS[taskMode], "已选择", "决定本地输出模板和文件目录"],
+    ["SAP 写入", "禁用", "已锁定", "当前阶段不会写入、激活或释放传输"],
+    ["外部模型", "未调用", "已锁定", "当前阶段只生成本地草稿文件"],
+    ["飞书发布", "未发布", "已锁定", "当前阶段不会创建或更新飞书文档"]
+  ]);
+}
+
 export function createCaseMessage(
   role: CaseMessage["role"],
   caseId: string,
@@ -134,29 +171,31 @@ export function createCaseMessage(
 }
 
 function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary): CaseGeneratedFile[] {
-  const header = `# ${TASK_MODE_LABELS[input.taskMode]}本地工作结果\n\n`;
+  const header = `# ${TASK_MODE_LABELS[input.taskMode]}本地输出\n\n`;
   const standardsSummary = standardsSummaryForTask(project.standards);
-  const context = [
-    `- 项目：${project.name}`,
-    `- 案件：${caseItem.title}`,
-    `- 任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
-    `- 输入摘要：${safeContentSummary(input.content, "用户输入")}`,
-    input.taskMode === "abap-development" ? `- 当前项目规范：${standardsSummary}` : null,
-    "- 执行边界：Phase 6 仅做本地案件沉淀、项目规范引用和待确认知识候选，不调用真实 SAP、模型或飞书。",
-    ""
-  ].filter(Boolean).join("\n");
+  const context = commonContext(input, project, caseItem);
 
   if (input.taskMode === "abap-development") {
     return [
       {
-        relativePath: "outputs/ABAP开发_只读开发说明.md",
+        relativePath: "outputs/ABAP只读开发草稿.md",
         purpose: "output",
-        content: `${header}${context}\n## 本地开发说明\n\n- 已按 ABAP 开发模式记录需求。\n- 当前任务已加载项目规范摘要：${standardsSummary}。\n- 后续真实接入时，必须先读取 SAP 最新源码并保存快照。\n- MVP 不自动写入、激活或释放传输请求。\n`
+        content: `${header}${context}\n## 开发目标\n\n- 已按 ABAP 开发模式建立本地开发草稿。\n- 当前只记录需求和项目规范摘要，不复制用户原文、不保存真实源码。\n- 真实接入后，必须先通过 ADT 只读读取最新对象并保存快照，再进入开发说明。\n\n## 项目规范摘要\n\n${standardsSummary}\n\n## 输出草稿\n\n| 项目 | 当前结论 |\n|---|---|\n| 需求状态 | 待用户确认开发对象、影响范围和验收口径 |\n| 数据来源 | 当前只有本地案件输入和项目规范摘要 |\n| 交付物 | 开发草稿、请求说明草稿、只读快照说明、安全边界说明 |\n| 禁止动作 | 不写入 SAP、不激活对象、不释放传输 |\n\n## 下一步核对\n\n1. 确认目标对象名称和对象类型。\n2. 在配置中心完成 ADT 只读验证。\n3. 读取最新对象快照后，再生成可执行开发方案。\n`
       },
       {
-        relativePath: "snapshots/ABAP只读快照占位.md",
+        relativePath: "outputs/请求说明草稿.md",
+        purpose: "output",
+        content: `# 请求说明草稿\n\n${context}\n## 建议描述\n\n本次请求用于记录当前案件的 ABAP 开发或调整需求。当前阶段尚未读取真实 SAP 对象，因此该说明只可作为草稿。\n\n## 上线前确认\n\n- 已确认对象范围。\n- 已完成 ADT 只读快照。\n- 已完成项目规范检查。\n- 已完成用户验收口径确认。\n`
+      },
+      {
+        relativePath: "snapshots/SAP只读快照说明.md",
         purpose: "snapshot",
-        content: `# ABAP 只读快照占位\n\n当前阶段未读取真实 SAP 源码。后续 ABAP 开发模式必须把真实只读快照保存到本目录。\n`
+        content: `# SAP 只读快照说明\n\n当前阶段未读取真实 SAP 源码，也不会创建真实源码快照。\n\n后续进入真实 ABAP 开发前，本目录只允许保存通过 ADT 只读读取得到的脱敏快照或用户明确要求保存的案件材料。\n`
+      },
+      {
+        relativePath: "technical/ABAP开发安全边界.md",
+        purpose: "technical",
+        content: `# ABAP 开发安全边界\n\n- ${LOCAL_WORKFLOW_BOUNDARY}\n- SAP 密码、API Key、飞书 Token 不允许进入案件文件。\n- 真实 SAP 写入、对象激活、传输释放不属于当前 MVP。\n- 如果后续需要真实开发，必须先完成 ADT 只读验证和用户确认。\n`
       }
     ];
   }
@@ -166,12 +205,24 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
       {
         relativePath: "outputs/开发说明书.md",
         purpose: "output",
-        content: `${header}${context}\n## 文档结构\n\n1. 基本信息\n2. 业务背景\n3. 处理目标\n4. 关键逻辑\n5. 数据来源\n6. 异常与边界说明\n7. 交付物\n8. 上线确认清单\n\n> 当前为本地 Markdown 草稿，尚未创建或发布飞书文档。\n`
+        content: `${header}${context}\n## 基本信息\n\n| 字段 | 内容 |\n|---|---|\n| 项目 | ${project.name} |\n| 案件 | ${caseItem.title} |\n| 文档状态 | 本地 Markdown 草稿 |\n| 发布状态 | 未创建或发布飞书文档 |\n\n## 业务背景\n\n${safeContentSummary(input.content, "用户输入")}\n\n## 处理目标\n\n- 将当前案件整理成可编辑开发说明。\n- 保留后续接入 SAP 只读证据、流程图和交付物的位置。\n- 发布前由用户确认内容、范围和权限。\n\n## 关键逻辑\n\n当前阶段只根据本地案件上下文生成文档框架；真实业务逻辑需要后续读取 SAP 证据或用户补充后确认。\n\n## 数据来源\n\n- 当前案件对话。\n- 当前项目规范摘要。\n- 当前案件输出文件。\n\n## 异常与边界说明\n\n- 未读取真实 SAP。\n- 未调用真实模型。\n- 未创建、更新或发布飞书文档。\n- 未写入任何外部系统。\n\n## 交付物\n\n- outputs/开发说明书.md\n- outputs/上线确认清单.csv\n- outputs/飞书发布准备说明.md\n`
+      },
+      {
+        relativePath: "outputs/上线确认清单.csv",
+        purpose: "output",
+        content: csvRows([
+          ["序号", "确认项", "当前状态", "负责人"],
+          ["1", "业务范围已确认", "待确认", "用户"],
+          ["2", "SAP 只读证据已补充", "未读取", "用户或后续连接器"],
+          ["3", "开发说明已审阅", "待审阅", "用户"],
+          ["4", "飞书发布权限已验证", "未发布", "用户"],
+          ["5", "知识候选是否入库", "待人工确认", "用户"]
+        ])
       },
       {
         relativePath: "outputs/飞书发布准备说明.md",
         purpose: "output",
-        content: "# 飞书发布准备说明\n\n- 当前仅生成本地草稿。\n- 发布前必须确认飞书 CLI 登录和文档权限。\n- 不记录飞书 Token、App Secret 或授权链接。\n"
+        content: `# 飞书发布准备说明\n\n- 当前仅生成本地 Markdown 草稿。\n- 发布前必须确认飞书 CLI 已登录，并具备文档创建或更新权限。\n- 本文件不记录飞书 Token、App Secret、授权 URL 或设备码。\n- 发布后才允许在 metadata.json 记录文档 URL、document_id、发布时间和本地来源文件。\n`
       }
     ];
   }
@@ -181,31 +232,48 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
       {
         relativePath: "outputs/逻辑说明图.mmd",
         purpose: "output",
-        content: "flowchart TD\n  A[用户问题] --> B[本地案件上下文]\n  B --> C[生成流程图草稿]\n  C --> D[保存到 outputs]\n  D --> E[等待用户确认]\n"
+        content: "flowchart TD\n  A[\"接收案件问题\"] --> B[\"整理本地上下文\"]\n  B --> C[\"生成流程图草稿\"]\n  C --> D[\"保存到 outputs 目录\"]\n  D --> E[\"用户确认业务逻辑\"]\n  E --> F[\"后续可生成图片或飞书白板\"]\n"
       },
       {
         relativePath: "outputs/流程图说明.md",
         purpose: "output",
-        content: `${header}${context}\n## 图示说明\n\n当前 Mermaid 文件是本地流程图草稿，可用于后续图片或飞书白板生成。\n`
+        content: `${header}${context}\n## 图示说明\n\n当前 Mermaid 文件是本地流程图草稿，用于表达案件处理路径。它不是 SAP 运行结果，也没有发布到飞书白板。\n\n## 用户需确认\n\n- 节点顺序是否符合真实业务流程。\n- 是否需要补充异常路径。\n- 是否需要把流程图转换成图片或飞书白板素材。\n`
+      },
+      {
+        relativePath: "outputs/流程节点清单.csv",
+        purpose: "output",
+        content: csvRows([
+          ["节点", "含义", "当前状态"],
+          ["接收案件问题", "记录用户需求并写入当前案件", "已生成"],
+          ["整理本地上下文", "使用案件摘要、规范摘要和文件索引", "已生成"],
+          ["生成流程图草稿", "输出 Mermaid 源文件", "已生成"],
+          ["用户确认业务逻辑", "等待用户检查节点和边界", "待确认"],
+          ["后续素材生成", "可在确认后生成图片或飞书白板", "未执行"]
+        ])
       }
     ];
   }
 
   return [
     {
-      relativePath: "outputs/问题分析_本地结论.md",
+      relativePath: "outputs/问题分析_处理结论.md",
       purpose: "output",
-      content: `${header}${context}\n## 初步结论\n\n当前问题已记录到案件。Phase 6 会先沉淀对话、时间线、上下文包、候选知识和项目规范摘要；候选知识必须人工确认后才会入库。后续真实模式再接入 SAP 只读读取与模型分析。\n`
+      content: `${header}${context}\n## 当前结论\n\n当前问题已进入案件闭环，并生成可追溯的本地分析文件。由于本阶段不读取真实 SAP，根因结论必须标记为待确认。\n\n## 已完成\n\n- 记录本次案件输入到 conversation.md。\n- 刷新 timeline.md、context_pack.md 和 metadata.json。\n- 生成问题分析结论、核对清单、候选知识和本地证据文件。\n\n## 待确认\n\n1. 是否需要读取 SAP 对象或表结构作为证据。\n2. 是否需要补充影响范围、异常样例和期望结果。\n3. 是否把候选知识编辑后正式入库。\n\n## 安全边界\n\n${LOCAL_WORKFLOW_BOUNDARY}\n`
+    },
+    {
+      relativePath: "outputs/问题分析_核对清单.csv",
+      purpose: "output",
+      content: traceabilityCsv(project, caseItem, input.taskMode)
     },
       {
-        relativePath: "knowledge_candidates/案件经验候选.md",
+        relativePath: "knowledge_candidates/问题处理经验候选.md",
         purpose: "candidate_knowledge",
-        content: `# 案件经验候选\n\n状态：待确认\n\n来源案件：${caseItem.title}\n\n候选内容：本地工作流已为当前案件生成经验候选，但不会复制用户原文；必须人工确认、编辑后才能正式入库。\n`
+        content: `# 问题处理经验候选\n\n状态：待确认\n\n来源案件：${caseItem.title}\n\n## 候选内容\n\n当前案件形成了一条待整理经验：先在本地案件中沉淀问题、结论、核对清单和证据，再由用户确认是否进入正式知识库。\n\n## 入库前必须确认\n\n- 内容是否适用于当前项目。\n- 是否需要补充 SAP 对象、业务范围或失效条件。\n- 是否与已有知识冲突。\n`
       },
     {
-      relativePath: "evidence/本地工作流记录.md",
+      relativePath: "evidence/本地处理证据.md",
       purpose: "evidence",
-      content: "# 本地工作流记录\n\nPhase 6 已记录一次问题分析模式的本地案件工作流和待确认知识候选。当前没有调用真实 SAP、飞书或模型服务。\n"
+      content: `# 本地处理证据\n\n- 阶段：${CASE_OUTPUT_PHASE}\n- 输入：${safeContentSummary(input.content, "用户输入")}\n- 文件：问题分析输出、核对清单、候选知识已写入当前案件目录。\n- 边界：${LOCAL_WORKFLOW_BOUNDARY}\n`
     }
   ];
 }
@@ -213,9 +281,9 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
 export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: CaseGeneratedFile[]): string {
   const fileList = generatedFiles.map((file) => `- ${file.relativePath}`).join("\n");
   return [
-    `已按「${TASK_MODE_LABELS[input.taskMode]}」模式完成本地案件沉淀。`,
+    `已按「${TASK_MODE_LABELS[input.taskMode]}」模式生成 ${CASE_OUTPUT_PHASE} 本地案件输出。`,
     "",
-    "本阶段没有调用真实 SAP、模型或飞书，只把这次处理过程保存为可追溯的案件文件。",
+    "本次处理没有调用真实 SAP、模型或飞书；输出是可编辑、可追溯的本地草稿文件。",
     "",
     "已更新：",
     "- conversation.md",
@@ -229,7 +297,7 @@ export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: 
 function renderConversation(messages: CaseMessage[]): string {
   return messages
     .map((message) => [
-      `## ${message.role === "user" ? "用户" : "AI"} · ${message.createdAt}`,
+      `## ${message.role === "user" ? "用户" : "本地工作流"} · ${message.createdAt}`,
       "",
       `任务模式：${TASK_MODE_LABELS[message.taskMode]}`,
       `模型：${message.modelId}`,
@@ -241,7 +309,7 @@ function renderConversation(messages: CaseMessage[]): string {
 }
 
 function renderTimeline(caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): string {
-  const messageEvents = caseItem.messages.map((message) => `- ${message.createdAt}：${message.role === "user" ? "用户补充案件信息" : "本地工作流生成回复"}（${TASK_MODE_LABELS[message.taskMode]}）。`);
+  const messageEvents = caseItem.messages.map((message) => `- ${message.createdAt}：${message.role === "user" ? "用户补充案件信息" : `${CASE_OUTPUT_PHASE} 本地工作流生成回复`}（${TASK_MODE_LABELS[message.taskMode]}）。`);
   const fileEvents = generatedFiles.map((file) => `- ${nowIso()}：生成或刷新文件 ${file.relativePath}。`);
   return [
     "# 时间线",
@@ -253,7 +321,7 @@ function renderTimeline(caseItem: CaseSummary, generatedFiles: CaseGeneratedFile
 }
 
 function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): string {
-  const recentMessages = caseItem.messages.slice(-4).map((message) => `- ${message.role === "user" ? "用户" : "AI"}：${safeContentSummary(message.content, message.role === "user" ? "用户输入" : "本地回复")}`);
+  const recentMessages = caseItem.messages.slice(-4).map((message) => `- ${message.role === "user" ? "用户" : "本地工作流"}：${safeContentSummary(message.content, message.role === "user" ? "用户输入" : "本地回复")}`);
   const recentFiles = generatedFiles.map((file) => `- ${file.relativePath}（${file.purpose}）`);
   return [
     "# 上下文恢复包",
@@ -264,8 +332,8 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 已确认事实",
     "",
-    "- 当前案件已完成本地文件沉淀。",
-    "- 本阶段没有调用真实 SAP、模型 API、Codex 任务或飞书发布。",
+    `- 当前案件已生成 ${CASE_OUTPUT_PHASE} 本地输出文件。`,
+    "- 本次没有调用真实 SAP、模型 API、Codex 任务或飞书发布。",
     "- 候选知识仍为待确认，不能当作正式知识。",
     "",
     "## 关键结论",
@@ -293,7 +361,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 当前边界",
     "",
-    "- Phase 6 只做本地案件工作流、文件沉淀、项目规范引用和待确认知识候选。",
+    `- ${CASE_OUTPUT_PHASE} 只生成本地草稿文件、项目规范摘要和待确认知识候选。`,
     "- 未调用真实 SAP、模型 API、Codex 任务或飞书发布。",
     "- 候选知识必须人工确认后才能正式入库。",
     "",
@@ -336,7 +404,7 @@ function renderReadme(project: ProjectSummary, caseItem: CaseSummary, generatedF
 
 export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: CaseSummary, input: CaseWorkflowInput): CaseWorkflowArtifacts {
   const generatedFiles = modeFilePlan(input, project, caseItem);
-  const currentSummary = `已按「${TASK_MODE_LABELS[input.taskMode]}」模式处理最新输入，并生成 ${generatedFiles.length} 个本地案件文件。`;
+  const currentSummary = `已按「${TASK_MODE_LABELS[input.taskMode]}」模式生成 ${generatedFiles.length} 个 ${CASE_OUTPUT_PHASE} 本地输出文件，等待用户确认或继续补充。`;
   const enrichedCase: CaseSummary = { ...caseItem, currentSummary };
   return {
     currentSummary,
@@ -355,6 +423,8 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
       lastTaskMode: input.taskMode,
       lastModelId: input.modelId,
       generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
+      outputPhase: CASE_OUTPUT_PHASE,
+      workflowBoundary: LOCAL_WORKFLOW_BOUNDARY,
       standards: {
         sourceTemplateId: project.standards.sourceTemplateId,
         sourceTemplateName: project.standards.sourceTemplateName,

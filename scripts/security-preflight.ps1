@@ -226,6 +226,20 @@ if ($LASTEXITCODE -eq 0) {
   throw "Case workflow unsafe pattern scan failed."
 }
 
+$caseRootMarkers = @(
+  @{ Pattern = "normalizeCaseSummary"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertInsideCasesRoot"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = '"projects", project.id, "cases"'; Path = "apps/desktop/src/main/workspaceStore.ts" }
+)
+foreach ($marker in $caseRootMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK case root marker: $($marker.Pattern)"
+  } else {
+    throw "Case root safety marker is missing: $($marker.Pattern)"
+  }
+}
+
 Write-Section "Standards center safety scan"
 $standardsMarkers = rg -n -- "assertNoSensitiveStandardsContent|safeNormalizedStandardsContent|no-secrets-project-standards|project-standards\.json|project-standards\.md|copyProjectStandardsFromProject" apps/desktop/src/main apps/desktop/src/renderer
 if ($LASTEXITCODE -eq 0 -and $standardsMarkers.Count -ge 6) {

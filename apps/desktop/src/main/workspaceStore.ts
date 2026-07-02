@@ -6,6 +6,7 @@ import {
   buildCaseMaintenanceArtifacts,
   buildCaseWorkflowArtifacts,
   createCaseMessage,
+  normalizeTaskMode,
   parseCaseWorkflowInput,
   type CaseWorkflowArtifacts
 } from "./caseWorkflowService";
@@ -36,7 +37,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -69,12 +70,12 @@ function demoCase(): CaseSummary {
     title: "DEMO001 演示BOM清单",
     status: "active",
     caseDir: "demo001",
-    summary: "演示BOM筛选口径与当前业务范围不一致，已生成本地演示交付物。",
+    summary: "演示BOM筛选口径与当前业务范围不一致，已生成本地样例输出。",
     createdAt,
     updatedAt: nowIso(),
     lastOpenedAt: nowIso(),
     folderName: "demo001",
-    currentSummary: "演示BOM筛选口径与当前业务范围不一致，已生成本地演示交付物。",
+    currentSummary: "演示BOM筛选口径与当前业务范围不一致，已生成本地样例输出。",
     messages: [
       {
         id: "seed-user-1",
@@ -306,6 +307,56 @@ function normalizeModels(value: unknown): ModelSummary[] {
       lastSeenAt: nullableIso(candidate.lastSeenAt) ?? nowIso()
     }];
   });
+}
+
+function normalizeCaseStatus(value: unknown): CaseSummary["status"] {
+  if (value === "solved" || value === "archived") return value;
+  return "active";
+}
+
+function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<CaseMessage>;
+  const role = candidate.role === "assistant" ? "assistant" : "user";
+  const linkedFileIds = Array.isArray(candidate.linkedFileIds)
+    ? candidate.linkedFileIds.filter((item): item is string => typeof item === "string" && item.length > 0 && !item.includes("..") && !/^[a-zA-Z]:[\\/]/.test(item))
+    : [];
+  return {
+    id: safeId(candidate.id, `${role}-${Date.now()}`),
+    caseId,
+    role,
+    content: text(candidate.content),
+    taskMode: normalizeTaskMode(candidate.taskMode),
+    modelId: "local-workflow",
+    linkedFileIds,
+    createdAt: text(candidate.createdAt, nowIso())
+  };
+}
+
+function normalizeCaseSummary(value: unknown, projectId: string, fallback: CaseSummary): CaseSummary {
+  const candidate = value && typeof value === "object" ? value as Partial<CaseSummary> : fallback;
+  const id = safeId(candidate.id, fallback.id);
+  const folderName = safeId(candidate.folderName || candidate.caseDir || id, id);
+  const messages = Array.isArray(candidate.messages)
+    ? candidate.messages.flatMap((message) => {
+        const normalized = normalizeCaseMessage(message, id);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  return {
+    id,
+    projectId,
+    title: text(candidate.title, fallback.title),
+    status: normalizeCaseStatus(candidate.status),
+    caseDir: folderName,
+    summary: text(candidate.summary, fallback.summary),
+    createdAt: text(candidate.createdAt, fallback.createdAt),
+    updatedAt: text(candidate.updatedAt, nowIso()),
+    lastOpenedAt: text(candidate.lastOpenedAt, nowIso()),
+    folderName,
+    currentSummary: text(candidate.currentSummary, text(candidate.summary, fallback.currentSummary)),
+    messages
+  };
 }
 
 export class WorkspaceStore {
@@ -715,23 +766,31 @@ export class WorkspaceStore {
 
   private normalizeState(state: StoredState): StoredState {
     const normalizedProjects = (state.projects.length > 0 ? state.projects : [demoProject()]).map((project) => {
+      const projectId = safeId(project.id, DEMO_PROJECT_ID);
+      const projectDir = safeId(project.projectDir, projectId);
       const sourceCases = Array.isArray(project.cases) ? project.cases : [];
-      const firstCase = sourceCases[0] ?? demoCase();
-      const cases = sourceCases.length > 0 ? sourceCases : [firstCase];
+      const cases = (sourceCases.length > 0 ? sourceCases : [demoCase()]).map((caseItem, index) => normalizeCaseSummary(caseItem, projectId, index === 0 ? demoCase() : {
+        ...demoCase(),
+        id: `case-${index + 1}`,
+        caseDir: `case-${index + 1}`,
+        folderName: `case-${index + 1}`,
+        title: `案件 ${index + 1}`
+      }));
+      const firstCase = cases[0] ?? normalizeCaseSummary(demoCase(), projectId, demoCase());
       const normalizedProject: ProjectSummary = {
-        id: safeId(project.id, DEMO_PROJECT_ID),
+        id: projectId,
         name: text(project.name, "演示 S4HANA"),
         sapVersion: sapVersion(project.sapVersion),
         systemLabel: text(project.systemLabel, "DEV/100"),
-        projectDir: safeId(project.projectDir, safeId(project.id, DEMO_PROJECT_ID)),
+        projectDir,
         isVisible: typeof project.isVisible === "boolean" ? project.isVisible : true,
         visibleOrder: typeof project.visibleOrder === "number" ? project.visibleOrder : 1,
         connectionState: normalizeConnectionState(project.connectionState),
         createdAt: text(project.createdAt, nowIso()),
         updatedAt: text(project.updatedAt, nowIso()),
-        config: project.config ?? defaultProjectConfig(safeId(project.id, DEMO_PROJECT_ID), safeId(project.projectDir, safeId(project.id, DEMO_PROJECT_ID)), firstCase.folderName || firstCase.id),
-        standards: normalizeProjectStandards(safeId(project.id, DEMO_PROJECT_ID), sapVersion(project.sapVersion), (project as Partial<ProjectSummary>).standards),
-        knowledge: normalizeProjectKnowledge(safeId(project.id, DEMO_PROJECT_ID), (project as Partial<ProjectSummary>).knowledge, safeId(project.id, DEMO_PROJECT_ID) === DEMO_PROJECT_ID),
+        config: project.config ?? defaultProjectConfig(projectId, projectDir, firstCase.folderName),
+        standards: normalizeProjectStandards(projectId, sapVersion(project.sapVersion), (project as Partial<ProjectSummary>).standards),
+        knowledge: normalizeProjectKnowledge(projectId, (project as Partial<ProjectSummary>).knowledge, projectId === DEMO_PROJECT_ID),
         cases
       };
       return {
@@ -739,9 +798,15 @@ export class WorkspaceStore {
         config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config, { preserveVerification: true })
       };
     });
+    const requestedProjectId = safeId(state.activeProjectId, DEMO_PROJECT_ID);
+    const activeProject = normalizedProjects.find((project) => project.id === requestedProjectId) ?? normalizedProjects[0] ?? demoProject();
+    const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? DEMO_CASE_ID);
+    const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? demoCase();
     return {
       ...state,
       schemaVersion: state.schemaVersion ?? SCHEMA_VERSION,
+      activeProjectId: activeProject.id,
+      activeCaseId: activeCase.id,
       projects: normalizedProjects
     };
   }
@@ -922,8 +987,8 @@ export class WorkspaceStore {
   private caseRoot(state: StoredState): string {
     const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
     const caseItem = this.getActiveCase(state);
-    const target = path.join(this.workspaceRoot, "projects", project.id, "cases", caseItem.folderName);
-    return this.assertInsideWorkspace(target);
+    const casesRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "cases"));
+    return this.assertInsideCasesRoot(casesRoot, path.join(casesRoot, caseItem.folderName));
   }
 
   private assertInsideWorkspace(target: string): string {
@@ -931,6 +996,15 @@ export class WorkspaceStore {
     const resolvedTarget = path.resolve(target);
     if (resolvedTarget !== resolvedRoot && !resolvedTarget.startsWith(`${resolvedRoot}${path.sep}`)) {
       throw new Error("文件路径超出本地工作区，已阻止。");
+    }
+    return resolvedTarget;
+  }
+
+  private assertInsideCasesRoot(casesRoot: string, target: string): string {
+    const resolvedCasesRoot = path.resolve(casesRoot);
+    const resolvedTarget = this.assertInsideWorkspace(target);
+    if (resolvedTarget === resolvedCasesRoot || !resolvedTarget.startsWith(`${resolvedCasesRoot}${path.sep}`)) {
+      throw new Error("案件目录超出当前项目 cases 目录，已阻止。");
     }
     return resolvedTarget;
   }

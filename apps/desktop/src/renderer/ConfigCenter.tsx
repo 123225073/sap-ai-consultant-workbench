@@ -5,8 +5,8 @@ import type { AdtVerificationReport, ApiProviderConfig, ConfigStatus, FeishuVeri
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
   saved: "配置草稿",
-  "pending-verification": "待只读验证",
-  verified: "只读验证通过",
+  "pending-verification": "待验证",
+  verified: "已验证记录",
   failed: "检查失败"
 };
 
@@ -50,7 +50,7 @@ function ModelStatusPill({ status }: { status: ConfigStatus }) {
     "not-configured": "未配置",
     saved: "渠道草稿",
     "pending-verification": "待渠道验证",
-    verified: "最小对话通过",
+    verified: "已验证记录",
     failed: "验证失败"
   };
   return <span className={`status-pill status-${statusTone(status)}`}>{labels[status]}</span>;
@@ -112,6 +112,13 @@ function capabilityLabel(capability: ModelCapability): string {
   return labels[capability];
 }
 
+function reportModeLabel(mode: "fake" | "cli" | "http" | undefined): string {
+  if (mode === "cli") return "真实 CLI 验证";
+  if (mode === "http") return "真实 HTTP 验证";
+  if (mode === "fake") return "模拟验证";
+  return "尚未验证";
+}
+
 function AdtVerificationReportView({ config, report }: { config: ProjectConfig; report: AdtVerificationReport | null }) {
   const steps = report?.steps ?? [
     {
@@ -138,6 +145,7 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
   ];
   const firstError = report?.errors[0];
   const system = report?.system;
+  const isFakeReport = report?.mode === "fake";
 
   return (
     <div className="adt-verification-report">
@@ -181,6 +189,10 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
           <dd>禁用</dd>
         </div>
         <div>
+          <dt>验证模式</dt>
+          <dd>{reportModeLabel(report?.mode)}</dd>
+        </div>
+        <div>
           <dt>最小读取对象</dt>
           <dd>T000</dd>
         </div>
@@ -190,7 +202,7 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
         </div>
         <div>
           <dt>验证结论</dt>
-          <dd>{report ? (report.ok ? "T000 最小读取通过，当前只读链路可用。" : "未通过，不能标记为只读验证通过。") : "尚未执行本轮验证。"}</dd>
+          <dd>{report ? (report.ok ? (isFakeReport ? "模拟 T000 最小读取通过，仅用于本地流程自测；不代表真实 SAP 已连通。" : "T000 最小读取通过，当前只读链路可用。") : "未通过，不能标记为只读验证通过。") : "尚未执行本轮验证。"}</dd>
         </div>
       </dl>
 
@@ -232,7 +244,7 @@ function FeishuVerificationReportView({ config, report, hasUnsavedDraft }: { con
   ];
   const firstError = report?.errors[0];
   const conclusion = report
-    ? (report.ok ? "CLI、登录和文档权限未发现问题；尚未创建或发布文档。" : "未通过，不能用于后续飞书文档流程。")
+    ? (report.ok ? `${reportModeLabel(report.mode)}通过；尚未创建或发布文档。` : "未通过，不能用于后续飞书文档流程。")
     : hasUnsavedDraft
       ? "飞书配置已修改，保存后需要重新验证。"
       : "本页尚未重新验证；上次结果见上方状态。";
@@ -257,6 +269,10 @@ function FeishuVerificationReportView({ config, report, hasUnsavedDraft }: { con
         <div>
           <dt>Profile</dt>
           <dd>{report?.cli.profile || config.feishu.profile || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>验证模式</dt>
+          <dd>{reportModeLabel(report?.mode)}</dd>
         </div>
         <div>
           <dt>登录状态</dt>
@@ -306,6 +322,7 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
   const firstError = report?.errors[0];
   const models = report?.models ?? provider.models;
   const selectedModelId = report?.selectedModelId ?? null;
+  const isFakeReport = report?.mode === "fake";
 
   return (
     <div className="adt-verification-report">
@@ -333,6 +350,10 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
           <dd>{report?.provider.endpointHost || "执行验证后显示脱敏主机"}</dd>
         </div>
         <div>
+          <dt>验证模式</dt>
+          <dd>{reportModeLabel(report?.mode)}</dd>
+        </div>
+        <div>
           <dt>模型数量</dt>
           <dd>{models.length} 个</dd>
         </div>
@@ -346,7 +367,7 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
         </div>
         <div>
           <dt>验证结论</dt>
-          <dd>{report ? (report.ok ? "最小对话测试通过，尚未进入案件任务编排。" : "未通过，不能作为候选模型使用。") : "尚未执行本轮验证。"}</dd>
+          <dd>{report ? (report.ok ? (isFakeReport ? "模拟模型列表和最小对话通过，仅用于本地流程自测；不代表真实模型渠道已连通。" : "真实模型最小对话测试通过，尚未进入案件任务编排。") : "未通过，不能作为候选模型使用。") : "尚未执行本轮验证。"}</dd>
         </div>
       </dl>
 
@@ -829,7 +850,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
             <li>项目配置只保存安全引用，不保存明文密钥。</li>
             <li>ADT 写入模式锁定为只读。</li>
             <li>保存密钥不代表连接已通过检查。</li>
-            <li>T000 最小读取通过后，才显示只读验证通过。</li>
+            <li>模拟验证只证明本地流程可跑通，不代表真实 SAP 已连通。</li>
           </ul>
         </section>
         <section>
@@ -837,7 +858,7 @@ function ConfigCenter({ project, notice, onBack, onSave, onSaveSecret, onVerifyA
           <ul>
             <li>ADT：最小读取成功后才可改变状态。</li>
             <li>飞书：CLI 与权限都要单独验证。</li>
-            <li>模型：模型列表和最小对话分开验证，不代表已进入案件任务。</li>
+            <li>模型：报告会区分模拟验证和真实 HTTP 验证。</li>
             <li>Codex：只允许明确白名单能力。</li>
           </ul>
         </section>
