@@ -1,3 +1,4 @@
+import { standardsSummaryForTask } from "./standardsService";
 import type { CaseGeneratedFile, CaseMessage, CaseSummary, CaseWorkflowInput, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
 
 export const TASK_MODE_LABELS: Record<TaskMode, string> = {
@@ -93,13 +94,13 @@ export function assertNoSensitiveCaseContent(content: string): void {
     /\bINSERT\s+[\w/]+\b|\bUPDATE\s+[\w/]+\b|\bMODIFY\s+[\w/]+\b|\bDELETE\s+FROM\s+[\w/]+\b/i
   ];
   if (abapSourceMarkers.some((pattern) => pattern.test(content))) {
-    throw new Error("消息中疑似包含 SAP 源码或写入语句。Phase 4 只保存脱敏问题描述，请先删除源码、表数据或写入语句后再发送。");
+    throw new Error("消息中疑似包含 SAP 源码或写入语句。当前本地阶段只保存脱敏问题描述，请先删除源码、表数据或写入语句后再发送。");
   }
 
   const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
   const structuredRows = lines.filter((line) => line.split(/\t|,|\|/).filter((cell) => cell.trim().length > 0).length >= 4);
   if (structuredRows.length >= 3) {
-    throw new Error("消息中疑似包含表格行数据。Phase 4 不把原始业务表格写入案件文件，请先改成脱敏摘要后再发送。");
+    throw new Error("消息中疑似包含表格行数据。当前本地阶段不把原始业务表格写入案件文件，请先改成脱敏摘要后再发送。");
   }
 }
 
@@ -132,21 +133,23 @@ export function createCaseMessage(
 
 function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary): CaseGeneratedFile[] {
   const header = `# ${TASK_MODE_LABELS[input.taskMode]}本地工作结果\n\n`;
+  const standardsSummary = standardsSummaryForTask(project.standards);
   const context = [
     `- 项目：${project.name}`,
     `- 案件：${caseItem.title}`,
     `- 任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
     `- 输入摘要：${safeContentSummary(input.content, "用户输入")}`,
-    "- 执行边界：Phase 4 仅做本地案件沉淀，不调用真实 SAP、模型或飞书。",
+    input.taskMode === "abap-development" ? `- 当前项目规范：${standardsSummary}` : null,
+    "- 执行边界：Phase 5 仅做本地案件沉淀和项目规范引用，不调用真实 SAP、模型或飞书。",
     ""
-  ].join("\n");
+  ].filter(Boolean).join("\n");
 
   if (input.taskMode === "abap-development") {
     return [
       {
         relativePath: "outputs/ABAP开发_只读开发说明.md",
         purpose: "output",
-        content: `${header}${context}\n## 本地开发说明\n\n- 已按 ABAP 开发模式记录需求。\n- 后续真实接入时，必须先读取 SAP 最新源码并保存快照。\n- MVP 不自动写入、激活或释放传输请求。\n`
+        content: `${header}${context}\n## 本地开发说明\n\n- 已按 ABAP 开发模式记录需求。\n- 当前任务已加载项目规范摘要：${standardsSummary}。\n- 后续真实接入时，必须先读取 SAP 最新源码并保存快照。\n- MVP 不自动写入、激活或释放传输请求。\n`
       },
       {
         relativePath: "snapshots/ABAP只读快照占位.md",
@@ -190,7 +193,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     {
       relativePath: "outputs/问题分析_本地结论.md",
       purpose: "output",
-      content: `${header}${context}\n## 初步结论\n\n当前问题已记录到案件。Phase 4 会先沉淀对话、时间线、上下文包和候选知识，后续真实模式再接入 SAP 只读读取与模型分析。\n`
+      content: `${header}${context}\n## 初步结论\n\n当前问题已记录到案件。Phase 5 会先沉淀对话、时间线、上下文包、候选知识和项目规范摘要，后续真实模式再接入 SAP 只读读取与模型分析。\n`
     },
       {
         relativePath: "knowledge_candidates/案件经验候选.md",
@@ -200,7 +203,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     {
       relativePath: "evidence/本地工作流记录.md",
       purpose: "evidence",
-      content: "# 本地工作流记录\n\nPhase 4 已记录一次问题分析模式的本地案件工作流。当前没有调用真实 SAP、飞书或模型服务。\n"
+      content: "# 本地工作流记录\n\nPhase 5 已记录一次问题分析模式的本地案件工作流。当前没有调用真实 SAP、飞书或模型服务。\n"
     }
   ];
 }
@@ -272,6 +275,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     `- 项目：${project.name}`,
     `- 系统标签：${project.systemLabel}`,
     `- SAP 版本：${project.sapVersion}`,
+    `- 当前项目规范：${standardsSummaryForTask(project.standards)}`,
     "",
     "## SAP 对象",
     "",
@@ -287,7 +291,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 当前边界",
     "",
-    "- Phase 4 只做本地案件工作流和文件沉淀。",
+    "- Phase 5 只做本地案件工作流、文件沉淀和项目规范引用。",
     "- 未调用真实 SAP、模型 API、Codex 任务或飞书发布。",
     "- 候选知识必须人工确认后才能正式入库。",
     "",
@@ -349,6 +353,12 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
       lastTaskMode: input.taskMode,
       lastModelId: input.modelId,
       generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
+      standards: {
+        sourceTemplateId: project.standards.sourceTemplateId,
+        sourceTemplateName: project.standards.sourceTemplateName,
+        version: project.standards.version,
+        summary: standardsSummaryForTask(project.standards)
+      },
       safety: {
         localOnly: true,
         sapWrite: "disabled",
@@ -379,6 +389,12 @@ export function buildCaseMaintenanceArtifacts(project: ProjectSummary, caseItem:
       lastTaskMode: lastMessage?.taskMode ?? "problem-analysis",
       lastModelId: lastMessage?.modelId ?? "local-workflow",
       generatedFiles: [],
+      standards: {
+        sourceTemplateId: project.standards.sourceTemplateId,
+        sourceTemplateName: project.standards.sourceTemplateName,
+        version: project.standards.version,
+        summary: standardsSummaryForTask(project.standards)
+      },
       safety: {
         localOnly: true,
         sapWrite: "disabled",

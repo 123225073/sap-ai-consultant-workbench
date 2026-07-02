@@ -388,6 +388,13 @@ async function verifyModelProvider(store: WorkspaceStore, secretStore: SecureSec
   return { report, state };
 }
 
+function validProjectId(projectId: unknown, action: string): string {
+  if (typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(projectId)) {
+    throw new Error(`${action}请求缺少有效项目 ID。`);
+  }
+  return projectId;
+}
+
 function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore): void {
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
   ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
@@ -400,6 +407,10 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));
   ipcMain.handle("workbench:feishu-verify-cli", (_event, projectId: unknown) => response(verifyFeishuCli(store, projectId)));
   ipcMain.handle("workbench:model-provider-verify", (_event, projectId: unknown, providerId: unknown) => response(verifyModelProvider(store, secretStore, projectId, providerId)));
+  ipcMain.handle("workbench:get-project-standards", (_event, projectId: unknown) => response(store.getProjectStandards(validProjectId(projectId, "读取项目规范"))));
+  ipcMain.handle("workbench:standards-copy-template", (_event, projectId: unknown, input: unknown) => response(store.copyProjectStandardsTemplate(validProjectId(projectId, "复制规范模板"), input)));
+  ipcMain.handle("workbench:standards-copy-project", (_event, projectId: unknown, input: unknown) => response(store.copyProjectStandardsFromProject(validProjectId(projectId, "复制其他项目规范"), input)));
+  ipcMain.handle("workbench:standards-save", (_event, projectId: unknown, input: unknown) => response(store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
 }
 
 function createMainWindow(): void {

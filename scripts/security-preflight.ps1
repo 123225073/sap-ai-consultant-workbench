@@ -125,7 +125,11 @@ $allowedIpc = @(
   "workbench:save-project-secret",
   "workbench:adt-verify-readonly",
   "workbench:feishu-verify-cli",
-  "workbench:model-provider-verify"
+  "workbench:model-provider-verify",
+  "workbench:get-project-standards",
+  "workbench:standards-copy-template",
+  "workbench:standards-copy-project",
+  "workbench:standards-save"
 )
 
 $ipcHits = rg -n -- 'ipcMain\.handle\(\x22([^\x22]+)\x22' apps/desktop/src/main
@@ -208,6 +212,40 @@ if ($LASTEXITCODE -eq 0) {
   throw "Case workflow may copy raw input or write generated files without path guard."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Case workflow unsafe pattern scan failed."
+}
+
+Write-Section "Standards center safety scan"
+$standardsMarkers = rg -n -- "assertNoSensitiveStandardsContent|safeNormalizedStandardsContent|no-secrets-project-standards|project-standards\.json|project-standards\.md|copyProjectStandardsFromProject" apps/desktop/src/main apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0 -and $standardsMarkers.Count -ge 6) {
+  Write-Host "OK standards center safety markers found."
+} elseif ($LASTEXITCODE -eq 1) {
+  throw "Standards center safety markers are missing."
+} else {
+  throw "Standards center safety marker scan failed."
+}
+
+$unsafeStandardsPathHits = rg -n -- "standardsRoot.*input|standardsRoot.*relative|project-standards\.\$\{|path\.join\(standardsRoot,\s*(input|.*relative|.*path)" apps/desktop/src/main
+if ($LASTEXITCODE -eq 0) {
+  $unsafeStandardsPathHits | ForEach-Object { Write-Host $_ }
+  throw "Standards center may accept user-controlled standards file paths."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Standards center path scan failed."
+}
+
+$standardsLeakHits = rg -n -- "sourceContent|currentContent" apps/desktop/src/main/caseWorkflowService.ts apps/desktop/src/renderer/App.tsx
+if ($LASTEXITCODE -eq 0) {
+  $standardsLeakHits | ForEach-Object { Write-Host $_ }
+  throw "Case workflow or main chat UI must not copy full standards content into assistant replies."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Standards full-content leak scan failed."
+}
+
+$standardsKnowledgeHits = rg -n -- "standards.*knowledge|knowledge.*standards|status:\s*['""]published['""]" apps/desktop/src/main/standardsService.ts apps/desktop/src/renderer/StandardsCenter.tsx
+if ($LASTEXITCODE -eq 0) {
+  $standardsKnowledgeHits | ForEach-Object { Write-Host $_ }
+  throw "Standards center must not publish formal knowledge directly."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Standards knowledge-boundary scan failed."
 }
 
 Write-Section "Feishu auth artifact scan"

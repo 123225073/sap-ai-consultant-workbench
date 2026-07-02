@@ -9,8 +9,20 @@ import {
   parseCaseWorkflowInput,
   type CaseWorkflowArtifacts
 } from "./caseWorkflowService";
+import {
+  copyProjectStandardsFromProject,
+  createProjectStandards,
+  normalizeProjectStandards,
+  parseCopyProjectStandardsFromProjectInput,
+  parseCopyProjectStandardsInput,
+  parseSaveProjectStandardsInput,
+  projectStandardsView,
+  renderProjectStandardsJson,
+  renderProjectStandardsMarkdown,
+  updateProjectStandards
+} from "./standardsService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseGeneratedFile, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 
 interface StoredState {
   schemaVersion: number;
@@ -89,6 +101,7 @@ function demoProject(): ProjectSummary {
     createdAt,
     updatedAt: nowIso(),
     config: defaultProjectConfig(DEMO_PROJECT_ID, projectDir, "demo001"),
+    standards: createProjectStandards(DEMO_PROJECT_ID, "S4", "s4-default"),
     cases: [demoCase()]
   };
 }
@@ -191,6 +204,12 @@ function purposeFor(relativePath: string, kind: "file" | "directory"): CaseFileN
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function safeId(value: unknown, fallback: string): string {
+  const raw = text(value, fallback);
+  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  return safe || fallback;
 }
 
 function bool(value: unknown, fallback = false): boolean {
@@ -430,6 +449,73 @@ export class WorkspaceStore {
     return project.config;
   }
 
+  async getProjectStandards(projectId: string): Promise<ProjectStandardsView> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法读取项目规范。");
+    }
+    return projectStandardsView(project.standards, project.sapVersion);
+  }
+
+  async copyProjectStandardsTemplate(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const copyInput = parseCopyProjectStandardsInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法复制规范模板。");
+    }
+
+    project.standards = createProjectStandards(project.id, project.sapVersion, copyInput.templateId);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectStandards(project);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async copyProjectStandardsFromProject(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const copyInput = parseCopyProjectStandardsFromProjectInput(input);
+    const state = await this.loadOrCreateState();
+    const targetProject = state.projects.find((item) => item.id === projectId);
+    const sourceProject = state.projects.find((item) => item.id === copyInput.sourceProjectId);
+    if (!targetProject) {
+      throw new Error("未找到当前项目，无法复制其他项目规范。");
+    }
+    if (!sourceProject) {
+      throw new Error("未找到来源项目，无法复制规范。");
+    }
+
+    targetProject.standards = copyProjectStandardsFromProject(targetProject, sourceProject);
+    targetProject.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectStandards(targetProject);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
+  async saveProjectStandards(projectId: string, input: unknown): Promise<WorkbenchState> {
+    const saveInput = parseSaveProjectStandardsInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存项目规范。");
+    }
+
+    const nextStandards = updateProjectStandards(project.standards, saveInput);
+    const changed = nextStandards !== project.standards;
+    project.standards = nextStandards;
+    if (changed) {
+      project.updatedAt = nowIso();
+    }
+    await this.saveState(state);
+    if (changed) {
+      await this.writeProjectStandards(project);
+    }
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+  }
+
   async updateAdtVerification(projectId: string, report: AdtVerificationReport): Promise<WorkbenchState> {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -574,17 +660,18 @@ export class WorkspaceStore {
       const firstCase = sourceCases[0] ?? demoCase();
       const cases = sourceCases.length > 0 ? sourceCases : [firstCase];
       const normalizedProject: ProjectSummary = {
-        id: text(project.id, DEMO_PROJECT_ID),
+        id: safeId(project.id, DEMO_PROJECT_ID),
         name: text(project.name, "演示 S4HANA"),
         sapVersion: sapVersion(project.sapVersion),
         systemLabel: text(project.systemLabel, "DEV/100"),
-        projectDir: text(project.projectDir, project.id || DEMO_PROJECT_ID),
+        projectDir: safeId(project.projectDir, safeId(project.id, DEMO_PROJECT_ID)),
         isVisible: typeof project.isVisible === "boolean" ? project.isVisible : true,
         visibleOrder: typeof project.visibleOrder === "number" ? project.visibleOrder : 1,
         connectionState: normalizeConnectionState(project.connectionState),
         createdAt: text(project.createdAt, nowIso()),
         updatedAt: text(project.updatedAt, nowIso()),
-        config: project.config ?? defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id),
+        config: project.config ?? defaultProjectConfig(safeId(project.id, DEMO_PROJECT_ID), safeId(project.projectDir, safeId(project.id, DEMO_PROJECT_ID)), firstCase.folderName || firstCase.id),
+        standards: normalizeProjectStandards(safeId(project.id, DEMO_PROJECT_ID), sapVersion(project.sapVersion), (project as Partial<ProjectSummary>).standards),
         cases
       };
       return {
@@ -819,6 +906,7 @@ export class WorkspaceStore {
 
   private async ensureCaseFiles(state: StoredState): Promise<void> {
     const caseRoot = this.caseRoot(state);
+    await Promise.all(state.projects.map((project) => this.ensureProjectStandardsFiles(project)));
     for (const directory of directories) {
       await fs.mkdir(this.assertInsideWorkspace(path.join(caseRoot, directory)), { recursive: true });
     }
@@ -838,6 +926,26 @@ export class WorkspaceStore {
     }
   }
 
+  private async ensureProjectStandardsFiles(project: ProjectSummary): Promise<void> {
+    const standardsRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "standards"));
+    const jsonPath = this.assertInsideWorkspace(path.join(standardsRoot, "project-standards.json"));
+    const markdownPath = this.assertInsideWorkspace(path.join(standardsRoot, "project-standards.md"));
+    try {
+      await Promise.all([fs.access(jsonPath), fs.access(markdownPath)]);
+    } catch {
+      await this.writeProjectStandards(project);
+    }
+  }
+
+  private async writeProjectStandards(project: ProjectSummary): Promise<void> {
+    const standardsRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "standards"));
+    await fs.mkdir(standardsRoot, { recursive: true });
+    await Promise.all([
+      this.writeJsonAtomic(path.join(standardsRoot, "project-standards.json"), renderProjectStandardsJson(project.standards)),
+      fs.writeFile(this.assertInsideWorkspace(path.join(standardsRoot, "project-standards.md")), renderProjectStandardsMarkdown(project.standards), "utf8")
+    ]);
+  }
+
   private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
     const caseRoot = this.caseRoot(state);
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
@@ -854,6 +962,7 @@ export class WorkspaceStore {
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,
       config: project.config,
+      standards: project.standards,
       safety: "no-secrets-demo-project"
     };
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {

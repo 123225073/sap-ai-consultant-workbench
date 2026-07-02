@@ -689,7 +689,22 @@ button {
   background: #ffffff;
 }
 
+.standards-workspace {
+  grid-column: 2 / 4;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(720px, 1fr) 360px;
+  background: #ffffff;
+}
+
 .config-main {
+  min-width: 0;
+  overflow: auto;
+  padding: 0 32px 32px;
+}
+
+.standards-main {
   min-width: 0;
   overflow: auto;
   padding: 0 32px 32px;
@@ -1064,12 +1079,277 @@ button {
   line-height: 1.7;
 }
 
+.standards-toolbar {
+  min-height: 68px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #e5e9f0;
+}
+
+.standards-toolbar div {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  align-content: center;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.standards-toolbar span,
+.standards-actions span,
+.standards-copy-project span,
+.standards-edit-heading p,
+.standards-diff p,
+.standards-example p,
+.standards-advanced p {
+  color: #6b7280;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.standards-toolbar strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.standards-actions {
+  border-top: 1px solid #e5e9f0;
+  margin-top: 22px;
+  padding-top: 22px;
+  display: grid;
+  gap: 14px;
+}
+
+.standards-actions > div:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.standards-action-buttons button:first-child {
+  color: #111827;
+  border-color: #d8dee8;
+  background: #ffffff;
+}
+
+.standards-copy-project {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.standards-copy-project label {
+  display: grid;
+  gap: 7px;
+}
+
+.standards-copy-project select {
+  height: 38px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #ffffff;
+}
+
+.standards-copy-project button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 12px;
+  background: #ffffff;
+}
+
+.standards-copy-project button:disabled {
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+.standards-editor {
+  min-height: 560px;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 22px;
+  border-top: 1px solid #e5e9f0;
+  margin-top: 24px;
+  padding-top: 24px;
+}
+
+.standards-category-list {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+}
+
+.standards-category-list button {
+  min-width: 0;
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  border-radius: 7px;
+  padding: 8px 10px;
+  text-align: left;
+}
+
+.standards-category-list button:hover,
+.standards-category-list button.active {
+  background: #eaf2ff;
+  color: #1d4ed8;
+}
+
+.standards-category-list button span:not(.status-pill) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.standards-category-list .status-pill {
+  grid-column: 2;
+  justify-self: start;
+}
+
+.standards-edit-pane {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+}
+
+.standards-edit-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.standards-edit-heading h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.standards-edit-heading p {
+  margin: 8px 0 0;
+}
+
+.standards-edit-pane textarea {
+  width: 100%;
+  min-height: 260px;
+  resize: vertical;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  padding: 12px;
+  line-height: 1.6;
+  outline: none;
+}
+
+.standards-example {
+  border-top: 1px solid #e5e9f0;
+  padding-top: 14px;
+  display: grid;
+  gap: 10px;
+}
+
+.standards-example > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.standards-example pre {
+  margin: 0;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  color: #374151;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: inherit;
+  line-height: 1.55;
+}
+
+.standards-advanced {
+  border-top: 1px solid #e5e9f0;
+  padding-top: 12px;
+}
+
+.standards-advanced summary {
+  color: #374151;
+  font-size: 14px;
+}
+
+.standards-diff {
+  min-width: 0;
+  border-left: 1px solid #dde3ea;
+  background: #fbfcfe;
+  overflow: auto;
+  padding: 26px 22px;
+}
+
+.standards-diff h2 {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 17px;
+}
+
+.diff-item {
+  border-top: 1px solid #e5e9f0;
+  padding: 16px 0;
+}
+
+.diff-item > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.diff-item dl {
+  margin: 12px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.diff-item dt,
+.diff-item dd {
+  margin: 0;
+  font-size: 13px;
+}
+
+.diff-item dt {
+  color: #6b7280;
+}
+
+.diff-item dd {
+  color: #374151;
+  line-height: 1.5;
+}
+
 @media (max-width: 1240px) {
   .config-workspace {
     grid-template-columns: minmax(640px, 1fr);
   }
 
-  .config-side {
+  .standards-workspace {
+    grid-template-columns: minmax(640px, 1fr);
+  }
+
+  .config-side,
+  .standards-diff {
     display: none;
   }
 
@@ -1098,5 +1378,14 @@ button {
   .verification-details dd {
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+
+  .standards-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .standards-editor,
+  .standards-copy-project {
+    grid-template-columns: 1fr;
   }
 }

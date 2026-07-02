@@ -5,6 +5,10 @@ export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "faile
 export type SecretStoreKind = "electron-safe-storage";
 export type TaskMode = "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
 export type CaseGeneratedFilePurpose = "output" | "candidate_knowledge" | "technical" | "evidence" | "snapshot";
+export type StandardsTemplateId = "s4-default" | "ecc-default";
+export type StandardsCategoryId = "abap" | "comments" | "request" | "alv" | "interface" | "document" | "diagram" | "excel";
+export type StandardsDiffStatus = "same" | "modified" | "project-only" | "template-only" | "not-applicable";
+export type StandardsSourceType = "sap-version-template" | "copied-project";
 export type AdtVerificationStepId = "config" | "status" | "t000";
 export type AdtVerificationStepStatus = "passed" | "failed" | "skipped";
 export type AdtVerificationErrorCode =
@@ -251,6 +255,68 @@ export interface LocalStorageConfig {
   lastError: string | null;
 }
 
+export interface StandardsCategory {
+  id: StandardsCategoryId;
+  title: string;
+  description: string;
+  sourceContent: string;
+  currentContent: string;
+  applicableSapVersions: ProjectSummary["sapVersion"][];
+  updatedAt: string;
+}
+
+export interface ProjectStandardsProfile {
+  schemaVersion: 1;
+  projectId: string;
+  sourceType: StandardsSourceType;
+  sourceTemplateId: StandardsTemplateId;
+  sourceTemplateName: string;
+  sourceProjectId: string | null;
+  sourceProjectName: string | null;
+  version: number;
+  copiedAt: string;
+  updatedAt: string;
+  categories: StandardsCategory[];
+}
+
+export interface StandardsTemplateSummary {
+  id: StandardsTemplateId;
+  name: string;
+  sapVersion: ProjectSummary["sapVersion"];
+  description: string;
+}
+
+export interface StandardsDiffItem {
+  id: StandardsCategoryId;
+  title: string;
+  status: StandardsDiffStatus;
+  sourceExcerpt: string;
+  currentExcerpt: string;
+}
+
+export interface ProjectStandardsView {
+  profile: ProjectStandardsProfile;
+  templates: StandardsTemplateSummary[];
+  diff: StandardsDiffItem[];
+}
+
+export interface StandardsCategoryInput {
+  id: StandardsCategoryId;
+  currentContent: string;
+}
+
+export interface SaveProjectStandardsInput {
+  categories: StandardsCategoryInput[];
+}
+
+export interface CopyProjectStandardsInput {
+  templateId: StandardsTemplateId;
+}
+
+export interface CopyProjectStandardsFromProjectInput {
+  sourceProjectId: string;
+}
+
 export interface ProjectConfig {
   schemaVersion: 2;
   projectId: string;
@@ -312,6 +378,7 @@ export interface ProjectSummary {
   createdAt: string;
   updatedAt: string;
   config: ProjectConfig;
+  standards: ProjectStandardsProfile;
   cases: CaseSummary[];
 }
 
