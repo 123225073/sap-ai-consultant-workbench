@@ -30,14 +30,22 @@ function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
-function safeWorkflowModelHint(value: unknown): string {
-  if (typeof value !== "string") return "local-workflow";
+function safeWorkflowModelHint(value: unknown, hasHint = false): { modelId: string; rejected: boolean } {
+  if (typeof value !== "string") return { modelId: "local-workflow", rejected: hasHint && value !== undefined };
   const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return "local-workflow";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return { modelId: "local-workflow", rejected: hasHint };
   if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password|secure-store|https?:\/\//i.test(trimmed)) {
-    return "local-workflow";
+    return { modelId: "local-workflow", rejected: hasHint };
   }
-  return trimmed;
+  return { modelId: trimmed, rejected: false };
+}
+
+function safeWorkflowProviderHint(value: unknown, hasHint = false): { providerId?: string; rejected: boolean } {
+  if (typeof value !== "string") return { providerId: undefined, rejected: hasHint && value !== undefined };
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(trimmed)) return { providerId: undefined, rejected: hasHint };
+  if (/(api[_-]?key|token|secret|password|secure-store|https?:\/|bearer\s+)/i.test(trimmed)) return { providerId: undefined, rejected: hasHint };
+  return { providerId: trimmed, rejected: false };
 }
 
 function csvCell(value: string): string {
@@ -82,10 +90,17 @@ export function parseCaseWorkflowInput(input: unknown): CaseWorkflowInput {
   if (content.length > 8000) {
     throw new Error("单条案件消息过长。请先整理成 8000 字以内的脱敏摘要后再发送。");
   }
+  const hasProviderHint = Object.prototype.hasOwnProperty.call(candidate, "providerId");
+  const hasModelHint = Object.prototype.hasOwnProperty.call(candidate, "modelId");
+  const providerHint = safeWorkflowProviderHint(candidate.providerId, hasProviderHint);
+  const modelHint = safeWorkflowModelHint(candidate.modelId, hasModelHint);
+  const modelSelectionRejected = providerHint.rejected || modelHint.rejected;
   return {
     content,
     taskMode: normalizeTaskMode(candidate.taskMode),
-    modelId: safeWorkflowModelHint(candidate.modelId)
+    modelId: modelHint.modelId,
+    providerId: providerHint.providerId,
+    ...(modelSelectionRejected ? { modelSelectionRejected: true } : {})
   };
 }
 

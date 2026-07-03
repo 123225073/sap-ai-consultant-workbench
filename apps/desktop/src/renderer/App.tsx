@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -125,16 +125,70 @@ function activeCase(state: WorkbenchState | null) {
   return activeProject(state)?.cases.find((caseItem) => caseItem.id === state?.activeCaseId);
 }
 
-function safeDraftModel(project: ProjectSummary | undefined) {
-  const provider = project?.config.apiProviders.find((item) => (
+type ComposerModelOption = {
+  key: string;
+  provider: ApiProviderConfig;
+  model: ModelSummary;
+};
+
+const selectableCapabilities: Exclude<ModelCapability, "chat">[] = ["vision", "reasoning", "tools", "web", "free"];
+
+const capabilityLabels: Record<ModelCapability, string> = {
+  chat: "文本",
+  vision: "视觉",
+  reasoning: "推理",
+  tools: "工具",
+  web: "联网",
+  free: "免费"
+};
+
+function modelOptionKey(providerId: string, modelId: string): string {
+  return `${providerId}::${modelId}`;
+}
+
+function isProviderSafeForDraft(item: ApiProviderConfig): boolean {
+  return (
     item.enabled &&
+    item.credential.state === "set-in-secure-store" &&
     item.modelSyncStatus === "verified" &&
     item.chatTestStatus === "verified" &&
     item.lastVerificationMode === "http" &&
+    item.lastVerifiedModelId !== null &&
     item.models.length > 0
-  ));
-  const model = provider?.models[0];
-  return provider && model ? { provider, model } : null;
+  );
+}
+
+function providerModelStatus(provider: ApiProviderConfig): string | null {
+  if (!provider.enabled) return "渠道未启用";
+  if (provider.credential.state !== "set-in-secure-store") return "API Key 未保存到安全存储";
+  if (provider.lastVerificationMode === "fake") return "仅模拟验证，不能用于正式案件草稿";
+  if (provider.lastVerificationMode !== "http") return "尚未通过真实 HTTP 验证";
+  if (provider.modelSyncStatus === "failed") return "模型列表获取失败，请到配置中心重新验证";
+  if (provider.chatTestStatus === "failed") return "最小对话测试失败，请到配置中心检查";
+  if (provider.modelSyncStatus !== "verified") return "模型列表尚未验证";
+  if (provider.chatTestStatus !== "verified") return "最小对话尚未验证";
+  if (!provider.lastVerifiedModelId) return "缺少最小对话测试模型记录，请重新验证";
+  if (provider.models.length === 0) return "未获取到可用模型";
+  if (!provider.models.some((model) => model.id === provider.lastVerifiedModelId)) return "测试模型不在当前模型列表，请重新验证";
+  return null;
+}
+
+function safeDraftModelOptions(project: ProjectSummary | undefined): ComposerModelOption[] {
+  return (project?.config.apiProviders ?? []).flatMap((provider) => {
+    if (!isProviderSafeForDraft(provider)) return [];
+    return provider.models.filter((model) => model.id === provider.lastVerifiedModelId).map((model) => ({
+      key: modelOptionKey(provider.id, model.id),
+      provider,
+      model
+    }));
+  });
+}
+
+function providerErrorStates(project: ProjectSummary | undefined): { provider: ApiProviderConfig; reason: string }[] {
+  return (project?.config.apiProviders ?? []).flatMap((provider) => {
+    const reason = providerModelStatus(provider);
+    return reason ? [{ provider, reason }] : [];
+  });
 }
 
 function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFileNode[]; level?: number; selectedPath: string | null; onPreview: (node: CaseFileNode) => void }) {
@@ -230,6 +284,10 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
+  const [selectedModelKey, setSelectedModelKey] = useState("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [modelSearchQuery, setModelSearchQuery] = useState("");
+  const [modelCapabilityFilters, setModelCapabilityFilters] = useState<ModelCapability[]>([]);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectSapVersion, setNewProjectSapVersion] = useState<NewProjectSapVersion>("S4");
   const [newProjectSystemLabel, setNewProjectSystemLabel] = useState("Local");
@@ -239,13 +297,37 @@ function App() {
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
-  const [notice, setNotice] = useState("Phase 17：已加固可信页面调用和案件文件树边界；知识导入仍只支持已脱敏本地文本。");
+  const [notice, setNotice] = useState("Phase 18：底部模型选择器已按渠道分组；模型执行仍只走已验证安全草稿链路。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
-  const selectedSafeDraftModel = useMemo(() => safeDraftModel(project), [project]);
+  const safeDraftOptions = useMemo(() => safeDraftModelOptions(project), [project]);
+  const modelProviderErrors = useMemo(() => providerErrorStates(project), [project]);
+  const selectedSafeDraftModel = useMemo(() => {
+    return safeDraftOptions.find((option) => option.key === selectedModelKey) ?? safeDraftOptions[0] ?? null;
+  }, [safeDraftOptions, selectedModelKey]);
+  const filteredModelOptions = useMemo(() => {
+    const normalized = modelSearchQuery.trim().toLowerCase();
+    return safeDraftOptions.filter((option) => {
+      const textMatched = !normalized || [
+        option.provider.name,
+        option.provider.id,
+        option.model.id,
+        option.model.displayName,
+        ...option.model.capabilities.map((capability) => capabilityLabels[capability])
+      ].join(" ").toLowerCase().includes(normalized);
+      const capabilityMatched = modelCapabilityFilters.every((capability) => option.model.capabilities.includes(capability));
+      return textMatched && capabilityMatched;
+    });
+  }, [safeDraftOptions, modelSearchQuery, modelCapabilityFilters]);
+  const groupedModelOptions = useMemo(() => {
+    return project?.config.apiProviders.flatMap((provider) => {
+      const options = filteredModelOptions.filter((option) => option.provider.id === provider.id);
+      return options.length > 0 ? [{ provider, options }] : [];
+    }) ?? [];
+  }, [project, filteredModelOptions]);
   const adtEvidenceStatus = project?.config.adt
     ? `${project.config.adt.alias || "SAP"} / Client ${project.config.adt.client || "-"} / ${project.config.adt.readOnly ? "readonly" : "blocked"} / ${verificationModeLabel(project.config.adt.lastVerificationMode)}`
     : "No active SAP project";
@@ -255,6 +337,20 @@ function App() {
   const fileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file").length, [flatFiles]);
   const outputFileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file" && node.relativePath.startsWith("outputs/")).length, [flatFiles]);
   const selectedPreviewNode = useMemo(() => selectedPreviewPath ? flatFiles.find((node) => node.relativePath === selectedPreviewPath) ?? null : null, [flatFiles, selectedPreviewPath]);
+
+  useEffect(() => {
+    if (!selectedModelKey || safeDraftOptions.some((option) => option.key === selectedModelKey)) return;
+    setSelectedModelKey(safeDraftOptions[0]?.key ?? "");
+  }, [safeDraftOptions, selectedModelKey]);
+
+  useEffect(() => {
+    if (!modelPickerOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setModelPickerOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [modelPickerOpen]);
 
   async function applyResponse<T extends WorkbenchState>(responsePromise: Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
     const response = await responsePromise;
@@ -378,12 +474,25 @@ function App() {
     }
   }
 
+  function toggleModelCapabilityFilter(capability: Exclude<ModelCapability, "chat">) {
+    setModelCapabilityFilters((filters) => (
+      filters.includes(capability)
+        ? filters.filter((item) => item !== capability)
+        : [...filters, capability]
+    ));
+  }
+
   async function sendMessage() {
     if (!bridge) {
       setNotice("浏览器预览不会写入本地文件；请用桌面应用发送。");
       return;
     }
-    await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: selectedSafeDraftModel?.model.id ?? "local-workflow" }));
+    await applyResponse(bridge.appendMessage({
+      content: message,
+      taskMode: selectedTaskMode,
+      modelId: selectedSafeDraftModel?.model.id ?? "local-workflow",
+      providerId: selectedSafeDraftModel?.provider.id
+    }));
     setMessage("");
   }
 
@@ -878,9 +987,99 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className={`model-select ${selectedSafeDraftModel ? "ready" : "disabled"}`} title={selectedSafeDraftModel ? `案件发送会尝试使用 ${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.id} 生成安全本地草稿` : "没有真实 HTTP 验证通过的模型渠道；发送时只生成本地草稿"}>
-                {selectedSafeDraftModel ? `已验证模型 · ${selectedSafeDraftModel.model.displayName}` : "未验证模型 · 使用本地草稿"} <ChevronDown size={15} />
-              </button>
+              <div className="model-picker">
+                <button
+                  type="button"
+                  className={`model-select ${selectedSafeDraftModel ? "ready" : "disabled"}`}
+                  title={selectedSafeDraftModel ? `案件发送会尝试使用 ${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.id} 生成安全本地草稿` : "没有真实 HTTP 验证通过的模型渠道；发送时只生成本地草稿"}
+                  aria-expanded={modelPickerOpen}
+                  onClick={() => setModelPickerOpen((open) => !open)}
+                >
+                  {selectedSafeDraftModel ? (
+                    <>
+                      <span>已验证模型</span>
+                      <strong>{selectedSafeDraftModel.model.displayName}</strong>
+                      <em>{selectedSafeDraftModel.provider.name}</em>
+                    </>
+                  ) : (
+                    <>
+                      <span>未验证模型</span>
+                      <strong>使用本地草稿</strong>
+                    </>
+                  )}
+                  <ChevronDown size={15} />
+                </button>
+                {modelPickerOpen ? (
+                  <div className="model-picker-panel" role="dialog" aria-label="选择模型">
+                    <div className="model-picker-search">
+                      <Search size={15} />
+                      <input
+                        value={modelSearchQuery}
+                        onChange={(event) => setModelSearchQuery(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") event.preventDefault();
+                        }}
+                        placeholder="搜索模型或渠道"
+                        aria-label="搜索模型"
+                      />
+                    </div>
+                    <div className="model-filter-row" aria-label="按能力筛选">
+                      {selectableCapabilities.map((capability) => (
+                        <button
+                          type="button"
+                          className={modelCapabilityFilters.includes(capability) ? "active" : ""}
+                          onClick={() => toggleModelCapabilityFilter(capability)}
+                          key={capability}
+                        >
+                          {capabilityLabels[capability]}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="model-picker-current">
+                      <span>当前选择</span>
+                      <strong>{selectedSafeDraftModel ? `${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.displayName}` : "本地草稿"}</strong>
+                    </div>
+                    <div className="model-picker-list">
+                      {groupedModelOptions.length > 0 ? groupedModelOptions.map((group) => (
+                        <section key={group.provider.id}>
+                          <header>
+                            <span>{group.provider.name}</span>
+                            <small>{group.provider.providerType} · 真实 HTTP 验证</small>
+                          </header>
+                          {group.options.map((option) => (
+                            <button
+                              type="button"
+                              className={option.key === selectedSafeDraftModel?.key ? "active" : ""}
+                              onClick={() => {
+                                setSelectedModelKey(option.key);
+                                setModelPickerOpen(false);
+                              }}
+                              key={option.key}
+                            >
+                              <span>{option.model.displayName}</span>
+                              <small>{option.model.id}</small>
+                              <em>{option.model.capabilities.map((capability) => capabilityLabels[capability]).join(" / ")}</em>
+                            </button>
+                          ))}
+                        </section>
+                      )) : (
+                        <div className="model-picker-empty">
+                          <strong>没有匹配的已验证模型</strong>
+                          <span>请清空搜索或能力筛选；如果仍没有结果，到配置中心验证 API 渠道。</span>
+                        </div>
+                      )}
+                    </div>
+                    {modelProviderErrors.length > 0 ? (
+                      <div className="model-provider-errors">
+                        <strong>不可用渠道</strong>
+                        {modelProviderErrors.slice(0, 4).map((item) => (
+                          <span key={item.provider.id}>{item.provider.name}：{item.reason}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
               <div className="composer-actions">
                 <button type="button" aria-label="添加附件暂不可用" title="当前阶段暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
                 <button type="button" aria-label="语音输入暂不可用" title="当前阶段暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>

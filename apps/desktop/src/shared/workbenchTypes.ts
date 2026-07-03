@@ -207,6 +207,7 @@ export interface ApiProviderConfig {
   modelSyncStatus: ConfigStatus;
   chatTestStatus: ConfigStatus;
   lastVerificationMode: "fake" | "http" | null;
+  lastVerifiedModelId: string | null;
   lastCheckedAt: string | null;
 }
 
@@ -484,6 +485,8 @@ export interface CaseWorkflowInput {
   content: string;
   taskMode: TaskMode;
   modelId: string;
+  providerId?: string;
+  modelSelectionRejected?: boolean;
 }
 
 export interface CaseGeneratedFile {

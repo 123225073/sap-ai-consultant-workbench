@@ -334,6 +334,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
         modelSyncStatus: "pending-verification",
         chatTestStatus: "pending-verification",
         lastVerificationMode: null,
+        lastVerifiedModelId: null,
         lastCheckedAt: null
       }
     ],
@@ -1030,13 +1031,14 @@ export class WorkspaceStore {
   async prepareSafeModelDraftRequest(input: unknown, options: { allowFakeModelExecution?: boolean } = {}): Promise<PreparedSafeModelDraftRequest | null> {
     const workflowInput = parseCaseWorkflowInput(input);
     if (!workflowInput.content) return null;
+    if (workflowInput.modelSelectionRejected) return null;
     assertNoSensitiveCaseContent(workflowInput.content);
 
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     const currentCase = this.getActiveCase(state);
     const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
-    const provider = project.config.apiProviders.find((item) => {
+    const eligibleProviders = project.config.apiProviders.filter((item) => {
       const realEligible = item.lastVerificationMode === "http";
       const fakeEligible = options.allowFakeModelExecution === true && item.lastVerificationMode === "fake" && isFakeModelExecutionHost(item.baseUrl);
       return (
@@ -1044,11 +1046,19 @@ export class WorkspaceStore {
         item.credential.state === "set-in-secure-store" &&
         item.modelSyncStatus === "verified" &&
         item.chatTestStatus === "verified" &&
+        item.lastVerifiedModelId !== null &&
         item.models.length > 0 &&
         (realEligible || fakeEligible)
       );
     });
-    const model = provider?.models.find((item) => item.id === workflowInput.modelId) ?? provider?.models[0] ?? null;
+    const provider = workflowInput.providerId
+      ? eligibleProviders.find((item) => item.id === workflowInput.providerId)
+      : eligibleProviders[0];
+    const model = provider
+      ? (workflowInput.modelId === "local-workflow"
+        ? provider.models.find((item) => item.id === provider.lastVerifiedModelId) ?? null
+        : provider.models.find((item) => item.id === workflowInput.modelId && item.id === provider.lastVerifiedModelId) ?? null)
+      : null;
     if (!provider || !model) return null;
 
     const files = await this.readCaseTree(state);
@@ -1520,6 +1530,7 @@ export class WorkspaceStore {
     provider.modelSyncStatus = report.modelSyncStatus;
     provider.chatTestStatus = report.chatTestStatus;
     provider.lastVerificationMode = report.mode;
+    provider.lastVerifiedModelId = report.chatTestStatus === "verified" ? report.selectedModelId : null;
     provider.lastCheckedAt = report.checkedAt;
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
@@ -1837,6 +1848,10 @@ export class WorkspaceStore {
         const name = text(provider.name, `API 渠道 ${index + 1}`);
         const baseUrl = text(provider.baseUrl);
         const existingProvider = existingConfig?.apiProviders?.find((item) => item.id === id);
+        const models = preserveVerification ? normalizeModels(provider.models) : [];
+        const lastVerifiedModelId = preserveVerification && typeof provider.lastVerifiedModelId === "string" && models.some((model) => model.id === provider.lastVerifiedModelId)
+          ? provider.lastVerifiedModelId
+          : null;
         return {
           id,
           name,
@@ -1844,10 +1859,11 @@ export class WorkspaceStore {
           baseUrl,
           enabled: bool(provider.enabled, false),
           credential: normalizeSecretHandle(existingProvider?.credential, "api-key"),
-          models: preserveVerification ? normalizeModels(provider.models) : [],
+          models,
           modelSyncStatus: preserveVerification ? normalizeConfigStatus(provider.modelSyncStatus, "pending-verification") : "pending-verification",
           chatTestStatus: preserveVerification ? normalizeConfigStatus(provider.chatTestStatus, "pending-verification") : "pending-verification",
           lastVerificationMode: preserveVerification ? modelVerificationMode(provider.lastVerificationMode) : null,
+          lastVerifiedModelId,
           lastCheckedAt: preserveVerification ? nullableIso(provider.lastCheckedAt) : null
         };
       }),

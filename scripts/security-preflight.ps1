@@ -197,6 +197,30 @@ if ($LASTEXITCODE -eq 0) {
   throw "Dangerous IPC scan failed."
 }
 
+Write-Section "Phase 18 composer model selector boundary"
+$phase18Markers = @(
+  @{ Pattern = "providerId?: string"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "safeWorkflowProviderHint"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "modelSelectionRejected"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "eligibleProviders"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workflowInput.providerId"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "lastVerifiedModelId"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "safeDraftModelOptions"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = 'item.credential.state === "set-in-secure-store"'; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "lastVerifiedModelId"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "phase18-composer-model-selector-probe"; Path = "scripts/phase18-composer-model-selector-probe.mjs" }
+)
+foreach ($marker in $phase18Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase18 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 18 model selector marker is missing: $($marker.Pattern)"
+  }
+}
+
 Write-Section "Project and case lifecycle safety scan"
 $lifecycleMarkers = @(
   @{ Pattern = "createLocalProject"; Path = "apps/desktop/src/main/workspaceStore.ts" },

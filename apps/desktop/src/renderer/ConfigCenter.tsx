@@ -323,9 +323,9 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
   ];
   const firstError = report?.errors[0];
   const models = report?.models ?? provider.models;
-  const selectedModelId = report?.selectedModelId ?? null;
+  const selectedModelId = report?.selectedModelId ?? provider.lastVerifiedModelId ?? null;
   const isFakeReport = verificationMode === "fake";
-  const eligibleForCaseDraft = provider.enabled && provider.modelSyncStatus === "verified" && provider.chatTestStatus === "verified" && provider.lastVerificationMode === "http" && provider.models.length > 0;
+  const eligibleForCaseDraft = provider.enabled && provider.modelSyncStatus === "verified" && provider.chatTestStatus === "verified" && provider.lastVerificationMode === "http" && Boolean(provider.lastVerifiedModelId) && provider.models.length > 0;
 
   return (
     <div className="adt-verification-report">
