@@ -521,6 +521,63 @@ button {
   padding: 14px;
 }
 
+.sap-evidence-bar {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) 128px minmax(180px, 240px) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sap-evidence-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  min-width: 0;
+  color: #475569;
+  font-size: 12px;
+}
+
+.sap-evidence-status span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sap-evidence-bar select,
+.sap-evidence-bar input,
+.sap-evidence-bar button {
+  min-height: 32px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.sap-evidence-bar select,
+.sap-evidence-bar input {
+  padding: 0 9px;
+}
+
+.sap-evidence-bar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 11px;
+  color: #174ea6;
+  border-color: #bdd2f6;
+  background: #f5f8ff;
+  white-space: nowrap;
+}
+
+.sap-evidence-bar button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .mode-tabs {
   display: flex;
   flex-wrap: wrap;

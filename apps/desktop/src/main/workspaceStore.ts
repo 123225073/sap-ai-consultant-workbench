@@ -39,8 +39,9 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
+import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 
 interface StoredState {
   schemaVersion: number;
@@ -273,6 +274,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
       configStatus: "saved",
       connectionStatus: "pending-verification",
       minimalReadStatus: "pending-verification",
+      lastVerificationMode: null,
       lastCheckedAt: null
     },
     feishu: {
@@ -382,6 +384,10 @@ function providerType(value: unknown): ProjectConfig["apiProviders"][number]["pr
 
 function modelVerificationMode(value: unknown): ProjectConfig["apiProviders"][number]["lastVerificationMode"] {
   return value === "fake" || value === "http" ? value : null;
+}
+
+function adtVerificationMode(value: unknown): AdtVerificationMode | null {
+  return value === "fake" || value === "adt" ? value : null;
 }
 
 function sslMode(value: unknown): ProjectConfig["adt"]["sslMode"] {
@@ -743,6 +749,109 @@ export class WorkspaceStore {
     return project.config;
   }
 
+  async getActiveProjectConfig(): Promise<{ projectId: string; caseId: string; config: ProjectConfig }> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const caseItem = this.getActiveCase(state);
+    return { projectId: project.id, caseId: caseItem.id, config: project.config };
+  }
+
+  async appendSapObjectEvidence(result: SapObjectEvidenceConnectorResult, targetCase?: { projectId: string; caseId: string }): Promise<SapObjectEvidenceResult> {
+    const state = await this.loadOrCreateState();
+    await this.ensureCaseFiles(state);
+    const fallbackCase = this.getActiveCase(state);
+    const projectId = targetCase?.projectId ?? fallbackCase.projectId;
+    const caseId = targetCase?.caseId ?? fallbackCase.id;
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("SAP evidence target project is no longer available.");
+    }
+    const currentCase = project.cases.find((item) => item.id === caseId);
+    if (!currentCase) {
+      throw new Error("SAP evidence target case is no longer available.");
+    }
+    const record = normalizeSapObjectEvidenceResult(result);
+    const generatedFiles = renderSapObjectEvidenceFiles(record);
+    const generatedPaths = generatedFiles.map((file) => file.relativePath);
+
+    const assistantMessage = createCaseMessage(
+      "assistant",
+      currentCase.id,
+      [
+        `SAP read-only evidence attached: ${record.summary.objectType} ${record.summary.objectName}.`,
+        "",
+        `System: ${record.summary.systemAlias} / client ${record.summary.client}.`,
+        `Read time: ${record.summary.readAt}.`,
+        "",
+        sapObjectEvidenceBoundary,
+        "",
+        "Generated files:",
+        ...generatedPaths.map((file) => `- ${file}`)
+      ].join("\n"),
+      "problem-analysis",
+      "sap-readonly-evidence",
+      generatedPaths
+    );
+
+    currentCase.messages.push(assistantMessage);
+    currentCase.currentSummary = `SAP read-only evidence attached for ${record.summary.objectType} ${record.summary.objectName}; case conclusions can cite this evidence after user review.`;
+    currentCase.summary = currentCase.currentSummary;
+    currentCase.updatedAt = nowIso();
+    currentCase.lastOpenedAt = nowIso();
+    project.updatedAt = nowIso();
+
+    const maintenance = buildCaseMaintenanceArtifacts(project, currentCase);
+    const metadata = {
+      ...(maintenance.metadata && typeof maintenance.metadata === "object" ? maintenance.metadata as Record<string, unknown> : {}),
+      sapObjectEvidence: record.summary,
+      generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
+      workflowBoundary: sapObjectEvidenceBoundary,
+      safety: {
+        localOnly: true,
+        sapWrite: "disabled",
+        sapEvidenceRead: "single-object-readonly",
+        externalModelCall: "not-run",
+        feishuPublish: "not-run",
+        secretsStoredInCaseFiles: false
+      }
+    };
+    const artifacts: CaseWorkflowArtifacts = {
+      ...maintenance,
+      currentSummary: currentCase.currentSummary,
+      generatedFiles,
+      readme: [
+        maintenance.readme,
+        "",
+        "## SAP Read-Only Evidence",
+        "",
+        ...generatedPaths.map((file) => `- ${file}`)
+      ].join("\n"),
+      timeline: [
+        maintenance.timeline,
+        `- ${record.summary.readAt}: SAP read-only evidence attached for ${record.summary.objectType} ${record.summary.objectName}.`
+      ].join("\n"),
+      contextPack: [
+        maintenance.contextPack,
+        "",
+        "## SAP Read-Only Evidence",
+        "",
+        `- ${record.summary.objectType} ${record.summary.objectName} from ${record.summary.systemAlias} / ${record.summary.client}.`,
+        `- Evidence time: ${record.summary.readAt}.`,
+        "- Full evidence remains in restricted case evidence files and is not sent to the model by default."
+      ].join("\n"),
+      metadata
+    };
+
+    await this.saveState(state);
+    await this.writeCaseMarkdown(state, currentCase, artifacts);
+    await this.refreshSearchIndex(state);
+    return {
+      state: await this.withFiles(state),
+      summary: record.summary,
+      generatedFiles: generatedPaths
+    };
+  }
+
   async getProjectStandards(projectId: string): Promise<ProjectStandardsView> {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -881,6 +990,7 @@ export class WorkspaceStore {
     project.config.adt.configStatus = configPassed ? "verified" : "failed";
     project.config.adt.connectionStatus = report.connectionStatus;
     project.config.adt.minimalReadStatus = report.minimalReadStatus;
+    project.config.adt.lastVerificationMode = report.mode;
     project.config.adt.lastCheckedAt = report.checkedAt;
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
@@ -1178,6 +1288,7 @@ export class WorkspaceStore {
         configStatus: preserveVerification ? normalizeConfigStatus(adt.configStatus, adtConfigStatus) : adtConfigStatus,
         connectionStatus: preserveVerification ? normalizeConfigStatus(adt.connectionStatus, "pending-verification") : "pending-verification",
         minimalReadStatus: preserveVerification ? normalizeConfigStatus(adt.minimalReadStatus, "pending-verification") : "pending-verification",
+        lastVerificationMode: preserveVerification ? adtVerificationMode(adt.lastVerificationMode) : null,
         lastCheckedAt: preserveVerification ? nullableIso(adt.lastCheckedAt) : null
       },
       feishu: {
@@ -1520,8 +1631,8 @@ export class WorkspaceStore {
   }
 
   private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
-    const caseRoot = this.caseRoot(state);
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+    const caseRoot = this.caseRootFor(project, caseItem);
     await fs.mkdir(caseRoot, { recursive: true });
     const projectRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id));
     await fs.mkdir(projectRoot, { recursive: true });

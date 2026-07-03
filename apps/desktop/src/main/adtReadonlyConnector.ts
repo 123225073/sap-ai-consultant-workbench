@@ -1,4 +1,6 @@
 import type { AdtConfig, AdtRedactedSystemInfo, AdtT000ProbeResult, AdtVerificationError, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationStep } from "../shared/workbenchTypes";
+import type { SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
+import type { SapObjectEvidenceRequest } from "../shared/workbenchTypes";
 
 export interface AdtConnectorInput {
   alias: string;
@@ -18,6 +20,7 @@ interface AdtStatusResult {
 
 export interface AdtReadonlyConnector {
   verify(input: AdtConnectorInput): Promise<AdtVerificationReport>;
+  readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options?: { allowFakeEvidence?: boolean }): Promise<SapObjectEvidenceConnectorResult>;
 }
 
 function nowIso(): string {
@@ -121,6 +124,35 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
       return baseT000(true, false, null);
     }
     return baseT000(true, true, input.client);
+  }
+
+  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { allowFakeEvidence?: boolean } = {}): Promise<SapObjectEvidenceConnectorResult> {
+    if (options.allowFakeEvidence !== true) {
+      throw new Error("SAP object evidence requires a real read-only ADT connector. Fake evidence is limited to local probes.");
+    }
+    if (input.readOnly !== true) {
+      throw new Error("SAP object evidence is blocked because ADT read-only mode is not locked.");
+    }
+    const readAt = nowIso();
+    const objectLabel = `${request.objectType.toUpperCase()} ${request.objectName}`;
+    return {
+      objectType: request.objectType,
+      objectName: request.objectName,
+      functionGroup: request.functionGroup ?? null,
+      system: redactedSystem(input),
+      sourceMode: "fake",
+      readAt,
+      content: [
+        `Fake SAP read-only evidence for ${objectLabel}`,
+        `System alias: ${input.alias}`,
+        `Client: ${input.client}`,
+        `Language: ${input.language}`,
+        `Read at: ${readAt}`,
+        "Scope: single explicit object only",
+        "Mode: read-only demo evidence",
+        "No SAP write, activation, transport, table rows, password, token, cookie, or session value is included."
+      ].join("\n")
+    };
   }
 
   private report(ok: boolean, checkedAt: string, system: AdtRedactedSystemInfo, steps: AdtVerificationStep[], t000: AdtT000ProbeResult, errors: AdtVerificationError[]): AdtVerificationReport {

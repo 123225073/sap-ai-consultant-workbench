@@ -112,9 +112,10 @@ function capabilityLabel(capability: ModelCapability): string {
   return labels[capability];
 }
 
-function reportModeLabel(mode: "fake" | "cli" | "http" | undefined): string {
+function reportModeLabel(mode: "fake" | "cli" | "http" | "adt" | null | undefined): string {
   if (mode === "cli") return "真实 CLI 验证";
   if (mode === "http") return "真实 HTTP 验证";
+  if (mode === "adt") return "真实 ADT 验证";
   if (mode === "fake") return "模拟验证";
   return "尚未验证";
 }

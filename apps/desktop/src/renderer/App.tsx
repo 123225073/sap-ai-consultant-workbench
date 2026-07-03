@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Database,
   Eye,
   File,
   FileSpreadsheet,
@@ -25,13 +26,22 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 const modes: { id: TaskMode; label: string }[] = [
   { id: "problem-analysis", label: "问题分析" },
   { id: "abap-development", label: "ABAP开发" },
   { id: "document-generation", label: "文档生成" },
   { id: "flow-diagram", label: "画流程图" }
+];
+
+const sapEvidenceTypes: { id: SapObjectEvidenceType; label: string }[] = [
+  { id: "program", label: "程序" },
+  { id: "class", label: "类" },
+  { id: "function", label: "函数" },
+  { id: "include", label: "Include" },
+  { id: "table", label: "表" },
+  { id: "structure", label: "结构" }
 ];
 
 const modePlaceholder: Record<TaskMode, string> = {
@@ -41,7 +51,7 @@ const modePlaceholder: Record<TaskMode, string> = {
   "flow-diagram": "描述业务流程或逻辑；将生成 Mermaid 图、说明和节点清单"
 };
 
-function verificationModeLabel(mode: "fake" | "cli" | "http" | undefined): string {
+function verificationModeLabel(mode: "fake" | "cli" | "http" | "adt" | null | undefined): string {
   if (mode === "fake") return "模拟验证";
   if (mode === "cli") return "真实 CLI 验证";
   if (mode === "http") return "真实 HTTP 验证";
@@ -217,13 +227,19 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 11：当前支持已验证模型生成本地案件草稿；没有可用真实模型时继续保存本地草稿，仍不读取 SAP、不发布飞书。");
+  const [sapEvidenceType, setSapEvidenceType] = useState<SapObjectEvidenceType>("program");
+  const [sapEvidenceName, setSapEvidenceName] = useState("");
+  const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
+  const [notice, setNotice] = useState("Phase 12：当前支持把单个明确 SAP 对象补充为只读案件证据；真实 SAP 取证仍要求 ADT 只读验证通过，不写 SAP、不发布飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
   const selectedSafeDraftModel = useMemo(() => safeDraftModel(project), [project]);
+  const adtEvidenceStatus = project?.config.adt
+    ? `${project.config.adt.alias || "SAP"} / Client ${project.config.adt.client || "-"} / ${project.config.adt.readOnly ? "readonly" : "blocked"} / ${verificationModeLabel(project.config.adt.lastVerificationMode)}`
+    : "No active SAP project";
   const flatFiles = useMemo(() => flattenFiles(state?.activeCaseFiles ?? []), [state]);
   const filteredCaseFiles = useMemo(() => filterFileNodes(state?.activeCaseFiles ?? [], fileSearchQuery), [state, fileSearchQuery]);
   const filteredFileCount = useMemo(() => flattenFiles(filteredCaseFiles).filter((node) => node.kind === "file").length, [filteredCaseFiles]);
@@ -291,6 +307,34 @@ function App() {
     }
     await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: selectedSafeDraftModel?.model.id ?? "local-workflow" }));
     setMessage("");
+  }
+
+  async function readSapEvidence() {
+    if (!bridge) {
+      setNotice("Please use the desktop app to attach SAP read-only evidence.");
+      return;
+    }
+    const objectName = sapEvidenceName.trim();
+    if (!objectName) {
+      setNotice("Please enter one SAP object name before attaching evidence.");
+      return;
+    }
+    setSapEvidenceBusy(true);
+    try {
+      const response = await bridge.readSapObjectEvidence({
+        objectType: sapEvidenceType,
+        objectName
+      });
+      if (response.ok) {
+        setState(response.data.state);
+        setSapEvidenceName("");
+        setNotice(`SAP read-only evidence attached: ${response.data.summary.objectType} ${response.data.summary.objectName}. Files: ${response.data.generatedFiles.join(", ")}`);
+      } else {
+        setNotice(response.error);
+      }
+    } finally {
+      setSapEvidenceBusy(false);
+    }
   }
 
   async function previewCaseFile(node: CaseFileNode) {
@@ -510,7 +554,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 11"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 12"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -667,9 +711,23 @@ function App() {
           </div>
 
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+            <div className="sap-evidence-bar">
+              <div className="sap-evidence-status" title="当前 SAP 只读取证上下文；本功能不写入 SAP">
+                <Database size={15} />
+                <span>{adtEvidenceStatus}</span>
+              </div>
+              <select value={sapEvidenceType} onChange={(event) => setSapEvidenceType(event.target.value as SapObjectEvidenceType)} aria-label="SAP 对象类型">
+                {sapEvidenceTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}
+              </select>
+              <input value={sapEvidenceName} onChange={(event) => setSapEvidenceName(event.target.value)} placeholder="ZDEMO_REPORT 或 /UI2/CL_JSON" aria-label="SAP 对象名" />
+              <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim()} title="把单个 SAP 只读对象证据写入当前案件">
+                <Database size={15} />
+                {sapEvidenceBusy ? "取证中" : "补充 SAP 只读证据"}
+              </button>
+            </div>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 11 会优先用已验证模型生成安全本地草稿；没有合格模型时仍生成可编辑本地案件文件" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 12 保留安全模型草稿能力，并新增单对象 SAP 只读取证入口" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>

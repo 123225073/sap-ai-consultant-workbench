@@ -122,6 +122,7 @@ $allowedIpc = @(
   "workbench:get-case-files",
   "workbench:preview-current-case-file",
   "workbench:search",
+  "workbench:read-sap-object-evidence",
   "workbench:save-project-config",
   "workbench:save-project-secret",
   "workbench:adt-verify-readonly",
@@ -590,6 +591,43 @@ if ($LASTEXITCODE -eq 0) {
   }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Model connector message scan failed."
+}
+
+Write-Section "SAP object evidence safety scan"
+$sapEvidenceMarkers = @(
+  @{ Pattern = "SAP_OBJECT_EVIDENCE_ALLOWED_TYPES"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
+  @{ Pattern = "parseSapObjectEvidenceRequest"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
+  @{ Pattern = "assertSafeSapObjectEvidenceText"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
+  @{ Pattern = "renderSapObjectEvidenceFiles"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
+  @{ Pattern = "readObjectEvidence"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "appendSapObjectEvidence"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:read-sap-object-evidence"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "readSapObjectEvidence"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "WORKBENCH_ALLOW_FAKE_ADT_EVIDENCE"; Path = "apps/desktop/src/main/main.ts" }
+)
+foreach ($marker in $sapEvidenceMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK SAP evidence marker: $($marker.Pattern)"
+  } else {
+    throw "SAP object evidence marker is missing: $($marker.Pattern)"
+  }
+}
+
+$genericSapIpcHits = rg -n -- "sap-browser|sap-sql|sap-command|sap-object-search|query-sap|run-sap|runSelect|execute-sql|raw-sap|read-any-sap|sap-proxy" apps/desktop/src/main apps/desktop/src/preload
+if ($LASTEXITCODE -eq 0) {
+  $genericSapIpcHits | ForEach-Object { Write-Host $_ }
+  throw "Generic SAP, SQL, or command IPC-like name found."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Generic SAP IPC scan failed."
+}
+
+$adtWriteMethodHits = rg -n -- "method\s*:\s*['""](POST|PUT|PATCH|DELETE)['""]|activateObject|createTransport|releaseTransport|transportRequest" apps/desktop/src/main/adtReadonlyConnector.ts apps/desktop/src/main/sapObjectEvidenceService.ts
+if ($LASTEXITCODE -eq 0) {
+  $adtWriteMethodHits | ForEach-Object { Write-Host $_ }
+  throw "SAP evidence connector contains write-like method markers."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP evidence write-method scan failed."
 }
 
 Write-Section "Authorization boundary scan"

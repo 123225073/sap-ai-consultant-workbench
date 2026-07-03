@@ -5,6 +5,8 @@ export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "faile
 export type SecretStoreKind = "electron-safe-storage";
 export type TaskMode = "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
 export type CaseGeneratedFilePurpose = "output" | "candidate_knowledge" | "technical" | "evidence" | "snapshot";
+export type AdtVerificationMode = "fake" | "adt";
+export type SapObjectEvidenceType = "program" | "class" | "function" | "include" | "table" | "structure";
 export type StandardsTemplateId = "s4-default" | "ecc-default";
 export type StandardsCategoryId = "abap" | "comments" | "request" | "alv" | "interface" | "document" | "diagram" | "excel";
 export type StandardsDiffStatus = "same" | "modified" | "project-only" | "template-only" | "not-applicable";
@@ -77,6 +79,7 @@ export interface AdtConfig {
   configStatus: ConfigStatus;
   connectionStatus: ConfigStatus;
   minimalReadStatus: ConfigStatus;
+  lastVerificationMode: AdtVerificationMode | null;
   lastCheckedAt: string | null;
 }
 
@@ -97,7 +100,7 @@ export interface AdtT000ProbeResult {
   ok: boolean;
   rowCount: number | null;
   sampleClient: string | null;
-  source: "fake";
+  source: AdtVerificationMode;
 }
 
 export interface AdtVerificationError {
@@ -117,7 +120,7 @@ export interface AdtVerificationStep {
 export interface AdtVerificationReport {
   ok: boolean;
   checkedAt: string;
-  mode: "fake";
+  mode: AdtVerificationMode;
   system: AdtRedactedSystemInfo;
   steps: AdtVerificationStep[];
   connectionStatus: ConfigStatus;
@@ -233,6 +236,32 @@ export interface ModelProviderVerificationReport {
 export interface ModelProviderVerificationResult {
   report: ModelProviderVerificationReport;
   state: WorkbenchState;
+}
+
+export interface SapObjectEvidenceRequest {
+  objectType: SapObjectEvidenceType;
+  objectName: string;
+  functionGroup?: string;
+}
+
+export interface SapObjectEvidenceSummary {
+  objectType: SapObjectEvidenceType;
+  objectName: string;
+  functionGroup: string | null;
+  systemAlias: string;
+  endpointHost: string;
+  client: string;
+  usernameMasked: string;
+  sourceMode: AdtVerificationMode;
+  readAt: string;
+  contentLength: number;
+  digest: string;
+}
+
+export interface SapObjectEvidenceResult {
+  state: WorkbenchState;
+  summary: SapObjectEvidenceSummary;
+  generatedFiles: string[];
 }
 
 export interface CodexConfig {

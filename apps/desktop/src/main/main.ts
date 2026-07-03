@@ -6,7 +6,8 @@ import { createModelProviderConnector, createModelProviderValidationFailureRepor
 import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
-import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import { parseSapObjectEvidenceRequest } from "./sapObjectEvidenceService";
+import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -83,6 +84,15 @@ function normalizedHostname(value: string): string {
 function isDemoModelHost(hostname: string): boolean {
   const host = normalizedHostname(hostname);
   return host === "api-demo.example.com" || host === "fake-models.local" || host === "fake-models.test";
+}
+
+function isDemoAdtHost(url: string): boolean {
+  try {
+    const host = normalizedHostname(new URL(url).hostname);
+    return host === "sap-demo.example.com" || host === "fake-sap.local" || host === "fake-sap.test";
+  } catch {
+    return false;
+  }
 }
 
 function ipv4Parts(hostname: string): number[] | null {
@@ -434,6 +444,44 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
   return store.appendMessage(input, modelDraft);
 }
 
+async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<SapObjectEvidenceResult> {
+  const request = parseSapObjectEvidenceRequest(input);
+  const { projectId, caseId, config } = await store.getActiveProjectConfig();
+  const configCheck = validateAdtConfig(config);
+  if (!configCheck.ok) {
+    throw new Error(`${configCheck.message} ${configCheck.suggestion}`);
+  }
+  if (config.adt.connectionStatus !== "verified" || config.adt.minimalReadStatus !== "verified") {
+    throw new Error("ADT read-only evidence requires verified connection and T000 minimal read first.");
+  }
+
+  const allowFakeEvidence = (
+    process.env.WORKBENCH_ALLOW_FAKE_ADT_EVIDENCE === "1" &&
+    config.adt.lastVerificationMode === "fake" &&
+    isDemoAdtHost(config.adt.url)
+  );
+  const allowRealEvidence = false;
+  if (config.adt.lastVerificationMode === "adt" && !allowRealEvidence) {
+    throw new Error("Real ADT object evidence is not implemented in this phase. Only guarded demo evidence can run locally.");
+  }
+  if (!allowRealEvidence && !allowFakeEvidence) {
+    throw new Error("SAP object evidence is blocked until a real ADT read-only verification is available. Fake evidence requires an explicit local probe flag and demo SAP host.");
+  }
+
+  let password = "";
+  try {
+    password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password" });
+  } catch {
+    throw new Error("SAP password is unavailable in secure storage. Save the current project SAP password and verify ADT read-only mode again.");
+  }
+
+  const connector = createAdtReadonlyConnector();
+  const evidence = await connector.readObjectEvidence({ ...adtInputWithoutPassword(config), password }, request, {
+    allowFakeEvidence
+  });
+  return store.appendSapObjectEvidence(evidence, { projectId, caseId });
+}
+
 function validProjectId(projectId: unknown, action: string): string {
   if (typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(projectId)) {
     throw new Error(`${action}请求缺少有效项目 ID。`);
@@ -449,6 +497,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
+  ipcMain.handle("workbench:read-sap-object-evidence", (_event, input: unknown) => response(readSapObjectEvidence(store, secretStore, input)));
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
   ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));
