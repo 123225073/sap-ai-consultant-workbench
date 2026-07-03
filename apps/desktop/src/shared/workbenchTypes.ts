@@ -432,6 +432,26 @@ export interface KnowledgeItemActionInput {
   note?: string;
 }
 
+export interface CreateLocalProjectInput {
+  name: string;
+  sapVersion: Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
+  systemLabel: string;
+}
+
+export interface CreateLocalCaseInput {
+  projectId?: string;
+  title: string;
+}
+
+export interface SwitchProjectInput {
+  projectId: string;
+}
+
+export interface SwitchCaseInput {
+  projectId: string;
+  caseId: string;
+}
+
 export interface ProjectConfig {
   schemaVersion: 2;
   projectId: string;

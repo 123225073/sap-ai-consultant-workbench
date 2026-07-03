@@ -116,8 +116,10 @@ if (Test-Path "local-data") {
 Write-Section "IPC whitelist"
 $allowedIpc = @(
   "workbench:get-state",
-  "workbench:create-demo-project",
-  "workbench:create-demo-case",
+  "workbench:create-local-project",
+  "workbench:create-local-case",
+  "workbench:switch-project",
+  "workbench:switch-case",
   "workbench:append-message",
   "workbench:get-case-files",
   "workbench:preview-current-case-file",
@@ -160,6 +162,57 @@ if ($LASTEXITCODE -eq 0) {
   throw "Dangerous IPC-like name found."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Dangerous IPC scan failed."
+}
+
+Write-Section "Project and case lifecycle safety scan"
+$lifecycleMarkers = @(
+  @{ Pattern = "createLocalProject"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "createLocalCase"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "switchProject"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "switchCase"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "runExclusive"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "shouldPersistNormalizedState"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "shouldPersistActiveProjectMetadata"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "normalizeLocalStorageConfig"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertStrictLifecycleId"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "localStorageConfigForCase"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "parseCreateLocalProjectInput"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "parseCreateLocalCaseInput"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertSafeLifecycleText"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "Math.random().toString(16).slice(2)}.tmp"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "createLocalProject"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "createLocalCase"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "switchProject"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "switchCase"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "workbench:create-local-project"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:create-local-case"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:switch-project"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:switch-case"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "legacyStateStorageMigration"; Path = "scripts/phase15-real-project-case-lifecycle-probe.mjs" },
+  @{ Pattern = "projectOnlyStorageMigration"; Path = "scripts/phase15-real-project-case-lifecycle-probe.mjs" },
+  @{ Pattern = "getStateTimestampStable"; Path = "scripts/phase15-real-project-case-lifecycle-probe.mjs" }
+)
+foreach ($marker in $lifecycleMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK lifecycle marker: $($marker.Pattern)"
+  } else {
+    throw "Project/case lifecycle safety marker is missing: $($marker.Pattern)"
+  }
+}
+
+$lifecycleUnsafeHits = rg -n -- "createLocal(Project|Case)|switch(Project|Case)" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer | Select-String -Pattern "showOpenDialog|dialog\.show|shell\.open|openExternal|openPath|execFile|spawn\(|exec\(|fetch\(|readFile\(|unlink|rm\("
+if ($lifecycleUnsafeHits) {
+  $lifecycleUnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Project/case lifecycle must not expose file dialogs, command execution, network calls, or delete operations."
+}
+
+$demoIpcHits = rg -n -- "workbench:create-demo-project|workbench:create-demo-case|createDemoProject:|createDemoCase:" apps/desktop/src/main/main.ts apps/desktop/src/preload/preload.ts apps/desktop/src/renderer/vite-env.d.ts
+if ($LASTEXITCODE -eq 0) {
+  $demoIpcHits | ForEach-Object { Write-Host $_ }
+  throw "Demo project/case IPC must not be exposed to the renderer."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Demo IPC exposure scan failed."
 }
 
 Write-Section "Secret resolution boundary"

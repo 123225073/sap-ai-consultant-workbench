@@ -29,6 +29,8 @@ import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
 import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
+type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
+
 const modes: { id: TaskMode; label: string }[] = [
   { id: "problem-analysis", label: "问题分析" },
   { id: "abap-development", label: "ABAP开发" },
@@ -228,12 +230,16 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
+  const [newProjectName, setNewProjectName] = useState("");
+  const [newProjectSapVersion, setNewProjectSapVersion] = useState<NewProjectSapVersion>("S4");
+  const [newProjectSystemLabel, setNewProjectSystemLabel] = useState("Local");
+  const [newCaseTitle, setNewCaseTitle] = useState("");
   const [sapEvidenceType, setSapEvidenceType] = useState<SapObjectEvidenceType>("program");
   const [sapEvidenceName, setSapEvidenceName] = useState("");
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
-  const [notice, setNotice] = useState("Phase 13：真实 ADT 只读取证仅允许单个固定对象 GET；不写 SAP、不跑 SQL、不发飞书。");
+  const [notice, setNotice] = useState("Phase 15：真实本地项目和案件已启用；SAP 仍默认只读，飞书仍只生成本地草稿。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -293,7 +299,22 @@ function App() {
       setNotice("请在桌面应用中创建本地项目。");
       return;
     }
-    await applyResponse(bridge.createDemoProject());
+    const name = newProjectName.trim();
+    const systemLabel = newProjectSystemLabel.trim();
+    if (!name || !systemLabel) {
+      setNotice("Project name and system label are required.");
+      return;
+    }
+    const response = await bridge.createLocalProject({ name, sapVersion: newProjectSapVersion, systemLabel });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setNewProjectName("");
+      setNewProjectSystemLabel("Local");
+      setNotice("Local project created. It has independent config, standards, knowledge, and case files.");
+    } else {
+      setNotice(response.error);
+    }
   }
 
   async function createCase() {
@@ -301,7 +322,60 @@ function App() {
       setNotice("请在桌面应用中创建本地案件。");
       return;
     }
-    await applyResponse(bridge.createDemoCase());
+    if (!project) {
+      setNotice("Create a local project first.");
+      return;
+    }
+    const title = newCaseTitle.trim();
+    if (!title) {
+      setNotice("Case title is required.");
+      return;
+    }
+    const response = await bridge.createLocalCase({ projectId: project.id, title });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setNewCaseTitle("");
+      setNotice("Local case created. Its files are stored under the active project only.");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function switchProject(projectId: string, nextView: "case" | "config" = "case") {
+    if (!bridge) {
+      setNotice("Please use the desktop app to switch projects.");
+      return;
+    }
+    const response = await bridge.switchProject({ projectId });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView(nextView);
+      setSelectedPreviewPath(null);
+      setFilePreview(null);
+      setFilePreviewError(null);
+      setNotice(nextView === "config" ? "Project switched. The config center now points to that project." : "Project switched. The conversation and file panel now point to that project.");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function switchCase(projectId: string, caseId: string) {
+    if (!bridge) {
+      setNotice("Please use the desktop app to switch cases.");
+      return;
+    }
+    const response = await bridge.switchCase({ projectId, caseId });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setSelectedPreviewPath(null);
+      setFilePreview(null);
+      setFilePreviewError(null);
+      setNotice("Case switched. The right panel is reading that case folder.");
+    } else {
+      setNotice(response.error);
+    }
   }
 
   async function sendMessage() {
@@ -358,7 +432,7 @@ function App() {
       const response = await bridge.prepareFeishuHandoff();
       if (response.ok) {
         setState(response.data.state);
-        setNotice(`Local Feishu draft prepared. Publish status: ${response.data.publishStatus}. Files: ${response.data.generatedFiles.join(", ")}`);
+        setNotice(`Local Feishu draft prepared. Cloud document creation remains blocked. Local-only status: ${response.data.publishStatus}. Files: ${response.data.generatedFiles.join(", ")}`);
       } else {
         setNotice(response.error);
       }
@@ -584,7 +658,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 13"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 15"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -640,22 +714,41 @@ function App() {
             <button aria-label="项目更多" title="当前阶段暂无更多项目动作"><ChevronDown size={16} /></button>
           </div>
 
+          <form className="quick-create" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
+            <input value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="Project name" aria-label="Project name" />
+            <div className="quick-create-row">
+              <select value={newProjectSapVersion} onChange={(event) => setNewProjectSapVersion(event.target.value as NewProjectSapVersion)} aria-label="SAP version">
+                <option value="S4">S4</option>
+                <option value="ECC">ECC</option>
+              </select>
+              <input value={newProjectSystemLabel} onChange={(event) => setNewProjectSystemLabel(event.target.value)} placeholder="DEV/100" aria-label="System label" />
+            </div>
+          </form>
+
+          <form className="quick-create case-create" onSubmit={(event) => { event.preventDefault(); void createCase(); }}>
+            <input value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="New case title" aria-label="New case title" disabled={!project} />
+            <button type="submit" disabled={!project || !newCaseTitle.trim()} title="Create a case folder in the active project">
+              <PenLine size={15} />
+              Create case
+            </button>
+          </form>
+
           <div className="project-list">
             {(state?.projects ?? []).map((item) => (
-              <section className="project-card" key={item.id}>
+              <section className={`project-card${item.id === state?.activeProjectId ? " active" : ""}`} key={item.id}>
                 <div className="project-card-title">
-                  <div>
+                  <button type="button" className="project-switch" onClick={() => void switchProject(item.id)} title="Switch to this project">
                     <strong>SAP&nbsp;&nbsp;{item.name}</strong>
                     <div className="project-tags">
                       <StatusPill label={item.systemLabel} tone="blue" />
                       <StatusPill label={item.connectionState === "local-demo" ? "本地模式" : "未验证"} tone={item.connectionState === "local-demo" ? "blue" : "orange"} />
                     </div>
-                  </div>
-                  <button aria-label={`${item.name} 设置`} className="icon-button" onClick={() => setActiveView("config")} title="打开当前项目配置"><Settings size={16} /></button>
+                  </button>
+                  <button aria-label={`${item.name} settings`} className="icon-button" onClick={() => void switchProject(item.id, "config")} title="Switch to this project config"><Settings size={16} /></button>
                 </div>
                 <div className="case-list">
                   {item.cases.map((caseItem) => (
-                    <button className={caseItem.id === state?.activeCaseId ? "case-row active" : "case-row"} key={caseItem.id}>
+                    <button type="button" onClick={() => void switchCase(item.id, caseItem.id)} className={caseItem.id === state?.activeCaseId && item.id === state?.activeProjectId ? "case-row active" : "case-row"} key={caseItem.id}>
                       <span>{caseItem.title}</span>
                       <time>{formatTime(caseItem.updatedAt)}</time>
                     </button>
@@ -760,7 +853,7 @@ function App() {
             </div>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 13 支持真实 ADT 单对象只读取证，仍保留安全模型草稿能力" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 15 支持真实本地项目/案件和 ADT 单对象只读取证，仍保留安全模型草稿能力" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>

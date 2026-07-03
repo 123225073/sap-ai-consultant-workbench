@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuHandoffResult, FeishuVerificationResult, KnowledgeItemActionInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationResult, KnowledgeItemActionInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -9,8 +9,10 @@ interface WorkbenchBridge {
     phase: string;
   };
   getState: () => Promise<WorkbenchResponse<WorkbenchState>>;
-  createDemoProject: () => Promise<WorkbenchResponse<WorkbenchState>>;
-  createDemoCase: () => Promise<WorkbenchResponse<WorkbenchState>>;
+  createLocalProject: (input: CreateLocalProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  createLocalCase: (input: CreateLocalCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  switchProject: (input: SwitchProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  switchCase: (input: SwitchCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   appendMessage: (input: CaseWorkflowInput | string) => Promise<WorkbenchResponse<WorkbenchState>>;
   getCaseFiles: () => Promise<WorkbenchResponse<CaseFileNode[]>>;
   previewCurrentCaseFile: (input: CaseFilePreviewInput) => Promise<WorkbenchResponse<CaseFilePreview>>;

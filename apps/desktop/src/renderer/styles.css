@@ -263,6 +263,57 @@ button {
   color: #111827;
 }
 
+.quick-create {
+  margin: 0 10px 10px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.quick-create-row {
+  display: grid;
+  grid-template-columns: 78px 1fr;
+  gap: 8px;
+}
+
+.quick-create input,
+.quick-create select {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 9px;
+  color: #111827;
+  background: #ffffff;
+  outline: 0;
+}
+
+.quick-create input:disabled {
+  color: #9ca3af;
+  background: #f3f4f6;
+}
+
+.quick-create button {
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  color: #111827;
+  background: #ffffff;
+}
+
+.quick-create button:disabled {
+  color: #9ca3af;
+  background: #f3f4f6;
+}
+
 .project-list {
   padding: 0 10px;
   display: grid;
@@ -277,10 +328,22 @@ button {
   padding: 14px;
 }
 
+.project-card.active {
+  border-color: #93c5fd;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
 .project-card-title {
   display: flex;
   justify-content: space-between;
   gap: 8px;
+}
+
+.project-switch {
+  min-width: 0;
+  flex: 1;
+  display: block;
+  text-align: left;
 }
 
 .project-card-title strong {

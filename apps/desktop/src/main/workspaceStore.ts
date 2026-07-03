@@ -39,7 +39,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuHandoffResult, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -250,36 +250,70 @@ function demoProject(): ProjectSummary {
     connectionState: "local-demo",
     createdAt,
     updatedAt: nowIso(),
-    config: defaultProjectConfig(DEMO_PROJECT_ID, projectDir, "demo001"),
+    config: defaultProjectConfig(DEMO_PROJECT_ID, projectDir, "demo001", { demo: true }),
     standards: createProjectStandards(DEMO_PROJECT_ID, "S4", "s4-default"),
     knowledge: createProjectKnowledge(DEMO_PROJECT_ID, true),
     cases: [demoCase()]
   };
 }
 
-function defaultProjectConfig(projectId: string, projectDir: string, caseDir: string): ProjectConfig {
+function localStorageConfigForCase(projectDir: string, caseDir: string, updatedAt = nowIso()): ProjectConfig["localStorage"] {
+  return {
+    storageMode: "json",
+    workspaceRoot: "local-data/workbench",
+    stateJsonPath: "local-data/workbench/app-state.json",
+    projectDir: `local-data/workbench/projects/${projectDir}`,
+    casesDir: `local-data/workbench/projects/${projectDir}/cases/${caseDir}`,
+    databasePath: "local-data/workbench/app.db",
+    indexesDir: "local-data/workbench/indexes",
+    logsDir: "local-data/workbench/logs",
+    tempDir: "local-data/workbench/temp",
+    status: "saved",
+    lastCheckedAt: updatedAt,
+    lastError: null
+  };
+}
+
+function syncProjectLocalStorage(project: ProjectSummary, caseItem: CaseSummary): void {
   const updatedAt = nowIso();
+  const localStorage = localStorageConfigForCase(project.projectDir || project.id, caseItem.folderName || caseItem.id, updatedAt);
+  if (
+    project.config.localStorage.projectDir === localStorage.projectDir &&
+    project.config.localStorage.casesDir === localStorage.casesDir
+  ) {
+    return;
+  }
+  project.config = {
+    ...project.config,
+    updatedAt,
+    localStorage
+  };
+}
+
+function defaultProjectConfig(projectId: string, projectDir: string, caseDir: string, options: { demo?: boolean } = {}): ProjectConfig {
+  const updatedAt = nowIso();
+  const demo = options.demo === true;
   return {
     schemaVersion: 2,
     projectId,
     updatedAt,
     adt: {
-      alias: "演示开发系统",
-      url: "https://sap-demo.example.com",
-      client: "100",
-      username: "DEMO_USER",
+      alias: demo ? "演示开发系统" : "",
+      url: demo ? "https://sap-demo.example.com" : "",
+      client: demo ? "100" : "",
+      username: demo ? "DEMO_USER" : "",
       language: "ZH",
       sslMode: "strict",
       readOnly: true,
       credential: emptySecretHandle("adt-password"),
-      configStatus: "saved",
+      configStatus: demo ? "saved" : "not-configured",
       connectionStatus: "pending-verification",
       minimalReadStatus: "pending-verification",
       lastVerificationMode: null,
       lastCheckedAt: null
     },
     feishu: {
-      profile: "demo-profile",
+      profile: demo ? "demo-profile" : "",
       cliPath: "lark-cli",
       credential: emptySecretHandle("feishu-token"),
       authStatus: "pending-verification",
@@ -288,10 +322,10 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
     },
     apiProviders: [
       {
-        id: "demo-openai-compatible",
-        name: "演示 OpenAI 兼容渠道",
+        id: demo ? "demo-openai-compatible" : "openai-compatible-default",
+        name: demo ? "演示 OpenAI 兼容渠道" : "OpenAI Compatible",
         providerType: "openai-compatible",
-        baseUrl: "https://api-demo.example.com/v1",
+        baseUrl: demo ? "https://api-demo.example.com/v1" : "",
         enabled: false,
         credential: emptySecretHandle("api-key"),
         models: [],
@@ -311,20 +345,166 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
       readonlyTaskStatus: "pending-verification",
       lastCheckedAt: null
     },
-    localStorage: {
-      storageMode: "json",
-      workspaceRoot: "local-data/workbench",
-      stateJsonPath: "local-data/workbench/app-state.json",
-      projectDir: `local-data/workbench/projects/${projectDir}`,
-      casesDir: `local-data/workbench/projects/${projectDir}/cases/${caseDir}`,
-      databasePath: "local-data/workbench/app.db",
-      indexesDir: "local-data/workbench/indexes",
-      logsDir: "local-data/workbench/logs",
-      tempDir: "local-data/workbench/temp",
-      status: "saved",
-      lastCheckedAt: updatedAt,
-      lastError: null
-    }
+    localStorage: localStorageConfigForCase(projectDir, caseDir, updatedAt)
+  };
+}
+
+function assertSafeLifecycleText(label: string, value: unknown, maxLength = 96): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be plain text.`);
+  }
+  const textValue = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!textValue) {
+    throw new Error(`${label} is required.`);
+  }
+  if (textValue.length > maxLength) {
+    throw new Error(`${label} is too long.`);
+  }
+  const lower = textValue.toLowerCase();
+  const unsafeText = /(authorization|cookie|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|secret|token|secure-store|sap_sessionid|mysapsso2)/i.test(textValue);
+  const unsafePath = (
+    textValue.includes("../") ||
+    textValue.includes("..\\") ||
+    textValue.includes("\\") ||
+    textValue.startsWith("/") ||
+    /^[a-zA-Z]:[\\/]/.test(textValue) ||
+    /^[a-z][a-z0-9+.-]*:/i.test(textValue) ||
+    lower.includes(".sap-adt-cli") ||
+    lower.includes(".sap-abap-cli") ||
+    lower.includes(".env") ||
+    lower.includes("messages.json") ||
+    lower.includes("metadata.json") ||
+    lower.includes("app-state.json") ||
+    lower.includes("project.json")
+  );
+  if (unsafeText || unsafePath) {
+    throw new Error(`${label} contains unsafe text or path-like content.`);
+  }
+  return textValue;
+}
+
+export function parseCreateLocalProjectInput(input: unknown): CreateLocalProjectInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Create project request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["name", "sapVersion", "systemLabel"].includes(key))) {
+    throw new Error("Create project request contains unsupported fields.");
+  }
+  const candidate = input as Partial<CreateLocalProjectInput>;
+  return {
+    name: assertSafeLifecycleText("Project name", candidate.name, 80),
+    sapVersion: lifecycleSapVersion(candidate.sapVersion),
+    systemLabel: assertSafeLifecycleText("System label", candidate.systemLabel, 40)
+  };
+}
+
+function assertStrictLifecycleId(label: string, value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a plain local ID.`);
+  }
+  if (value !== value.trim() || !/^[A-Za-z0-9_-]{1,80}$/.test(value)) {
+    throw new Error(`${label} contains unsafe or path-like content.`);
+  }
+  return value;
+}
+
+export function parseCreateLocalCaseInput(input: unknown): CreateLocalCaseInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Create case request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["projectId", "title"].includes(key))) {
+    throw new Error("Create case request contains unsupported fields.");
+  }
+  const candidate = input as Partial<CreateLocalCaseInput>;
+  const projectId = candidate.projectId === undefined ? undefined : assertStrictLifecycleId("Project ID", candidate.projectId);
+  return {
+    ...(projectId ? { projectId } : {}),
+    title: assertSafeLifecycleText("Case title", candidate.title, 120)
+  };
+}
+
+function parseSwitchProjectInput(input: unknown): SwitchProjectInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Switch project request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "projectId") {
+    throw new Error("Switch project request may only contain projectId.");
+  }
+  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<SwitchProjectInput>).projectId);
+  return { projectId };
+}
+
+function parseSwitchCaseInput(input: unknown): SwitchCaseInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Switch case request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["projectId", "caseId"].includes(key))) {
+    throw new Error("Switch case request may only contain projectId and caseId.");
+  }
+  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<SwitchCaseInput>).projectId);
+  const caseId = assertStrictLifecycleId("Case ID", (input as Partial<SwitchCaseInput>).caseId);
+  return { projectId, caseId };
+}
+
+function timestampIdSegment(): string {
+  return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 17);
+}
+
+function uniqueEntityId(prefix: string, existingIds: Iterable<string>): string {
+  const existing = new Set(existingIds);
+  const base = `${prefix}-${timestampIdSegment()}`;
+  if (!existing.has(base)) return base;
+  for (let index = 2; index < 1000; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existing.has(candidate)) return candidate;
+  }
+  throw new Error("Unable to allocate a unique local ID.");
+}
+
+function createLocalCaseRecord(projectId: string, title: string, existingCaseIds: Iterable<string>): CaseSummary {
+  const createdAt = nowIso();
+  const id = uniqueEntityId("case", existingCaseIds);
+  return {
+    id,
+    projectId,
+    title,
+    status: "active",
+    caseDir: id,
+    summary: "New local case. No output has been generated yet.",
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt,
+    folderName: id,
+    currentSummary: "New local case. No output has been generated yet.",
+    messages: []
+  };
+}
+
+function createLocalProjectRecord(input: CreateLocalProjectInput, existingProjectIds: Iterable<string>, visibleOrder: number): ProjectSummary {
+  const createdAt = nowIso();
+  const id = uniqueEntityId("project", existingProjectIds);
+  const projectDir = id;
+  const firstCase = createLocalCaseRecord(id, `${input.name} initial case`, []);
+  const templateId = input.sapVersion === "ECC" ? "ecc-default" : "s4-default";
+  return {
+    id,
+    name: input.name,
+    sapVersion: input.sapVersion,
+    systemLabel: input.systemLabel,
+    projectDir,
+    isVisible: true,
+    visibleOrder,
+    connectionState: "not-configured",
+    createdAt,
+    updatedAt: createdAt,
+    config: defaultProjectConfig(id, projectDir, firstCase.folderName),
+    standards: createProjectStandards(id, input.sapVersion, templateId),
+    knowledge: createProjectKnowledge(id, false),
+    cases: [firstCase]
   };
 }
 
@@ -416,8 +596,42 @@ function nullableIso(value: unknown): string | null {
   return Number.isNaN(parsed.getTime()) ? null : value;
 }
 
+function isFileNotFound(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: unknown }).code === "ENOENT";
+}
+
+function normalizeLocalStorageConfig(
+  project: ProjectSummary,
+  input: unknown,
+  fallback: ProjectConfig["localStorage"]
+): ProjectConfig["localStorage"] {
+  const candidate = input && typeof input === "object" ? input as Partial<ProjectConfig["localStorage"]> : {};
+  const projectDir = `local-data/workbench/projects/${project.projectDir || project.id}`;
+  const validCaseDirs = new Set(project.cases.map((caseItem) => {
+    return `local-data/workbench/projects/${project.projectDir || project.id}/cases/${caseItem.folderName || caseItem.id}`;
+  }));
+  const candidateProjectDir = text(candidate.projectDir);
+  const candidateCasesDir = text(candidate.casesDir);
+  const canPreserveCaseDir = candidateProjectDir === projectDir && validCaseDirs.has(candidateCasesDir);
+  return {
+    ...fallback,
+    projectDir,
+    casesDir: canPreserveCaseDir ? candidateCasesDir : fallback.casesDir,
+    status: normalizeConfigStatus(candidate.status, fallback.status),
+    lastCheckedAt: nullableIso(candidate.lastCheckedAt) ?? fallback.lastCheckedAt,
+    lastError: typeof candidate.lastError === "string" ? candidate.lastError.slice(0, 200) : null
+  };
+}
+
 function sapVersion(value: unknown): ProjectSummary["sapVersion"] {
   return value === "S4" || value === "ECC" ? value : "UNKNOWN";
+}
+
+function lifecycleSapVersion(value: unknown): CreateLocalProjectInput["sapVersion"] {
+  if (value === "S4" || value === "ECC") {
+    return value;
+  }
+  throw new Error("Choose S4 or ECC before creating a local project.");
 }
 
 function normalizeConnectionState(value: unknown): ProjectSummary["connectionState"] {
@@ -528,6 +742,7 @@ export class WorkspaceStore {
   private readonly statePath: string;
   private readonly database: DatabaseService;
   private databaseInitialized = false;
+  private stateWriteQueue: Promise<void> = Promise.resolve();
 
   constructor(repoRoot: string) {
     this.workspaceRoot = path.join(repoRoot, "local-data", "workbench");
@@ -535,42 +750,169 @@ export class WorkspaceStore {
     this.database = new DatabaseService(this.workspaceRoot);
   }
 
+  private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.stateWriteQueue;
+    let release: () => void = () => undefined;
+    this.stateWriteQueue = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous.catch(() => undefined);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
   async getState(): Promise<WorkbenchState> {
-    const state = await this.loadOrCreateState();
-    await this.ensureCaseFiles(state);
-    await this.refreshSearchIndex(state);
-    return this.withFiles(state);
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
   }
 
   async createDemoProject(): Promise<WorkbenchState> {
-    const state = await this.loadOrCreateState();
-    const existing = state.projects.find((project) => project.id === DEMO_PROJECT_ID);
-    if (!existing) {
-      state.projects.unshift(demoProject());
-    }
-    state.activeProjectId = DEMO_PROJECT_ID;
-    state.activeCaseId = DEMO_CASE_ID;
-    await this.saveState(state);
-    await this.ensureCaseFiles(state);
-    await this.refreshSearchIndex(state);
-    return this.withFiles(state);
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const existing = state.projects.find((project) => project.id === DEMO_PROJECT_ID);
+      if (!existing) {
+        state.projects.unshift(demoProject());
+      }
+      state.activeProjectId = DEMO_PROJECT_ID;
+      state.activeCaseId = DEMO_CASE_ID;
+      const project = state.projects.find((item) => item.id === DEMO_PROJECT_ID);
+      const caseItem = project?.cases.find((item) => item.id === DEMO_CASE_ID);
+      if (project && caseItem) {
+        syncProjectLocalStorage(project, caseItem);
+        await this.writeProjectMetadata(project);
+      }
+      await this.saveState(state);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
   }
 
   async createDemoCase(): Promise<WorkbenchState> {
-    const state = await this.loadOrCreateState();
-    const project = this.ensureDemoProject(state);
-    if (!project.cases.some((item) => item.id === DEMO_CASE_ID)) {
-      project.cases.unshift(demoCase());
-    }
-    state.activeProjectId = DEMO_PROJECT_ID;
-    state.activeCaseId = DEMO_CASE_ID;
-    await this.saveState(state);
-    await this.ensureCaseFiles(state);
-    await this.refreshSearchIndex(state);
-    return this.withFiles(state);
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const project = this.ensureDemoProject(state);
+      if (!project.cases.some((item) => item.id === DEMO_CASE_ID)) {
+        project.cases.unshift(demoCase());
+      }
+      state.activeProjectId = DEMO_PROJECT_ID;
+      state.activeCaseId = DEMO_CASE_ID;
+      const caseItem = project.cases.find((item) => item.id === DEMO_CASE_ID);
+      if (caseItem) {
+        syncProjectLocalStorage(project, caseItem);
+        await this.writeProjectMetadata(project);
+      }
+      await this.saveState(state);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async createLocalProject(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const projectInput = parseCreateLocalProjectInput(input);
+      const state = await this.loadOrCreateState();
+      const project = createLocalProjectRecord(
+        projectInput,
+        state.projects.map((item) => item.id),
+        Math.max(0, ...state.projects.map((item) => item.visibleOrder)) + 1
+      );
+      const firstCase = project.cases[0];
+      if (firstCase) {
+        syncProjectLocalStorage(project, firstCase);
+      }
+      state.projects.unshift(project);
+      state.activeProjectId = project.id;
+      state.activeCaseId = project.cases[0]?.id ?? "";
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async createLocalCase(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const caseInput = parseCreateLocalCaseInput(input);
+      const state = await this.loadOrCreateState();
+      const projectId = caseInput.projectId ?? state.activeProjectId;
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        throw new Error("Target project is no longer available.");
+      }
+      const caseItem = createLocalCaseRecord(project.id, caseInput.title, project.cases.map((item) => item.id));
+      project.cases.unshift(caseItem);
+      project.updatedAt = nowIso();
+      syncProjectLocalStorage(project, caseItem);
+      state.activeProjectId = project.id;
+      state.activeCaseId = caseItem.id;
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async switchProject(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { projectId } = parseSwitchProjectInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        throw new Error("Target project is no longer available.");
+      }
+      const activeCase = [...project.cases].sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime())[0];
+      if (!activeCase) {
+        throw new Error("Target project has no local case.");
+      }
+      activeCase.lastOpenedAt = nowIso();
+      syncProjectLocalStorage(project, activeCase);
+      state.activeProjectId = project.id;
+      state.activeCaseId = activeCase.id;
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async switchCase(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { projectId, caseId } = parseSwitchCaseInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        throw new Error("Target project is no longer available.");
+      }
+      const caseItem = project.cases.find((item) => item.id === caseId);
+      if (!caseItem) {
+        throw new Error("Target case is not part of the selected project.");
+      }
+      caseItem.lastOpenedAt = nowIso();
+      syncProjectLocalStorage(project, caseItem);
+      state.activeProjectId = project.id;
+      state.activeCaseId = caseItem.id;
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
   }
 
   async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const workflowInput = parseCaseWorkflowInput(input);
     if (!workflowInput.content) {
       throw new Error("请输入案件问题或补充说明。");
@@ -580,6 +922,7 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     const currentCase = this.getActiveCase(state);
     const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    syncProjectLocalStorage(project, currentCase);
     const persistedModelId = safeModelDraft ? safeMessageModelId(safeModelDraft.modelId) : "local-workflow";
     const persistedModelDraft = safeModelDraft ? { ...safeModelDraft, modelId: persistedModelId } : undefined;
     const persistedInput = { ...workflowInput, modelId: persistedModelId };
@@ -609,6 +952,7 @@ export class WorkspaceStore {
     await this.writeCaseMarkdown(state, currentCase, artifacts);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
+    });
   }
 
   async getCaseFiles(): Promise<CaseFileNode[]> {
@@ -725,6 +1069,7 @@ export class WorkspaceStore {
   }
 
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     this.assertNoRawSecretFields(config);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -733,12 +1078,20 @@ export class WorkspaceStore {
     }
 
     project.config = this.sanitizeProjectConfig(project, config);
+    const activeCase = project.id === state.activeProjectId
+      ? project.cases.find((item) => item.id === state.activeCaseId) ?? project.cases[0]
+      : project.cases[0];
+    if (activeCase) {
+      syncProjectLocalStorage(project, activeCase);
+    }
     project.updatedAt = nowIso();
 
     await this.saveState(state);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
+    });
   }
 
   async getProjectConfig(projectId: string): Promise<ProjectConfig> {
@@ -758,6 +1111,7 @@ export class WorkspaceStore {
   }
 
   async appendSapObjectEvidence(result: SapObjectEvidenceConnectorResult, targetCase?: { projectId: string; caseId: string }): Promise<SapObjectEvidenceResult> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     const fallbackCase = this.getActiveCase(state);
@@ -771,6 +1125,7 @@ export class WorkspaceStore {
     if (!currentCase) {
       throw new Error("SAP evidence target case is no longer available.");
     }
+    syncProjectLocalStorage(project, currentCase);
     const record = normalizeSapObjectEvidenceResult(result);
     const generatedFiles = renderSapObjectEvidenceFiles(record);
     const generatedPaths = generatedFiles.map((file) => file.relativePath);
@@ -851,13 +1206,16 @@ export class WorkspaceStore {
       summary: record.summary,
       generatedFiles: generatedPaths
     };
+    });
   }
 
   async prepareFeishuHandoff(): Promise<FeishuHandoffResult> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     const currentCase = this.getActiveCase(state);
     const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    syncProjectLocalStorage(project, currentCase);
     const files = await this.readCaseTree(state);
     const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
     if (safeOutputSummaries.length === 0) {
@@ -881,6 +1239,7 @@ export class WorkspaceStore {
       sourceFiles: handoff.sourceFiles,
       blockedActions: handoff.blockedActions
     };
+    });
   }
 
   async getProjectStandards(projectId: string): Promise<ProjectStandardsView> {
@@ -902,6 +1261,7 @@ export class WorkspaceStore {
   }
 
   async copyProjectStandardsTemplate(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const copyInput = parseCopyProjectStandardsInput(input);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -913,11 +1273,14 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectStandards(project);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async copyProjectStandardsFromProject(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const copyInput = parseCopyProjectStandardsFromProjectInput(input);
     const state = await this.loadOrCreateState();
     const targetProject = state.projects.find((item) => item.id === projectId);
@@ -933,11 +1296,14 @@ export class WorkspaceStore {
     targetProject.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectStandards(targetProject);
+    await this.writeProjectMetadata(targetProject);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async saveProjectStandards(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const saveInput = parseSaveProjectStandardsInput(input);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -954,12 +1320,15 @@ export class WorkspaceStore {
     await this.saveState(state);
     if (changed) {
       await this.writeProjectStandards(project);
+      await this.writeProjectMetadata(project);
     }
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async publishKnowledge(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const actionInput = parseKnowledgeActionInput(input);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -971,12 +1340,15 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
+    });
   }
 
   async markKnowledgeConflicted(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const actionInput = parseKnowledgeActionInput(input);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -988,12 +1360,15 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
+    });
   }
 
   async expireKnowledge(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const actionInput = parseKnowledgeActionInput(input);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -1005,12 +1380,15 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
+    });
   }
 
   async updateAdtVerification(projectId: string, report: AdtVerificationReport): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
@@ -1027,11 +1405,14 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
 
     await this.saveState(state);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async updateFeishuVerification(projectId: string, report: FeishuVerificationReport): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
@@ -1045,8 +1426,10 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
 
     await this.saveState(state);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async getApiProviderConfig(projectId: string, providerId: string): Promise<ProjectConfig["apiProviders"][number]> {
@@ -1063,6 +1446,7 @@ export class WorkspaceStore {
   }
 
   async updateModelProviderVerification(projectId: string, providerId: string, report: ModelProviderVerificationReport): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
@@ -1082,8 +1466,10 @@ export class WorkspaceStore {
     project.updatedAt = nowIso();
 
     await this.saveState(state);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   async prepareProjectSecret(projectId: string, targetInput: unknown): Promise<{ target: ProjectSecretTarget; existingRef: string | null }> {
@@ -1096,6 +1482,7 @@ export class WorkspaceStore {
   }
 
   async attachProjectSecret(projectId: string, targetInput: unknown, handle: SecretHandle): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
@@ -1122,28 +1509,81 @@ export class WorkspaceStore {
     }
 
     project.config = this.sanitizeProjectConfig(project, project.config);
+    const activeCase = project.id === state.activeProjectId
+      ? project.cases.find((item) => item.id === state.activeCaseId) ?? project.cases[0]
+      : project.cases[0];
+    if (activeCase) {
+      syncProjectLocalStorage(project, activeCase);
+    }
     project.updatedAt = nowIso();
     await this.saveState(state);
+    await this.writeProjectMetadata(project);
     await this.ensureCaseFiles(state);
     return this.withFiles(state);
+    });
   }
 
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
     await this.initializeDatabase();
+    let raw: string;
     try {
-      const raw = await fs.readFile(this.statePath, "utf8");
-      const parsed = JSON.parse(raw) as StoredState;
-      const normalized = this.normalizeState(parsed);
-      if (raw.includes("secure-store:sec_")) {
-        await this.saveState(normalized);
-      }
-      return normalized;
+      raw = await fs.readFile(this.statePath, "utf8");
+    } catch (error) {
+      if (!isFileNotFound(error)) throw error;
+      const state = emptyState();
+      await this.saveState(state);
+      return state;
+    }
+    let parsed: StoredState;
+    let normalized: StoredState;
+    try {
+      parsed = JSON.parse(raw) as StoredState;
+      normalized = this.normalizeState(parsed);
     } catch {
       const state = emptyState();
       await this.saveState(state);
       return state;
     }
+    const activeProject = this.activeProjectFromState(normalized);
+    const shouldPersistState = raw.includes("secure-store:sec_") || this.shouldPersistNormalizedState(parsed, normalized);
+    if (shouldPersistState) {
+      await this.saveState(normalized);
+    }
+    if (shouldPersistState || await this.shouldPersistActiveProjectMetadata(activeProject)) {
+      await this.writeProjectMetadata(activeProject);
+    }
+    return normalized;
+  }
+
+  private activeProjectFromState(state: StoredState): ProjectSummary {
+    return state.projects.find((project) => project.id === state.activeProjectId) ?? state.projects[0] ?? demoProject();
+  }
+
+  private async shouldPersistActiveProjectMetadata(project: ProjectSummary): Promise<boolean> {
+    const metadataPath = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id, "project.json"));
+    try {
+      const raw = await fs.readFile(metadataPath, "utf8");
+      const parsed = JSON.parse(raw) as { id?: unknown; config?: Partial<ProjectConfig> };
+      return parsed.id !== project.id ||
+        parsed.config?.localStorage?.projectDir !== project.config.localStorage.projectDir ||
+        parsed.config?.localStorage?.casesDir !== project.config.localStorage.casesDir;
+    } catch (error) {
+      if (isFileNotFound(error) || error instanceof SyntaxError) {
+        return true;
+      }
+      throw error;
+    }
+  }
+
+  private shouldPersistNormalizedState(parsed: StoredState, normalized: StoredState): boolean {
+    if (parsed.schemaVersion !== normalized.schemaVersion) return true;
+    if (parsed.activeProjectId !== normalized.activeProjectId || parsed.activeCaseId !== normalized.activeCaseId) return true;
+    const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
+    const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
+    if (!parsedProject || !normalizedProject) return true;
+    return parsedProject.config?.localStorage?.casesDir !== normalizedProject.config.localStorage.casesDir ||
+      parsedProject.config?.localStorage?.projectDir !== normalizedProject.config.localStorage.projectDir;
   }
 
   private async saveState(state: StoredState): Promise<void> {
@@ -1206,6 +1646,7 @@ export class WorkspaceStore {
     const activeProject = normalizedProjects.find((project) => project.id === requestedProjectId) ?? normalizedProjects[0] ?? demoProject();
     const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? DEMO_CASE_ID);
     const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? demoCase();
+    syncProjectLocalStorage(activeProject, activeCase);
     return {
       ...state,
       schemaVersion: state.schemaVersion ?? SCHEMA_VERSION,
@@ -1302,11 +1743,13 @@ export class WorkspaceStore {
     const language = text(adt.language, fallback.adt.language).toUpperCase() || "ZH";
     const preserveVerification = options.preserveVerification === true;
     const adtConfigStatus = savedOrEmptyStatus(alias, url, client, username);
+    const configUpdatedAt = nullableIso(candidate.updatedAt) ?? nullableIso(existingConfig?.updatedAt) ?? fallback.updatedAt;
+    const localStorage = normalizeLocalStorageConfig(project, candidate.localStorage, fallback.localStorage);
 
     return {
       schemaVersion: 2,
       projectId: project.id,
-      updatedAt: nowIso(),
+      updatedAt: configUpdatedAt,
       adt: {
         alias,
         url,
@@ -1359,13 +1802,13 @@ export class WorkspaceStore {
         readonlyTaskStatus: preserveVerification ? normalizeConfigStatus(codex.readonlyTaskStatus, "pending-verification") : "pending-verification",
         lastCheckedAt: preserveVerification ? nullableIso(codex.lastCheckedAt) : null
       },
-      localStorage: fallback.localStorage
+      localStorage
     };
   }
 
   private async writeJsonAtomic(targetPath: string, value: unknown): Promise<void> {
     const safePath = this.assertInsideWorkspace(targetPath);
-    const tempPath = `${safePath}.tmp`;
+    const tempPath = `${safePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
     await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     await fs.rename(tempPath, safePath);
   }
@@ -1661,13 +2104,10 @@ export class WorkspaceStore {
     ]);
   }
 
-  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
-    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
-    const caseRoot = this.caseRootFor(project, caseItem);
-    await fs.mkdir(caseRoot, { recursive: true });
+  private async writeProjectMetadata(project: ProjectSummary): Promise<void> {
     const projectRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id));
     await fs.mkdir(projectRoot, { recursive: true });
-    const projectJson = {
+    await this.writeJsonAtomic(path.join(projectRoot, "project.json"), {
       schemaVersion: SCHEMA_VERSION,
       id: project.id,
       name: project.name,
@@ -1679,8 +2119,14 @@ export class WorkspaceStore {
       config: project.config,
       standards: project.standards,
       knowledge: project.knowledge,
-      safety: "no-secrets-demo-project"
-    };
+      safety: "no-secrets-local-project"
+    });
+  }
+
+  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
+    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+    const caseRoot = this.caseRootFor(project, caseItem);
+    await fs.mkdir(caseRoot, { recursive: true });
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {
       const target = this.generatedFileTarget(caseRoot, file);
       await fs.mkdir(path.dirname(target), { recursive: true });
@@ -1688,7 +2134,7 @@ export class WorkspaceStore {
     });
 
     await Promise.all([
-      this.writeJsonAtomic(path.join(projectRoot, "project.json"), projectJson),
+      this.writeProjectMetadata(project),
       this.writeJsonAtomic(path.join(caseRoot, "messages.json"), caseItem.messages),
       fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "README.md")), artifacts.readme, "utf8"),
       fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "conversation.md")), artifacts.conversation, "utf8"),

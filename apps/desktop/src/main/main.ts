@@ -492,8 +492,10 @@ function validProjectId(projectId: unknown, action: string): string {
 
 function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore): void {
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
-  ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
-  ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
+  ipcMain.handle("workbench:create-local-project", (_event, input: unknown) => response(store.createLocalProject(input)));
+  ipcMain.handle("workbench:create-local-case", (_event, input: unknown) => response(store.createLocalCase(input)));
+  ipcMain.handle("workbench:switch-project", (_event, input: unknown) => response(store.switchProject(input)));
+  ipcMain.handle("workbench:switch-case", (_event, input: unknown) => response(store.switchCase(input)));
   ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(appendCaseMessage(store, secretStore, input)));
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
