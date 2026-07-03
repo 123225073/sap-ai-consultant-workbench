@@ -986,7 +986,9 @@ export class WorkspaceStore {
       throw new Error("只能预览当前案件文件树中已经存在的文件。");
     }
 
-    const caseRoot = this.caseRoot(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const caseItem = this.getActiveCase(state);
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     const target = this.assertInsideWorkspace(path.join(caseRoot, relativePath));
     const resolvedCaseRoot = await fs.realpath(caseRoot);
     const stat = await fs.lstat(target);
@@ -1919,6 +1921,42 @@ export class WorkspaceStore {
     return resolvedTarget;
   }
 
+  private async assertRealPathInside(root: string, target: string, message: string): Promise<string> {
+    const realRoot = await fs.realpath(root);
+    const realTarget = await fs.realpath(target);
+    if (realTarget !== realRoot && !realTarget.startsWith(`${realRoot}${path.sep}`)) {
+      throw new Error(message);
+    }
+    return realTarget;
+  }
+
+  private async ensurePlainDirectory(directory: string, message: string): Promise<void> {
+    try {
+      const stats = await fs.lstat(directory);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(message);
+      }
+    } catch (error) {
+      if (!isFileNotFound(error)) throw error;
+      await fs.mkdir(directory, { recursive: true });
+      const stats = await fs.lstat(directory);
+      if (stats.isSymbolicLink() || !stats.isDirectory()) {
+        throw new Error(message);
+      }
+    }
+  }
+
+  private async safeCaseRootForAccess(project: ProjectSummary, caseItem: CaseSummary): Promise<string> {
+    const projectRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id));
+    await this.ensurePlainDirectory(projectRoot, "项目目录包含符号链接或非目录节点，已阻止访问。");
+    const casesRoot = this.assertInsideWorkspace(path.join(projectRoot, "cases"));
+    await this.ensurePlainDirectory(casesRoot, "项目 cases 目录包含符号链接或非目录节点，已阻止访问。");
+    const caseRoot = this.assertInsideCasesRoot(casesRoot, path.join(casesRoot, caseItem.folderName));
+    await this.ensurePlainDirectory(caseRoot, "案件目录包含符号链接或非目录节点，已阻止访问。");
+    await this.assertRealPathInside(casesRoot, caseRoot, "案件目录真实路径超出当前项目 cases 目录，已阻止访问。");
+    return caseRoot;
+  }
+
   private assertPreviewRelativePath(input: unknown): string {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
       throw new Error("文件预览请求无效。");
@@ -2001,7 +2039,7 @@ export class WorkspaceStore {
       if (!SAFE_INDEX_EXTENSIONS.has(extension)) return null;
       if (BLOCKED_PREVIEW_FILENAMES.has(basename) || basename.includes("credential") || basename.includes("secret")) return null;
 
-      const caseRoot = this.caseRootFor(project, caseItem);
+      const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
       const target = this.assertInsideWorkspace(path.join(caseRoot, relativePath));
       const resolvedCaseRoot = await fs.realpath(caseRoot);
       const stat = await fs.lstat(target);
@@ -2159,7 +2197,9 @@ export class WorkspaceStore {
   }
 
   private async ensureCaseFiles(state: StoredState): Promise<void> {
-    const caseRoot = this.caseRoot(state);
+    const caseItem = this.getActiveCase(state);
+    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     await Promise.all(state.projects.map((project) => this.ensureProjectStandardsFiles(project)));
     await Promise.all(state.projects.map((project) => this.ensureProjectKnowledgeFiles(project)));
     for (const directory of directories) {
@@ -2175,8 +2215,6 @@ export class WorkspaceStore {
       }
     }));
     if (missingRequired.some(Boolean)) {
-      const caseItem = this.getActiveCase(state);
-      const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
       await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem));
     }
   }
@@ -2242,8 +2280,7 @@ export class WorkspaceStore {
 
   private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
-    const caseRoot = this.caseRootFor(project, caseItem);
-    await fs.mkdir(caseRoot, { recursive: true });
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {
       await this.writeGeneratedFile(caseRoot, file);
     });
@@ -2261,8 +2298,7 @@ export class WorkspaceStore {
   }
 
   private async writeCaseGeneratedFiles(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): Promise<void> {
-    const caseRoot = this.caseRootFor(project, caseItem);
-    await fs.mkdir(caseRoot, { recursive: true });
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     await Promise.all(generatedFiles.map(async (file) => {
       await this.writeGeneratedFile(caseRoot, file);
     }));
@@ -2280,29 +2316,40 @@ export class WorkspaceStore {
   }
 
   private async readCaseTree(state: StoredState): Promise<CaseFileNode[]> {
-    const caseRoot = this.caseRoot(state);
-    return this.readDirectory(caseRoot, "", this.getActiveCase(state).id);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const caseItem = this.getActiveCase(state);
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
+    return this.readDirectory(caseRoot, caseRoot, "", caseItem.id);
   }
 
   private async readCaseTreeForCase(project: ProjectSummary, caseItem: CaseSummary): Promise<CaseFileNode[]> {
-    const caseRoot = this.caseRootFor(project, caseItem);
-    return this.readDirectory(caseRoot, "", caseItem.id);
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
+    return this.readDirectory(caseRoot, caseRoot, "", caseItem.id);
   }
 
-  private async readDirectory(directory: string, relativeBase: string, caseId: string): Promise<CaseFileNode[]> {
+  private async readDirectory(caseRoot: string, directory: string, relativeBase: string, caseId: string): Promise<CaseFileNode[]> {
     const entries = await fs.readdir(this.assertInsideWorkspace(directory), { withFileTypes: true });
     const nodes: CaseFileNode[] = [];
 
     for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
       const relativePath = relativeBase ? `${relativeBase}/${entry.name}` : entry.name;
       const absolutePath = this.assertInsideWorkspace(path.join(directory, entry.name));
-      const stats = await fs.stat(absolutePath);
-      const kind = entry.isDirectory() ? "directory" : "file";
-      const fileType = entry.isDirectory() ? "directory" : path.extname(entry.name).replace(".", "").toLowerCase() || "text";
+      const stats = await fs.lstat(absolutePath);
+      if (stats.isSymbolicLink()) continue;
+      const isDirectory = stats.isDirectory();
+      const isFile = stats.isFile();
+      if (!isDirectory && !isFile) continue;
+      try {
+        await this.assertRealPathInside(caseRoot, absolutePath, "案件文件树包含越界文件，已阻止。");
+      } catch {
+        continue;
+      }
+      const kind = isDirectory ? "directory" : "file";
+      const fileType = isDirectory ? "directory" : path.extname(entry.name).replace(".", "").toLowerCase() || "text";
       nodes.push({
         id: relativePath,
         caseId,
-        name: entry.isDirectory() ? `${entry.name}/` : entry.name,
+        name: isDirectory ? `${entry.name}/` : entry.name,
         relativePath,
         displayName: entry.name,
         kind,
@@ -2313,7 +2360,7 @@ export class WorkspaceStore {
         createdAt: stats.birthtime.toISOString(),
         updatedAt: stats.mtime.toISOString(),
         indexedAt: nowIso(),
-        children: entry.isDirectory() ? await this.readDirectory(absolutePath, relativePath, caseId) : undefined
+        children: isDirectory ? await this.readDirectory(caseRoot, absolutePath, relativePath, caseId) : undefined
       });
     }
 

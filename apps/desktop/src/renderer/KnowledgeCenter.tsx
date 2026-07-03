@@ -319,7 +319,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
             ) : null}
 
             <section className="knowledge-detail-actions">
-              <button disabled={busyItemId === selectedItem.id || isPhase16LocalTextImportCandidate(selectedItem) || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} title={isPhase16LocalTextImportCandidate(selectedItem) ? "Phase 16 本地文本导入只生成候选，暂不直接入库" : selectedItem.status === "conflicted" ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
+              <button disabled={busyItemId === selectedItem.id || isPhase16LocalTextImportCandidate(selectedItem) || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} title={isPhase16LocalTextImportCandidate(selectedItem) ? "本地文本导入只生成候选，暂不直接入库" : selectedItem.status === "conflicted" ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
             </section>

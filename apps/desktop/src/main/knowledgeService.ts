@@ -650,7 +650,7 @@ export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledg
       throw new Error("该知识仍关联冲突项，不能直接确认入库。请先处理冲突关系。");
     }
     if (isPhase16LocalTextImportCandidate(item)) {
-      throw new Error("Phase 16 本地文本导入只生成待确认候选，暂不允许直接正式入库。");
+      throw new Error("本地文本导入只生成待确认候选，暂不允许直接正式入库。");
     }
     assertNoSensitiveKnowledgeContent(item.content);
     return {

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
 import path from "node:path";
 import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput } from "./adtReadonlyConnector";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, type FeishuCliConnectorInput } from "./feishuCliConnector";
@@ -7,6 +7,7 @@ import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { parseSapObjectEvidenceRequest } from "./sapObjectEvidenceService";
+import { assertTrustedRendererEvent, isTrustedRendererUrl } from "./trustedRenderer";
 import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
@@ -35,6 +36,15 @@ function response<T>(promise: Promise<T>): Promise<WorkbenchResponse<T>> {
       ok: false as const,
       error: safeErrorMessage(error)
     }));
+}
+
+function trustedResponse<T>(event: IpcMainInvokeEvent, appRoot: string, task: () => Promise<T>): Promise<WorkbenchResponse<T>> {
+  try {
+    assertTrustedRendererEvent(event, appRoot);
+  } catch (error) {
+    return response(Promise.reject(error));
+  }
+  return response(Promise.resolve().then(task));
 }
 
 function adtInputWithoutPassword(config: ProjectConfig): Omit<AdtConnectorInput, "password"> {
@@ -490,32 +500,32 @@ function validProjectId(projectId: unknown, action: string): string {
   return projectId;
 }
 
-function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore): void {
-  ipcMain.handle("workbench:get-state", () => response(store.getState()));
-  ipcMain.handle("workbench:create-local-project", (_event, input: unknown) => response(store.createLocalProject(input)));
-  ipcMain.handle("workbench:create-local-case", (_event, input: unknown) => response(store.createLocalCase(input)));
-  ipcMain.handle("workbench:switch-project", (_event, input: unknown) => response(store.switchProject(input)));
-  ipcMain.handle("workbench:switch-case", (_event, input: unknown) => response(store.switchCase(input)));
-  ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(appendCaseMessage(store, secretStore, input)));
-  ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
-  ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
-  ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
-  ipcMain.handle("workbench:read-sap-object-evidence", (_event, input: unknown) => response(readSapObjectEvidence(store, secretStore, input)));
-  ipcMain.handle("workbench:prepare-feishu-handoff", () => response(prepareFeishuHandoff(store)));
-  ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
-  ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
-  ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));
-  ipcMain.handle("workbench:feishu-verify-cli", (_event, projectId: unknown) => response(verifyFeishuCli(store, projectId)));
-  ipcMain.handle("workbench:model-provider-verify", (_event, projectId: unknown, providerId: unknown) => response(verifyModelProvider(store, secretStore, projectId, providerId)));
-  ipcMain.handle("workbench:get-project-standards", (_event, projectId: unknown) => response(store.getProjectStandards(validProjectId(projectId, "读取项目规范"))));
-  ipcMain.handle("workbench:standards-copy-template", (_event, projectId: unknown, input: unknown) => response(store.copyProjectStandardsTemplate(validProjectId(projectId, "复制规范模板"), input)));
-  ipcMain.handle("workbench:standards-copy-project", (_event, projectId: unknown, input: unknown) => response(store.copyProjectStandardsFromProject(validProjectId(projectId, "复制其他项目规范"), input)));
-  ipcMain.handle("workbench:standards-save", (_event, projectId: unknown, input: unknown) => response(store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
-  ipcMain.handle("workbench:get-project-knowledge", (_event, projectId: unknown) => response(store.getProjectKnowledge(validProjectId(projectId, "读取项目知识库"))));
-  ipcMain.handle("workbench:knowledge-import-local-text", (_event, input: unknown) => response(store.importKnowledgeLocalText(input)));
-  ipcMain.handle("workbench:knowledge-publish", (_event, projectId: unknown, input: unknown) => response(store.publishKnowledge(validProjectId(projectId, "确认知识入库"), input)));
-  ipcMain.handle("workbench:knowledge-mark-conflict", (_event, projectId: unknown, input: unknown) => response(store.markKnowledgeConflicted(validProjectId(projectId, "标记知识冲突"), input)));
-  ipcMain.handle("workbench:knowledge-expire", (_event, projectId: unknown, input: unknown) => response(store.expireKnowledge(validProjectId(projectId, "标记知识失效"), input)));
+function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore, appRoot: string): void {
+  ipcMain.handle("workbench:get-state", (event) => trustedResponse(event, appRoot, () => store.getState()));
+  ipcMain.handle("workbench:create-local-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalProject(input)));
+  ipcMain.handle("workbench:create-local-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalCase(input)));
+  ipcMain.handle("workbench:switch-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchProject(input)));
+  ipcMain.handle("workbench:switch-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchCase(input)));
+  ipcMain.handle("workbench:append-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendCaseMessage(store, secretStore, input)));
+  ipcMain.handle("workbench:get-case-files", (event) => trustedResponse(event, appRoot, () => store.getCaseFiles()));
+  ipcMain.handle("workbench:preview-current-case-file", (event, input: unknown) => trustedResponse(event, appRoot, () => store.previewCurrentCaseFile(input)));
+  ipcMain.handle("workbench:search", (event, query: string) => trustedResponse(event, appRoot, () => store.search(query)));
+  ipcMain.handle("workbench:read-sap-object-evidence", (event, input: unknown) => trustedResponse(event, appRoot, () => readSapObjectEvidence(store, secretStore, input)));
+  ipcMain.handle("workbench:prepare-feishu-handoff", (event) => trustedResponse(event, appRoot, () => prepareFeishuHandoff(store)));
+  ipcMain.handle("workbench:save-project-config", (event, projectId: string, config: unknown) => trustedResponse(event, appRoot, () => store.saveProjectConfig(projectId, config)));
+  ipcMain.handle("workbench:save-project-secret", (event, projectId: string, input: unknown) => trustedResponse(event, appRoot, () => saveProjectSecret(store, secretStore, projectId, input)));
+  ipcMain.handle("workbench:adt-verify-readonly", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyAdtReadonly(store, secretStore, projectId)));
+  ipcMain.handle("workbench:feishu-verify-cli", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyFeishuCli(store, projectId)));
+  ipcMain.handle("workbench:model-provider-verify", (event, projectId: unknown, providerId: unknown) => trustedResponse(event, appRoot, () => verifyModelProvider(store, secretStore, projectId, providerId)));
+  ipcMain.handle("workbench:get-project-standards", (event, projectId: unknown) => trustedResponse(event, appRoot, () => store.getProjectStandards(validProjectId(projectId, "读取项目规范"))));
+  ipcMain.handle("workbench:standards-copy-template", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.copyProjectStandardsTemplate(validProjectId(projectId, "复制规范模板"), input)));
+  ipcMain.handle("workbench:standards-copy-project", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.copyProjectStandardsFromProject(validProjectId(projectId, "复制其他项目规范"), input)));
+  ipcMain.handle("workbench:standards-save", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
+  ipcMain.handle("workbench:get-project-knowledge", (event, projectId: unknown) => trustedResponse(event, appRoot, () => store.getProjectKnowledge(validProjectId(projectId, "读取项目知识库"))));
+  ipcMain.handle("workbench:knowledge-import-local-text", (event, input: unknown) => trustedResponse(event, appRoot, () => store.importKnowledgeLocalText(input)));
+  ipcMain.handle("workbench:knowledge-publish", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.publishKnowledge(validProjectId(projectId, "确认知识入库"), input)));
+  ipcMain.handle("workbench:knowledge-mark-conflict", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.markKnowledgeConflicted(validProjectId(projectId, "标记知识冲突"), input)));
+  ipcMain.handle("workbench:knowledge-expire", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.expireKnowledge(validProjectId(projectId, "标记知识失效"), input)));
 }
 
 function createMainWindow(): void {
@@ -536,8 +546,14 @@ function createMainWindow(): void {
   });
 
   const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.webContents.on("will-navigate", (event, targetUrl) => {
+    if (!isTrustedRendererUrl(targetUrl, appRoot, rendererUrl)) {
+      event.preventDefault();
+    }
+  });
 
-  if (rendererUrl) {
+  if (rendererUrl && isTrustedRendererUrl(rendererUrl, appRoot, rendererUrl)) {
     void window.loadURL(rendererUrl);
   } else {
     void window.loadFile(path.join(appRoot, "dist/renderer/index.html"));
@@ -545,8 +561,9 @@ function createMainWindow(): void {
 }
 
 app.whenReady().then(() => {
-  const repoRoot = process.env.WORKBENCH_REPO_ROOT ?? path.resolve(app.getAppPath(), "../..");
-  registerWorkbenchHandlers(new WorkspaceStore(repoRoot), new SecureSecretStore(repoRoot));
+  const appRoot = app.getAppPath();
+  const repoRoot = process.env.WORKBENCH_REPO_ROOT ?? path.resolve(appRoot, "../..");
+  registerWorkbenchHandlers(new WorkspaceStore(repoRoot), new SecureSecretStore(repoRoot), appRoot);
   createMainWindow();
 
   app.on("activate", () => {

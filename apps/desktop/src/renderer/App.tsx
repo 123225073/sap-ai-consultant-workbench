@@ -239,7 +239,7 @@ function App() {
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
-  const [notice, setNotice] = useState("Phase 16：本地文本可导入为待确认知识候选；不会读取任意文件、不会连接飞书、不会自动入库。");
+  const [notice, setNotice] = useState("Phase 17：已加固可信页面调用和案件文件树边界；知识导入仍只支持已脱敏本地文本。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -674,7 +674,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 15"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 17"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -870,7 +870,7 @@ function App() {
             </div>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 15 支持真实本地项目/案件和 ADT 单对象只读取证，仍保留安全模型草稿能力" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="当前支持真实本地项目/案件、ADT 单对象只读取证、安全模型草稿和本地知识候选" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>

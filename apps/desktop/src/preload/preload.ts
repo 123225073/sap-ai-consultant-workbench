@@ -5,7 +5,7 @@ contextBridge.exposeInMainWorld("workbench", {
   getAppInfo: () => ({
     name: "SAP AI 顾问工作台",
     edition: "个人版 MVP",
-    phase: "Phase 16"
+    phase: "Phase 17"
   }),
   getState: (): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:get-state"),
   createLocalProject: (input: CreateLocalProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-local-project", input),

@@ -156,6 +156,38 @@ foreach ($line in $ipcHits) {
   }
 }
 
+Write-Section "Trusted renderer IPC boundary"
+$trustedRendererMarkers = @(
+  @{ Pattern = "isTrustedRendererUrl"; Path = "apps/desktop/src/main/trustedRenderer.ts" },
+  @{ Pattern = "assertTrustedRendererEvent"; Path = "apps/desktop/src/main/trustedRenderer.ts" },
+  @{ Pattern = "trustedResponse"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "assertTrustedRendererEvent"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "setWindowOpenHandler"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "will-navigate"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "isTrustedRendererUrl(rendererUrl"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "phase17-renderer-trust-filetree-probe"; Path = "scripts/phase17-renderer-trust-filetree-probe.mjs" }
+)
+foreach ($marker in $trustedRendererMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK trusted renderer marker: $($marker.Pattern)"
+  } else {
+    throw "Trusted renderer boundary marker is missing: $($marker.Pattern)"
+  }
+}
+
+$workbenchIpcLines = Select-String -Path "apps/desktop/src/main/main.ts" -Pattern 'ipcMain\.handle\("workbench:'
+if (-not $workbenchIpcLines) {
+  throw "No workbench IPC handlers found for trust-boundary scan."
+}
+foreach ($line in $workbenchIpcLines) {
+  if ($line.Line -notmatch "trustedResponse") {
+    Write-Host "$($line.Path):$($line.LineNumber):$($line.Line)"
+    throw "Workbench IPC handler is missing trustedResponse wrapper."
+  }
+  Write-Host "OK trusted IPC wrapper: $($line.LineNumber)"
+}
+
 Write-Section "Dangerous IPC name scan"
 $dangerousIpcHits = rg -n -- "get-secret|read-secret|export-secret|resolve-secret|get-api-key|read-api-key|export-api-key|resolve-api-key|list-models|chat-completions|run-command|runCommand|exec-command|shell-command|read-file|write-file|open-any-path|preview-any-file|open-file|open-path|read-current-file|readFileArbitrary|query-sql|execute-sql|raw-sql|read-output-file|full-text-file-search|index-any-file" apps/desktop/src/main apps/desktop/src/preload
 if ($LASTEXITCODE -eq 0) {
@@ -318,6 +350,26 @@ foreach ($marker in $previewMarkers) {
     Write-Host "OK preview marker: $($marker.Pattern)"
   } else {
     throw "Case file preview safety marker is missing: $($marker.Pattern)"
+  }
+}
+
+$fileTreeBoundaryMarkers = @(
+  @{ Pattern = "assertRealPathInside"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "ensurePlainDirectory"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "safeCaseRootForAccess"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "fs.lstat(absolutePath)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "stats.isSymbolicLink()"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "readDirectory(caseRoot"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "caseFileTreeSkipsSymlink"; Path = "scripts/phase17-renderer-trust-filetree-probe.mjs" },
+  @{ Pattern = "previewRejectsSymlinkPath"; Path = "scripts/phase17-renderer-trust-filetree-probe.mjs" },
+  @{ Pattern = "getCaseFilesRejectsCaseRootSymlink"; Path = "scripts/phase17-renderer-trust-filetree-probe.mjs" }
+)
+foreach ($marker in $fileTreeBoundaryMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK file tree boundary marker: $($marker.Pattern)"
+  } else {
+    throw "Case file tree boundary marker is missing: $($marker.Pattern)"
   }
 }
 
