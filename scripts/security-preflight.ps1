@@ -599,6 +599,9 @@ $sapEvidenceMarkers = @(
   @{ Pattern = "parseSapObjectEvidenceRequest"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
   @{ Pattern = "assertSafeSapObjectEvidenceText"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
   @{ Pattern = "renderSapObjectEvidenceFiles"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
+  @{ Pattern = "ADT_READONLY_FIXED_GET_ENDPOINTS"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "RealAdtReadonlyConnector"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "adtReadonlyObjectEvidencePath"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "readObjectEvidence"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "appendSapObjectEvidence"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "workbench:read-sap-object-evidence"; Path = "apps/desktop/src/main/main.ts" },
@@ -630,11 +633,19 @@ if ($LASTEXITCODE -eq 0) {
   throw "SAP evidence write-method scan failed."
 }
 
+$adtForbiddenEndpointHits = rg -n -- "datapreview|repository/informationsystem/search|repository/nodestructure|/sap/bc/adt/cts|/sap/bc/adt/activation|x-csrf-token|csrf" apps/desktop/src/main/adtReadonlyConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $adtForbiddenEndpointHits | ForEach-Object { Write-Host $_ }
+  throw "SAP evidence connector contains forbidden ADT endpoint or CSRF marker."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP evidence forbidden endpoint scan failed."
+}
+
 Write-Section "Authorization boundary scan"
 $authHits = rg -n -- "Authorization|Bearer|apiKey" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $authHits) {
-    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector)\.ts") {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector|adtReadonlyConnector)\.ts") {
       $line | ForEach-Object { Write-Host $_ }
       throw "Authorization/API key material outside approved main-process files."
     }

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, ipcMain } from "electron";
 import path from "node:path";
-import { createAdtReadonlyConnector, createAdtValidationFailureReport, type AdtConnectorInput } from "./adtReadonlyConnector";
+import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput } from "./adtReadonlyConnector";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
@@ -460,10 +460,7 @@ async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureS
     config.adt.lastVerificationMode === "fake" &&
     isDemoAdtHost(config.adt.url)
   );
-  const allowRealEvidence = false;
-  if (config.adt.lastVerificationMode === "adt" && !allowRealEvidence) {
-    throw new Error("Real ADT object evidence is not implemented in this phase. Only guarded demo evidence can run locally.");
-  }
+  const allowRealEvidence = config.adt.lastVerificationMode === "adt";
   if (!allowRealEvidence && !allowFakeEvidence) {
     throw new Error("SAP object evidence is blocked until a real ADT read-only verification is available. Fake evidence requires an explicit local probe flag and demo SAP host.");
   }
@@ -475,7 +472,7 @@ async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureS
     throw new Error("SAP password is unavailable in secure storage. Save the current project SAP password and verify ADT read-only mode again.");
   }
 
-  const connector = createAdtReadonlyConnector();
+  const connector = allowFakeEvidence ? new FakeAdtReadonlyConnector() : createAdtReadonlyConnector();
   const evidence = await connector.readObjectEvidence({ ...adtInputWithoutPassword(config), password }, request, {
     allowFakeEvidence
   });

@@ -25,6 +25,7 @@ export interface SapObjectEvidenceConnectorResult {
   functionGroup: string | null;
   system: AdtRedactedSystemInfo;
   sourceMode: AdtVerificationMode;
+  evidenceKind?: "fixed-adt-readonly-source";
   content: string;
   readAt: string;
 }
@@ -51,7 +52,7 @@ const unsafeNamePatterns = [
   /\b(SELECT|UPDATE|INSERT|DELETE|MODIFY|CALL|SUBMIT|TRANSACTION|TRANSPORT|ACTIVATE|PACKAGE|NAMESPACE|WHERE|FROM)\b/i
 ];
 
-const unsafeEvidenceTextPatterns = [
+const hardUnsafeEvidenceTextPatterns = [
   /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i,
   /secure-store:sec_[a-f0-9]{32}/i,
   /bearer\s+[a-z0-9._~+/=-]{12,}/i,
@@ -71,7 +72,10 @@ const unsafeEvidenceTextPatterns = [
   /secret\s*[:=]/i,
   /password\s*[:=]/i,
   /passwd\s*[:=]/i,
-  /token\s*[:=]/i,
+  /token\s*[:=]/i
+];
+
+const commandLikeEvidenceTextPatterns = [
   /\bSELECT\s+[\s\S]{0,300}\s+FROM\s+[\w/]+/i,
   /\bCALL\s+(FUNCTION|TRANSACTION)\b/i,
   /\bINSERT\s+[\w/]+\b|\bUPDATE\s+[\w/]+\b|\bMODIFY\s+[\w/]+\b|\bDELETE\s+FROM\s+[\w/]+\b/i
@@ -140,7 +144,7 @@ function hasTableLikeRows(value: string): boolean {
   return structuredRows.length >= 6;
 }
 
-export function assertSafeSapObjectEvidenceText(value: string): string {
+export function assertSafeSapObjectEvidenceText(value: string, options: { allowReadOnlySourceText?: boolean } = {}): string {
   const normalized = value.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     throw new Error("SAP evidence connector returned empty content.");
@@ -148,7 +152,10 @@ export function assertSafeSapObjectEvidenceText(value: string): string {
   if (normalized.length > MAX_EVIDENCE_TEXT_CHARS) {
     throw new Error("SAP evidence content is larger than the current single-object limit.");
   }
-  if (unsafeEvidenceTextPatterns.some((pattern) => pattern.test(normalized)) || hasTableLikeRows(normalized)) {
+  if (hardUnsafeEvidenceTextPatterns.some((pattern) => pattern.test(normalized)) || hasTableLikeRows(normalized)) {
+    throw new Error("SAP evidence content did not pass the safety checks.");
+  }
+  if (options.allowReadOnlySourceText !== true && commandLikeEvidenceTextPatterns.some((pattern) => pattern.test(normalized))) {
     throw new Error("SAP evidence content did not pass the safety checks.");
   }
   return normalized;
@@ -188,7 +195,9 @@ function metadataLines(summary: SapObjectEvidenceSummary): string[] {
 }
 
 export function normalizeSapObjectEvidenceResult(result: SapObjectEvidenceConnectorResult): SapObjectEvidenceRecord {
-  const content = assertSafeSapObjectEvidenceText(result.content);
+  const content = assertSafeSapObjectEvidenceText(result.content, {
+    allowReadOnlySourceText: result.evidenceKind === "fixed-adt-readonly-source" && result.sourceMode === "adt"
+  });
   const summary: SapObjectEvidenceSummary = {
     objectType: result.objectType,
     objectName: normalizeObjectName(result.objectName, "SAP object name"),

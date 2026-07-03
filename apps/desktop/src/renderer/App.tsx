@@ -229,8 +229,9 @@ function App() {
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
   const [sapEvidenceType, setSapEvidenceType] = useState<SapObjectEvidenceType>("program");
   const [sapEvidenceName, setSapEvidenceName] = useState("");
+  const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
-  const [notice, setNotice] = useState("Phase 12：当前支持把单个明确 SAP 对象补充为只读案件证据；真实 SAP 取证仍要求 ADT 只读验证通过，不写 SAP、不发布飞书。");
+  const [notice, setNotice] = useState("Phase 13：真实 ADT 只读取证仅允许单个固定对象 GET；不写 SAP、不跑 SQL、不发飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -321,13 +322,20 @@ function App() {
     }
     setSapEvidenceBusy(true);
     try {
+      const functionGroup = sapEvidenceType === "function" ? sapEvidenceFunctionGroup.trim() : "";
+      if (sapEvidenceType === "function" && !functionGroup) {
+        setNotice("Function evidence requires the function group name, for example ZFG_MM001.");
+        return;
+      }
       const response = await bridge.readSapObjectEvidence({
         objectType: sapEvidenceType,
-        objectName
+        objectName,
+        ...(functionGroup ? { functionGroup } : {})
       });
       if (response.ok) {
         setState(response.data.state);
         setSapEvidenceName("");
+        setSapEvidenceFunctionGroup("");
         setNotice(`SAP read-only evidence attached: ${response.data.summary.objectType} ${response.data.summary.objectName}. Files: ${response.data.generatedFiles.join(", ")}`);
       } else {
         setNotice(response.error);
@@ -554,7 +562,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 12"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 13"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -720,6 +728,9 @@ function App() {
                 {sapEvidenceTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}
               </select>
               <input value={sapEvidenceName} onChange={(event) => setSapEvidenceName(event.target.value)} placeholder="ZDEMO_REPORT 或 /UI2/CL_JSON" aria-label="SAP 对象名" />
+              {sapEvidenceType === "function" ? (
+                <input value={sapEvidenceFunctionGroup} onChange={(event) => setSapEvidenceFunctionGroup(event.target.value)} placeholder="函数组，例如 ZFG_MM001" aria-label="SAP 函数组" />
+              ) : null}
               <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim()} title="把单个 SAP 只读对象证据写入当前案件">
                 <Database size={15} />
                 {sapEvidenceBusy ? "取证中" : "补充 SAP 只读证据"}
@@ -727,7 +738,7 @@ function App() {
             </div>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 12 保留安全模型草稿能力，并新增单对象 SAP 只读取证入口" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 13 支持真实 ADT 单对象只读取证，仍保留安全模型草稿能力" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>

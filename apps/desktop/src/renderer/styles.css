@@ -522,8 +522,8 @@ button {
 }
 
 .sap-evidence-bar {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) 128px minmax(180px, 240px) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -533,6 +533,7 @@ button {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex: 1 1 220px;
   min-height: 32px;
   min-width: 0;
   color: #475569;
@@ -559,6 +560,14 @@ button {
 .sap-evidence-bar select,
 .sap-evidence-bar input {
   padding: 0 9px;
+}
+
+.sap-evidence-bar select {
+  flex: 0 0 128px;
+}
+
+.sap-evidence-bar input {
+  flex: 1 1 180px;
 }
 
 .sap-evidence-bar button {

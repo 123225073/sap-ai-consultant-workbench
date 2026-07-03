@@ -1,6 +1,13 @@
+import http from "node:http";
+import https from "node:https";
 import type { AdtConfig, AdtRedactedSystemInfo, AdtT000ProbeResult, AdtVerificationError, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationStep } from "../shared/workbenchTypes";
 import type { SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import type { SapObjectEvidenceRequest } from "../shared/workbenchTypes";
+
+export const ADT_READONLY_FIXED_GET_ENDPOINTS = "adt-readonly-fixed-get-endpoints";
+
+const ADT_GET_TIMEOUT_MS = 30000;
+const MAX_ADT_RESPONSE_CHARS = 120000;
 
 export interface AdtConnectorInput {
   alias: string;
@@ -77,6 +84,196 @@ function baseT000(attempted: boolean, ok: boolean, client: string | null): AdtT0
     sampleClient: ok ? client : null,
     source: "fake"
   };
+}
+
+function realT000(attempted: boolean, ok: boolean, client: string | null): AdtT000ProbeResult {
+  return {
+    objectName: "T000",
+    attempted,
+    ok,
+    rowCount: null,
+    sampleClient: ok ? client : null,
+    source: "adt"
+  };
+}
+
+function encodeSapName(value: string): string {
+  return encodeURIComponent(value);
+}
+
+export function adtReadonlyObjectEvidencePath(request: SapObjectEvidenceRequest): string {
+  switch (request.objectType) {
+    case "program":
+      return `/sap/bc/adt/programs/programs/${encodeSapName(request.objectName)}/source/main`;
+    case "class":
+      return `/sap/bc/adt/oo/classes/${encodeSapName(request.objectName)}/source/main`;
+    case "include":
+      return `/sap/bc/adt/programs/includes/${encodeSapName(request.objectName)}/source/main`;
+    case "function":
+      if (!request.functionGroup) {
+        throw new Error("Function module evidence requires a function group.");
+      }
+      return `/sap/bc/adt/functions/groups/${encodeSapName(request.functionGroup)}/fmodules/${encodeSapName(request.objectName)}/source/main`;
+    case "table":
+      return `/sap/bc/adt/ddic/tables/${encodeSapName(request.objectName)}/source/main`;
+    case "structure":
+      return `/sap/bc/adt/ddic/structures/${encodeSapName(request.objectName)}/source/main`;
+    default: {
+      const neverType: never = request.objectType;
+      throw new Error(`Unsupported SAP object evidence type: ${neverType}`);
+    }
+  }
+}
+
+function adtStatusPath(): string {
+  return "/sap/bc/adt/";
+}
+
+function adtT000MinimalPath(): string {
+  return "/sap/bc/adt/ddic/tables/T000/source/main";
+}
+
+function buildAdtUrl(input: AdtConnectorInput, fixedPath: string): URL {
+  const parsed = new URL(input.url);
+  return new URL(fixedPath, `${parsed.protocol}//${parsed.host}`);
+}
+
+interface AdtGetResult {
+  fixedPath: string;
+  text: string;
+  statusCode: number;
+}
+
+function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResult> {
+  const target = buildAdtUrl(input, fixedPath);
+  const isHttps = target.protocol === "https:";
+  const headers = {
+    Accept: "text/plain, application/xml, application/atom+xml, */*",
+    Authorization: `Basic ${Buffer.from(`${input.username}:${input.password}`, "utf8").toString("base64")}`,
+    "X-SAP-Client": input.client,
+    "Accept-Language": input.language
+  };
+  const options: http.RequestOptions | https.RequestOptions = {
+    method: "GET",
+    headers,
+    timeout: ADT_GET_TIMEOUT_MS
+  };
+  if (isHttps && input.sslMode === "skip-certificate") {
+    options.agent = new https.Agent({ rejectUnauthorized: false });
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = (isHttps ? https : http).request(target, options, (incoming) => {
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+
+      incoming.on("data", (chunk: Buffer) => {
+        totalBytes += chunk.length;
+        if (totalBytes > MAX_ADT_RESPONSE_CHARS * 4) {
+          request.destroy(new Error(`ADT GET response exceeded the read-only evidence size limit at ${fixedPath}.`));
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      incoming.on("end", () => {
+        const statusCode = incoming.statusCode ?? 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          reject(new Error(`ADT GET failed with HTTP ${statusCode} at ${fixedPath}.`));
+          return;
+        }
+        resolve({
+          fixedPath,
+          statusCode,
+          text: Buffer.concat(chunks).toString("utf8")
+        });
+      });
+    });
+
+    request.on("timeout", () => {
+      request.destroy(new Error(`ADT GET timed out at ${fixedPath}.`));
+    });
+    request.on("error", (requestError) => {
+      reject(requestError);
+    });
+    request.end();
+  });
+}
+
+export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
+  async verify(input: AdtConnectorInput): Promise<AdtVerificationReport> {
+    const checkedAt = nowIso();
+    const system = redactedSystem(input);
+    const steps: AdtVerificationStep[] = [
+      step("config", "Configuration check", "passed", "ADT configuration is complete and read-only mode is locked.", checkedAt)
+    ];
+    const errors: AdtVerificationError[] = [];
+
+    if (input.readOnly !== true) {
+      errors.push(error("readonly-disabled", "ADT read-only mode is not locked.", "Keep the project ADT mode read-only before verification."));
+      steps.push(step("status", "ADT service", "skipped", "Read-only mode is not locked.", checkedAt));
+      steps.push(step("t000", "T000 metadata read", "skipped", "Read-only mode is not locked.", checkedAt));
+      return this.report(false, checkedAt, system, steps, realT000(false, false, null), errors);
+    }
+
+    try {
+      await adtGet(input, adtStatusPath());
+      steps.push(step("status", "ADT service", "passed", "Fixed GET /sap/bc/adt/ returned successfully.", checkedAt));
+    } catch {
+      errors.push(error("status-failed", "ADT service check failed.", "Check SAP URL, VPN/proxy, client, account, password, certificate mode, and ADT service activation."));
+      steps.push(step("status", "ADT service", "failed", "Fixed GET /sap/bc/adt/ did not return successfully.", checkedAt));
+      steps.push(step("t000", "T000 metadata read", "skipped", "ADT service check failed.", checkedAt));
+      return this.report(false, checkedAt, system, steps, realT000(false, false, null), errors);
+    }
+
+    try {
+      await adtGet(input, adtT000MinimalPath());
+      const t000 = realT000(true, true, input.client);
+      steps.push(step("t000", "T000 metadata read", "passed", "Fixed GET for T000 DDIC metadata returned successfully; no table rows were read.", checkedAt));
+      return this.report(true, checkedAt, system, steps, t000, errors);
+    } catch {
+      const t000 = realT000(true, false, null);
+      errors.push(error("minimal-read-failed", "T000 metadata read failed.", "The ADT account or services can reach ADT, but the fixed DDIC metadata read did not pass."));
+      steps.push(step("t000", "T000 metadata read", "failed", "Fixed GET for T000 DDIC metadata failed.", checkedAt));
+      return this.report(false, checkedAt, system, steps, t000, errors);
+    }
+  }
+
+  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest): Promise<SapObjectEvidenceConnectorResult> {
+    if (input.readOnly !== true) {
+      throw new Error("SAP object evidence is blocked because ADT read-only mode is not locked.");
+    }
+    const fixedPath = adtReadonlyObjectEvidencePath(request);
+    const readAt = nowIso();
+    const result = await adtGet(input, fixedPath);
+    if (!result.text.trim()) {
+      throw new Error(`ADT GET returned empty object evidence at ${fixedPath}.`);
+    }
+    return {
+      objectType: request.objectType,
+      objectName: request.objectName,
+      functionGroup: request.functionGroup ?? null,
+      system: redactedSystem(input),
+      sourceMode: "adt",
+      evidenceKind: "fixed-adt-readonly-source",
+      readAt,
+      content: result.text
+    };
+  }
+
+  private report(ok: boolean, checkedAt: string, system: AdtRedactedSystemInfo, steps: AdtVerificationStep[], t000: AdtT000ProbeResult, errors: AdtVerificationError[]): AdtVerificationReport {
+    return {
+      ok,
+      checkedAt,
+      mode: "adt",
+      system,
+      steps,
+      connectionStatus: steps.some((item) => item.id === "status" && item.status === "passed") ? "verified" : "failed",
+      minimalReadStatus: t000.ok ? "verified" : t000.attempted ? "failed" : "pending-verification",
+      t000,
+      errors
+    };
+  }
 }
 
 export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
@@ -171,7 +368,7 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
 }
 
 export function createAdtReadonlyConnector(): AdtReadonlyConnector {
-  return new FakeAdtReadonlyConnector();
+  return new RealAdtReadonlyConnector();
 }
 
 export function createAdtValidationFailureReport(
