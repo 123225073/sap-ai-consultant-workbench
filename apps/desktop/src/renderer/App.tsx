@@ -10,6 +10,7 @@ import {
   Eye,
   File,
   FileSpreadsheet,
+  FileText,
   Folder,
   HelpCircle,
   Mic,
@@ -231,6 +232,7 @@ function App() {
   const [sapEvidenceName, setSapEvidenceName] = useState("");
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
+  const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
   const [notice, setNotice] = useState("Phase 13：真实 ADT 只读取证仅允许单个固定对象 GET；不写 SAP、不跑 SQL、不发飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -245,6 +247,7 @@ function App() {
   const filteredCaseFiles = useMemo(() => filterFileNodes(state?.activeCaseFiles ?? [], fileSearchQuery), [state, fileSearchQuery]);
   const filteredFileCount = useMemo(() => flattenFiles(filteredCaseFiles).filter((node) => node.kind === "file").length, [filteredCaseFiles]);
   const fileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file").length, [flatFiles]);
+  const outputFileCount = useMemo(() => flatFiles.filter((node) => node.kind === "file" && node.relativePath.startsWith("outputs/")).length, [flatFiles]);
   const selectedPreviewNode = useMemo(() => selectedPreviewPath ? flatFiles.find((node) => node.relativePath === selectedPreviewPath) ?? null : null, [flatFiles, selectedPreviewPath]);
 
   async function applyResponse<T extends WorkbenchState>(responsePromise: Promise<{ ok: true; data: T } | { ok: false; error: string }>) {
@@ -342,6 +345,25 @@ function App() {
       }
     } finally {
       setSapEvidenceBusy(false);
+    }
+  }
+
+  async function prepareFeishuHandoff() {
+    if (!bridge) {
+      setNotice("Please use the desktop app to prepare a Feishu local handoff draft.");
+      return;
+    }
+    setFeishuHandoffBusy(true);
+    try {
+      const response = await bridge.prepareFeishuHandoff();
+      if (response.ok) {
+        setState(response.data.state);
+        setNotice(`Local Feishu draft prepared. Publish status: ${response.data.publishStatus}. Files: ${response.data.generatedFiles.join(", ")}`);
+      } else {
+        setNotice(response.error);
+      }
+    } finally {
+      setFeishuHandoffBusy(false);
     }
   }
 
@@ -767,6 +789,12 @@ function App() {
             <Search size={16} />
             <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索当前案件文件名" />
           </label>
+          <div className="file-panel-actions">
+            <button type="button" onClick={() => void prepareFeishuHandoff()} disabled={feishuHandoffBusy || outputFileCount === 0} title="Generate local Feishu-ready draft files from current case outputs. This does not publish or update cloud documents.">
+              <FileText size={15} />
+              {feishuHandoffBusy ? "Preparing local draft" : "Prepare local Feishu draft"}
+            </button>
+          </div>
           <div className="file-tree">
             {state?.activeCaseFiles.length ? (
               filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} selectedPath={selectedPreviewPath} onPreview={previewCaseFile} /> : <div className="empty-state">没有匹配的当前案件文件。</div>

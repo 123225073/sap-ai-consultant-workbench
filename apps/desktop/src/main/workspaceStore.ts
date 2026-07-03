@@ -39,9 +39,10 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuHandoffResult, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
+import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
 
 interface StoredState {
   schemaVersion: number;
@@ -849,6 +850,36 @@ export class WorkspaceStore {
       state: await this.withFiles(state),
       summary: record.summary,
       generatedFiles: generatedPaths
+    };
+  }
+
+  async prepareFeishuHandoff(): Promise<FeishuHandoffResult> {
+    const state = await this.loadOrCreateState();
+    await this.ensureCaseFiles(state);
+    const currentCase = this.getActiveCase(state);
+    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const files = await this.readCaseTree(state);
+    const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
+    if (safeOutputSummaries.length === 0) {
+      throw new Error("Current case has no safe output summary yet. Generate a local output first, then prepare the Feishu handoff draft.");
+    }
+
+    const handoff = renderFeishuHandoffArtifacts({
+      project,
+      caseItem: currentCase,
+      feishu: project.config.feishu,
+      safeOutputSummaries
+    });
+    const generatedPaths = handoff.generatedFiles.map((file) => file.relativePath);
+
+    await this.writeCaseGeneratedFiles(project, currentCase, handoff.generatedFiles);
+    return {
+      state: await this.withFiles(state),
+      publishStatus: handoff.publishStatus,
+      createdAt: handoff.createdAt,
+      generatedFiles: generatedPaths,
+      sourceFiles: handoff.sourceFiles,
+      blockedActions: handoff.blockedActions
     };
   }
 
@@ -1666,6 +1697,16 @@ export class WorkspaceStore {
       this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), artifacts.metadata),
       ...generatedWrites
     ]);
+  }
+
+  private async writeCaseGeneratedFiles(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): Promise<void> {
+    const caseRoot = this.caseRootFor(project, caseItem);
+    await fs.mkdir(caseRoot, { recursive: true });
+    await Promise.all(generatedFiles.map(async (file) => {
+      const target = this.generatedFileTarget(caseRoot, file);
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, file.content, "utf8");
+    }));
   }
 
   private async withFiles(state: StoredState): Promise<WorkbenchState> {

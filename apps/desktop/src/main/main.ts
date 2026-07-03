@@ -7,7 +7,7 @@ import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { parseSapObjectEvidenceRequest } from "./sapObjectEvidenceService";
-import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -479,6 +479,10 @@ async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureS
   return store.appendSapObjectEvidence(evidence, { projectId, caseId });
 }
 
+async function prepareFeishuHandoff(store: WorkspaceStore): Promise<FeishuHandoffResult> {
+  return store.prepareFeishuHandoff();
+}
+
 function validProjectId(projectId: unknown, action: string): string {
   if (typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(projectId)) {
     throw new Error(`${action}请求缺少有效项目 ID。`);
@@ -495,6 +499,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
   ipcMain.handle("workbench:read-sap-object-evidence", (_event, input: unknown) => response(readSapObjectEvidence(store, secretStore, input)));
+  ipcMain.handle("workbench:prepare-feishu-handoff", () => response(prepareFeishuHandoff(store)));
   ipcMain.handle("workbench:save-project-config", (_event, projectId: string, config: unknown) => response(store.saveProjectConfig(projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (_event, projectId: string, input: unknown) => response(saveProjectSecret(store, secretStore, projectId, input)));
   ipcMain.handle("workbench:adt-verify-readonly", (_event, projectId: unknown) => response(verifyAdtReadonly(store, secretStore, projectId)));

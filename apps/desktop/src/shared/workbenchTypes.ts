@@ -28,6 +28,7 @@ export type AdtVerificationErrorCode =
   | "minimal-read-failed"
   | "unexpected-error";
 export type FeishuVerificationStepId = "cli" | "auth" | "docs";
+export type FeishuHandoffPublishStatus = "not-published";
 export type FeishuVerificationErrorCode =
   | "missing-config"
   | "invalid-cli-path"
@@ -183,6 +184,15 @@ export interface FeishuVerificationReport {
 export interface FeishuVerificationResult {
   report: FeishuVerificationReport;
   state: WorkbenchState;
+}
+
+export interface FeishuHandoffResult {
+  state: WorkbenchState;
+  publishStatus: FeishuHandoffPublishStatus;
+  createdAt: string;
+  generatedFiles: string[];
+  sourceFiles: string[];
+  blockedActions: string[];
 }
 
 export interface ApiProviderConfig {

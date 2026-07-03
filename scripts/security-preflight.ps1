@@ -123,6 +123,7 @@ $allowedIpc = @(
   "workbench:preview-current-case-file",
   "workbench:search",
   "workbench:read-sap-object-evidence",
+  "workbench:prepare-feishu-handoff",
   "workbench:save-project-config",
   "workbench:save-project-secret",
   "workbench:adt-verify-readonly",
@@ -507,6 +508,31 @@ if ($LASTEXITCODE -eq 0) {
   throw "Feishu CLI execution must not use configured paths or basename-only allowlists."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Feishu unsafe CLI execution scan failed."
+}
+
+Write-Section "Feishu safe handoff scan"
+$feishuHandoffMarkers = @(
+  @{ Pattern = "FEISHU_HANDOFF_LOCAL_ONLY_MARKER"; Path = "apps/desktop/src/main/feishuHandoffService.ts" },
+  @{ Pattern = "renderFeishuHandoffArtifacts"; Path = "apps/desktop/src/main/feishuHandoffService.ts" },
+  @{ Pattern = "prepareFeishuHandoff"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:prepare-feishu-handoff"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "prepareFeishuHandoff"; Path = "apps/desktop/src/preload/preload.ts" }
+)
+foreach ($marker in $feishuHandoffMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK Feishu handoff marker: $($marker.Pattern)"
+  } else {
+    throw "Feishu handoff marker is missing: $($marker.Pattern)"
+  }
+}
+
+$feishuPublishPattern = 'docs\s+\+(create|update|delete|publish|whiteboard[-_\s]+(create|update|publish))|auth\s+(login|authorize)|open\s+https?://[^"\s]*(feishu|larksuite)'
+$feishuPublishCommandHits = Get-ChildItem -Path "apps/desktop/src" -Recurse -File -Include *.ts,*.tsx,*.js,*.jsx |
+  Select-String -Pattern $feishuPublishPattern
+if ($feishuPublishCommandHits) {
+  $feishuPublishCommandHits | ForEach-Object { Write-Host "$($_.Path):$($_.LineNumber):$($_.Line)" }
+  throw "Feishu cloud publish or authorization command marker found in app source."
 }
 
 Write-Section "Generic proxy IPC scan"
