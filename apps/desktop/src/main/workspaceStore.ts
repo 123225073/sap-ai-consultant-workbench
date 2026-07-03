@@ -33,10 +33,12 @@ import {
   normalizeProjectKnowledge,
   parseKnowledgeImportLocalTextInput,
   parseKnowledgeActionInput,
+  parseKnowledgeReviewInput,
   projectKnowledgeView,
   publishKnowledgeItem,
   renderProjectKnowledgeJson,
-  renderProjectKnowledgeMarkdown
+  renderProjectKnowledgeMarkdown,
+  reviewKnowledgeItemForPublish
 } from "./knowledgeService";
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
@@ -1406,6 +1408,26 @@ export class WorkspaceStore {
     }
 
     project.knowledge = publishKnowledgeItem(project.knowledge, actionInput);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
+    await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
+    return this.withFiles(state);
+    });
+  }
+
+  async reviewKnowledgeForPublish(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+    const reviewInput = parseKnowledgeReviewInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法记录知识审核。");
+    }
+
+    project.knowledge = reviewKnowledgeItemForPublish(project.knowledge, reviewInput);
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectKnowledge(project);

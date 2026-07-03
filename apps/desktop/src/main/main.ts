@@ -523,6 +523,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:standards-save", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
   ipcMain.handle("workbench:get-project-knowledge", (event, projectId: unknown) => trustedResponse(event, appRoot, () => store.getProjectKnowledge(validProjectId(projectId, "读取项目知识库"))));
   ipcMain.handle("workbench:knowledge-import-local-text", (event, input: unknown) => trustedResponse(event, appRoot, () => store.importKnowledgeLocalText(input)));
+  ipcMain.handle("workbench:knowledge-review-for-publish", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.reviewKnowledgeForPublish(validProjectId(projectId, "记录知识审核"), input)));
   ipcMain.handle("workbench:knowledge-publish", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.publishKnowledge(validProjectId(projectId, "确认知识入库"), input)));
   ipcMain.handle("workbench:knowledge-mark-conflict", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.markKnowledgeConflicted(validProjectId(projectId, "标记知识冲突"), input)));
   ipcMain.handle("workbench:knowledge-expire", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.expireKnowledge(validProjectId(projectId, "标记知识失效"), input)));

@@ -367,8 +367,15 @@ export interface CopyProjectStandardsFromProjectInput {
 export interface KnowledgeTimelineEvent {
   id: string;
   at: string;
-  action: "created" | "published" | "marked-conflicted" | "expired" | "edited" | "parsed";
+  action: "created" | "reviewed" | "published" | "marked-conflicted" | "expired" | "edited" | "parsed";
   note: string;
+}
+
+export interface KnowledgeReviewChecklist {
+  sourceAndScopeConfirmed: boolean;
+  noSecretsConfirmed: boolean;
+  noSapSourceOrWriteOpsConfirmed: boolean;
+  noCustomerDetailsConfirmed: boolean;
 }
 
 export interface KnowledgeItem {
@@ -387,6 +394,10 @@ export interface KnowledgeItem {
   effectiveFrom: string | null;
   effectiveTo: string | null;
   reviewer: string | null;
+  reviewedAt: string | null;
+  reviewNote: string | null;
+  reviewedContentHash: string | null;
+  reviewChecklist: KnowledgeReviewChecklist | null;
   conflictWithIds: string[];
   createdAt: string;
   updatedAt: string;
@@ -432,6 +443,12 @@ export interface ProjectKnowledgeView {
 export interface KnowledgeItemActionInput {
   itemId: string;
   note?: string;
+}
+
+export interface KnowledgeReviewInput {
+  itemId: string;
+  note: string;
+  checklist: KnowledgeReviewChecklist;
 }
 
 export interface KnowledgeImportLocalTextInput {

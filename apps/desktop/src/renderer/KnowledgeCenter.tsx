@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, CheckCircle2, FileText, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -46,13 +46,36 @@ const sourceTypeLabels: Record<KnowledgeItem["sourceType"], string> = {
   manual: "人工维护"
 };
 
+const reviewChecklistLabels: { id: keyof KnowledgeReviewInput["checklist"]; label: string }[] = [
+  { id: "sourceAndScopeConfirmed", label: "来源和适用范围已确认" },
+  { id: "noSecretsConfirmed", label: "不包含密码、Token 或授权信息" },
+  { id: "noSapSourceOrWriteOpsConfirmed", label: "不包含 SAP 源码或写操作片段" },
+  { id: "noCustomerDetailsConfirmed", label: "不包含客户业务明细数据" }
+];
+
+const emptyReviewChecklist: KnowledgeReviewInput["checklist"] = {
+  sourceAndScopeConfirmed: false,
+  noSecretsConfirmed: false,
+  noSapSourceOrWriteOpsConfirmed: false,
+  noCustomerDetailsConfirmed: false
+};
+
 function statusPill(status: KnowledgeItemStatus) {
   return <span className={`status-pill status-${statusTone[status]}`}>{statusLabels[status]}</span>;
 }
 
 function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
-  return (item.sourceType === "document-import" || item.sourceType === "qa-import") &&
-    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-");
+  return item.id.startsWith("knowledge-import-") ||
+    ((item.sourceType === "document-import" || item.sourceType === "qa-import") &&
+      (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
+}
+
+function hasCompleteReview(item: KnowledgeItem): boolean {
+  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewedContentHash && item.reviewChecklist);
+}
+
+function reviewChecklistComplete(checklist: KnowledgeReviewInput["checklist"]): boolean {
+  return reviewChecklistLabels.every((item) => checklist[item.id]);
 }
 
 function formatTime(value: string | null): string {
@@ -67,12 +90,13 @@ interface KnowledgeCenterProps {
   notice: string;
   onBack: () => void;
   onImport: (input: KnowledgeImportLocalTextInput) => Promise<boolean>;
+  onReview: (projectId: string, input: KnowledgeReviewInput) => Promise<void>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, notice, onBack, onImport, onReview, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -84,6 +108,8 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
   const [importSapObjects, setImportSapObjects] = useState("");
   const [importBody, setImportBody] = useState("");
   const [importBusy, setImportBusy] = useState(false);
+  const [reviewNote, setReviewNote] = useState("");
+  const [reviewChecklist, setReviewChecklist] = useState<KnowledgeReviewInput["checklist"]>(emptyReviewChecklist);
 
   useEffect(() => {
     let ignore = false;
@@ -116,6 +142,26 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
 
   const selectedItem = filteredItems.find((item) => item.id === selectedItemId) ?? filteredItems[0] ?? null;
 
+  useEffect(() => {
+    setReviewNote(selectedItem?.reviewNote ?? "");
+    setReviewChecklist(selectedItem?.reviewChecklist ?? emptyReviewChecklist);
+  }, [selectedItem?.id, selectedItem?.reviewedAt]);
+
+  const selectedImportedCandidate = selectedItem ? isPhase16LocalTextImportCandidate(selectedItem) : false;
+  const selectedHasReview = selectedItem ? hasCompleteReview(selectedItem) : false;
+  const selectedHasBlockingConflict = selectedItem ? selectedItem.status === "conflicted" || selectedItem.conflictWithIds.length > 0 : false;
+  const canReviewSelected = Boolean(selectedItem && selectedImportedCandidate && selectedItem.status === "pending" && !selectedHasBlockingConflict && !busyItemId);
+  const reviewReady = reviewNote.trim().length >= 8 && reviewChecklistComplete(reviewChecklist);
+  const publishDisabled = Boolean(
+    !selectedItem ||
+    busyItemId === selectedItem.id ||
+    selectedItem.status === "published" ||
+    selectedItem.status === "conflicted" ||
+    selectedItem.status === "expired" ||
+    selectedItem.conflictWithIds.length > 0 ||
+    (selectedImportedCandidate && !selectedHasReview)
+  );
+
   async function runAction(action: "publish" | "conflict" | "expire", item: KnowledgeItem) {
     if (!project || busyItemId) return;
     setBusyItemId(item.id);
@@ -127,6 +173,20 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
       } else {
         await onExpire(project.id, { itemId: item.id, note: "人工标记为已失效。" });
       }
+    } finally {
+      setBusyItemId("");
+    }
+  }
+
+  async function runReview(item: KnowledgeItem) {
+    if (!project || busyItemId || !canReviewSelected || !reviewReady) return;
+    setBusyItemId(item.id);
+    try {
+      await onReview(project.id, {
+        itemId: item.id,
+        note: reviewNote.trim(),
+        checklist: reviewChecklist
+      });
     } finally {
       setBusyItemId("");
     }
@@ -301,8 +361,10 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
                 <div><dt>项目</dt><dd>{project.name}</dd></div>
                 <div><dt>类型</dt><dd>{typeLabels[selectedItem.type]}</dd></div>
                 <div><dt>来源</dt><dd>{selectedItem.sourceFilePath ?? sourceTypeLabels[selectedItem.sourceType]}</dd></div>
+                <div><dt>SAP对象</dt><dd>{selectedItem.sapObjects.length ? selectedItem.sapObjects.join("、") : "未绑定"}</dd></div>
                 <div><dt>生效时间</dt><dd>{selectedItem.effectiveFrom ?? "待确认"}</dd></div>
                 <div><dt>更新时间</dt><dd>{formatTime(selectedItem.updatedAt)}</dd></div>
+                <div><dt>审核状态</dt><dd>{selectedHasReview ? `${selectedItem.reviewer} · ${formatTime(selectedItem.reviewedAt)}` : "未审核"}</dd></div>
               </dl>
             </section>
 
@@ -310,6 +372,41 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
               <h3>内容预览</h3>
               <p>{selectedItem.content}</p>
             </section>
+
+            {selectedImportedCandidate ? (
+              <section className="knowledge-review-gate">
+                <div className="knowledge-review-heading">
+                  <h3>人工审核门</h3>
+                  {selectedHasReview ? <span><ShieldCheck size={14} />已审核</span> : <span><ShieldAlert size={14} />待审核</span>}
+                </div>
+                <div className="knowledge-review-checks">
+                  {reviewChecklistLabels.map((check) => (
+                    <label key={check.id}>
+                      <input
+                        checked={reviewChecklist[check.id]}
+                        disabled={!canReviewSelected}
+                        type="checkbox"
+                        onChange={(event) => setReviewChecklist((current) => ({ ...current, [check.id]: event.target.checked }))}
+                      />
+                      <span>{check.label}</span>
+                    </label>
+                  ))}
+                </div>
+                <label className="knowledge-review-note">
+                  <span>审核备注</span>
+                  <textarea
+                    value={reviewNote}
+                    disabled={!canReviewSelected}
+                    onChange={(event) => setReviewNote(event.target.value)}
+                    placeholder="说明为什么这条候选可以进入正式知识库"
+                  />
+                </label>
+                {selectedItem.reviewNote ? <p className="knowledge-review-existing">已记录：{selectedItem.reviewNote}</p> : null}
+                <button disabled={!canReviewSelected || !reviewReady} onClick={() => void runReview(selectedItem)}>
+                  <ShieldCheck size={16} />记录审核
+                </button>
+              </section>
+            ) : null}
 
             {selectedItem.status === "conflicted" ? (
               <section className="knowledge-warning">
@@ -319,7 +416,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkC
             ) : null}
 
             <section className="knowledge-detail-actions">
-              <button disabled={busyItemId === selectedItem.id || isPhase16LocalTextImportCandidate(selectedItem) || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} title={isPhase16LocalTextImportCandidate(selectedItem) ? "本地文本导入只生成候选，暂不直接入库" : selectedItem.status === "conflicted" ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
+              <button disabled={publishDisabled} title={selectedImportedCandidate && !selectedHasReview ? "本地文本导入候选必须先记录人工审核" : selectedHasBlockingConflict ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
             </section>

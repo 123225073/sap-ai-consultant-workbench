@@ -137,6 +137,7 @@ $allowedIpc = @(
   "workbench:standards-save",
   "workbench:get-project-knowledge",
   "workbench:knowledge-import-local-text",
+  "workbench:knowledge-review-for-publish",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
   "workbench:knowledge-expire"
@@ -532,6 +533,9 @@ $knowledgeGuardMarkers = @(
   @{ Pattern = 'item.status === "conflicted"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = 'item.status === "expired"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = "item.conflictWithIds.length > 0"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "reviewKnowledgeItemForPublish"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "reviewedContentHash"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "assertReviewedContentUnchanged"; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = 'result.type === "knowledge"'; Path = "apps/desktop/src/renderer/App.tsx" }
 )
 foreach ($marker in $knowledgeGuardMarkers) {
@@ -541,6 +545,82 @@ foreach ($marker in $knowledgeGuardMarkers) {
   } else {
     throw "Knowledge publish/search guard is missing: $($marker.Pattern)"
   }
+}
+
+function Get-SourceBlock {
+  param(
+    [string]$Path,
+    [string]$StartMarker,
+    [string]$EndMarker
+  )
+  $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+  $start = $source.IndexOf($StartMarker, [System.StringComparison]::Ordinal)
+  if ($start -lt 0) {
+    throw "Missing source block start marker: $StartMarker"
+  }
+  $end = $source.IndexOf($EndMarker, $start + $StartMarker.Length, [System.StringComparison]::Ordinal)
+  if ($end -le $start) {
+    throw "Missing source block end marker for: $StartMarker"
+  }
+  return $source.Substring($start, $end - $start)
+}
+
+Write-Section "Knowledge review gate scan"
+$knowledgeReviewMarkers = @(
+  @{ Pattern = "parseKnowledgeReviewInput"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "KNOWLEDGE_REVIEW_ALLOWED_KEYS"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "knowledgeReviewContentHash"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "reviewKnowledgeItemForPublish"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "assertReviewedContentUnchanged"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'item.id.startsWith("knowledge-import-")'; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'item.id.startsWith("knowledge-import-")'; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "reviewKnowledgeForPublish"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:knowledge-review-for-publish"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "reviewKnowledgeForPublish"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "reviewKnowledgeForPublish"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "knowledge-review-gate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "publishIdentityTamperedImportedCandidateBlocked"; Path = "scripts/phase19-knowledge-review-gate-probe.mjs" },
+  @{ Pattern = "phase19-knowledge-review-gate"; Path = "scripts/phase19-knowledge-review-gate-probe.mjs" }
+)
+foreach ($marker in $knowledgeReviewMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK knowledge review marker: $($marker.Pattern)"
+  } else {
+    throw "Knowledge review gate marker is missing: $($marker.Pattern)"
+  }
+}
+
+$knowledgeReviewForbiddenCapabilities = @(
+  "showOpenDialog",
+  "dialog.show",
+  "readFile(",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "exec(",
+  "openExternal",
+  "openPath",
+  "loadURL",
+  "feishu-sync",
+  "unlink",
+  "rm("
+)
+
+$knowledgeReviewBlocks = @(
+  @{ Name = "store review method"; Path = "apps/desktop/src/main/workspaceStore.ts"; Start = "async reviewKnowledgeForPublish(projectId: string, input: unknown)"; End = "async markKnowledgeConflicted" },
+  @{ Name = "knowledge review parser"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function parseKnowledgeReviewInput"; End = "function assertStrictKnowledgeProjectId" },
+  @{ Name = "knowledge review transition"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function reviewKnowledgeItemForPublish"; End = "export function publishKnowledgeItem" },
+  @{ Name = "renderer review submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function runReview"; End = "async function submitImport" }
+)
+foreach ($blockSpec in $knowledgeReviewBlocks) {
+  $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
+  foreach ($forbidden in $knowledgeReviewForbiddenCapabilities) {
+    if ($block.Contains($forbidden)) {
+      throw "Knowledge review $($blockSpec.Name) contains forbidden capability marker: $forbidden"
+    }
+  }
+  Write-Host "OK knowledge review block capability scan: $($blockSpec.Name)"
 }
 
 Write-Section "Knowledge import firewall scan"
@@ -570,24 +650,6 @@ foreach ($marker in $knowledgeImportMarkers) {
   } else {
     throw "Knowledge import firewall marker is missing: $($marker.Pattern)"
   }
-}
-
-function Get-SourceBlock {
-  param(
-    [string]$Path,
-    [string]$StartMarker,
-    [string]$EndMarker
-  )
-  $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
-  $start = $source.IndexOf($StartMarker, [System.StringComparison]::Ordinal)
-  if ($start -lt 0) {
-    throw "Missing source block start marker: $StartMarker"
-  }
-  $end = $source.IndexOf($EndMarker, $start + $StartMarker.Length, [System.StringComparison]::Ordinal)
-  if ($end -le $start) {
-    throw "Missing source block end marker for: $StartMarker"
-  }
-  return $source.Substring($start, $end - $start)
 }
 
 $knowledgeImportForbiddenCapabilities = @(

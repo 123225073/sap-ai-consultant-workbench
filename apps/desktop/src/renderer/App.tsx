@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -738,6 +738,20 @@ function App() {
     }
   }
 
+  async function reviewKnowledgeForPublish(projectId: string, input: KnowledgeReviewInput) {
+    if (!bridge) {
+      setNotice("请在桌面应用中记录知识审核。");
+      return;
+    }
+    const response = await bridge.reviewKnowledgeForPublish(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("已记录人工审核；内容未变化且无冲突时才可确认入库。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
   async function markKnowledgeConflicted(projectId: string, input: KnowledgeItemActionInput) {
     if (!bridge) {
       setNotice("请在桌面应用中标记知识冲突。");
@@ -911,6 +925,7 @@ function App() {
             notice={notice}
             onBack={() => setActiveView("case")}
             onImport={importKnowledgeLocalText}
+            onReview={reviewKnowledgeForPublish}
             onPublish={publishKnowledge}
             onMarkConflict={markKnowledgeConflicted}
             onExpire={expireKnowledge}

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CaseGeneratedFile,
   CaseSummary,
@@ -6,6 +7,8 @@ import type {
   KnowledgeImportSourceKind,
   KnowledgeItem,
   KnowledgeItemActionInput,
+  KnowledgeReviewChecklist,
+  KnowledgeReviewInput,
   KnowledgeItemStatus,
   KnowledgeItemType,
   KnowledgeSourceType,
@@ -24,6 +27,7 @@ const MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH = 120;
 const MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH = 160;
 const MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS = 12;
 const KNOWLEDGE_IMPORT_ALLOWED_SOURCE_KINDS = new Set<KnowledgeImportSourceKind>(["local-text", "markdown-note", "qa-text"]);
+const KNOWLEDGE_REVIEW_ALLOWED_KEYS = new Set(["itemId", "note", "checklist"]);
 
 const KNOWLEDGE_STATUS_LABELS: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -77,6 +81,27 @@ function event(action: KnowledgeTimelineEvent["action"], note: string, at = nowI
   };
 }
 
+function knowledgeReviewContentHash(item: Pick<KnowledgeItem, "title" | "summary" | "content" | "sapObjects" | "effectiveFrom" | "effectiveTo" | "sourceFilePath">): string {
+  return createHash("sha256").update(JSON.stringify({
+    title: item.title,
+    summary: item.summary,
+    content: item.content,
+    sapObjects: item.sapObjects,
+    effectiveFrom: item.effectiveFrom,
+    effectiveTo: item.effectiveTo,
+    sourceFilePath: item.sourceFilePath
+  }), "utf8").digest("hex");
+}
+
+function hasCompleteReviewChecklist(value: unknown): value is KnowledgeReviewChecklist {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<KnowledgeReviewChecklist>;
+  return candidate.sourceAndScopeConfirmed === true &&
+    candidate.noSecretsConfirmed === true &&
+    candidate.noSapSourceOrWriteOpsConfirmed === true &&
+    candidate.noCustomerDetailsConfirmed === true;
+}
+
 function demoKnowledgeItems(projectId: string): KnowledgeItem[] {
   const createdAt = "2026-07-02T10:32:00.000Z";
   return [
@@ -96,6 +121,10 @@ function demoKnowledgeItems(projectId: string): KnowledgeItem[] {
       effectiveFrom: "2026-07-01",
       effectiveTo: null,
       reviewer: null,
+      reviewedAt: null,
+      reviewNote: null,
+      reviewedContentHash: null,
+      reviewChecklist: null,
       conflictWithIds: [],
       createdAt,
       updatedAt: createdAt,
@@ -118,6 +147,15 @@ function demoKnowledgeItems(projectId: string): KnowledgeItem[] {
       effectiveFrom: "2026-07-01",
       effectiveTo: null,
       reviewer: "演示用户",
+      reviewedAt: "2026-07-01T09:00:00.000Z",
+      reviewNote: "演示用户确认字段说明可作为正式知识。",
+      reviewedContentHash: null,
+      reviewChecklist: {
+        sourceAndScopeConfirmed: true,
+        noSecretsConfirmed: true,
+        noSapSourceOrWriteOpsConfirmed: true,
+        noCustomerDetailsConfirmed: true
+      },
       conflictWithIds: [],
       createdAt: "2026-07-01T08:20:00.000Z",
       updatedAt: "2026-07-01T09:00:00.000Z",
@@ -143,6 +181,10 @@ function demoKnowledgeItems(projectId: string): KnowledgeItem[] {
       effectiveFrom: null,
       effectiveTo: null,
       reviewer: null,
+      reviewedAt: null,
+      reviewNote: null,
+      reviewedContentHash: null,
+      reviewChecklist: null,
       conflictWithIds: ["knowledge-demo-published-comment"],
       createdAt: "2026-07-01T11:00:00.000Z",
       updatedAt: "2026-07-01T11:30:00.000Z",
@@ -210,7 +252,7 @@ function normalizeTimeline(value: unknown, fallbackNote: string, fallbackAt: str
   return value.slice(0, 50).flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Partial<KnowledgeTimelineEvent>;
-    const action = candidate.action === "published" || candidate.action === "marked-conflicted" || candidate.action === "expired" || candidate.action === "edited" || candidate.action === "parsed" ? candidate.action : "created";
+    const action = candidate.action === "reviewed" || candidate.action === "published" || candidate.action === "marked-conflicted" || candidate.action === "expired" || candidate.action === "edited" || candidate.action === "parsed" ? candidate.action : "created";
     const at = typeof candidate.at === "string" ? candidate.at : fallbackAt;
     return [{
       id: safeId(candidate.id, `ke-${at.replace(/[^0-9]/g, "")}`),
@@ -245,6 +287,15 @@ function normalizeKnowledgeItem(projectId: string, value: unknown): KnowledgeIte
     effectiveFrom: typeof candidate.effectiveFrom === "string" ? candidate.effectiveFrom : null,
     effectiveTo: typeof candidate.effectiveTo === "string" ? candidate.effectiveTo : null,
     reviewer: typeof candidate.reviewer === "string" ? candidate.reviewer.slice(0, 80) : null,
+    reviewedAt: typeof candidate.reviewedAt === "string" ? candidate.reviewedAt : null,
+    reviewNote: typeof candidate.reviewNote === "string" ? limitedText(candidate.reviewNote, "").slice(0, 500) : null,
+    reviewedContentHash: typeof candidate.reviewedContentHash === "string" && /^[a-f0-9]{64}$/i.test(candidate.reviewedContentHash) ? candidate.reviewedContentHash.toLowerCase() : null,
+    reviewChecklist: hasCompleteReviewChecklist(candidate.reviewChecklist) ? {
+      sourceAndScopeConfirmed: true,
+      noSecretsConfirmed: true,
+      noSapSourceOrWriteOpsConfirmed: true,
+      noCustomerDetailsConfirmed: true
+    } : null,
     conflictWithIds: Array.isArray(candidate.conflictWithIds) ? candidate.conflictWithIds.map((item) => safeId(item, "")).filter(Boolean).slice(0, 20) : [],
     createdAt,
     updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : createdAt,
@@ -315,6 +366,36 @@ export function parseKnowledgeActionInput(input: unknown): KnowledgeItemActionIn
   const note = typeof candidate.note === "string" ? candidate.note.trim().slice(0, 500) : "";
   if (note) assertNoSensitiveKnowledgeContent(note);
   return { itemId: candidate.itemId, note };
+}
+
+export function parseKnowledgeReviewInput(input: unknown): KnowledgeReviewInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("知识审核请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !KNOWLEDGE_REVIEW_ALLOWED_KEYS.has(key))) {
+    throw new Error("知识审核请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<KnowledgeReviewInput>;
+  const actionInput = parseKnowledgeActionInput({ itemId: candidate.itemId, note: candidate.note });
+  const note = (actionInput.note ?? "").trim();
+  if (note.length < 8) {
+    throw new Error("请填写至少 8 个字的审核备注，说明为什么这条候选可以进入正式知识库。");
+  }
+  if (!hasCompleteReviewChecklist(candidate.checklist)) {
+    throw new Error("请完成审核清单：来源和范围、无密钥、无 SAP 源码或写操作、无客户明细都必须确认。");
+  }
+  assertNoSensitiveKnowledgeContent(note);
+  return {
+    itemId: actionInput.itemId,
+    note,
+    checklist: {
+      sourceAndScopeConfirmed: true,
+      noSecretsConfirmed: true,
+      noSapSourceOrWriteOpsConfirmed: true,
+      noCustomerDetailsConfirmed: true
+    }
+  };
 }
 
 function assertStrictKnowledgeProjectId(value: unknown): string {
@@ -520,6 +601,10 @@ export function createImportedKnowledgeCandidate(projectId: string, input: Knowl
     effectiveFrom: null,
     effectiveTo: null,
     reviewer: null,
+    reviewedAt: null,
+    reviewNote: null,
+    reviewedContentHash: null,
+    reviewChecklist: null,
     conflictWithIds: [],
     createdAt,
     updatedAt: createdAt,
@@ -569,6 +654,10 @@ export function createKnowledgeCandidateFromCase(project: ProjectSummary, caseIt
     effectiveFrom: null,
     effectiveTo: null,
     reviewer: null,
+    reviewedAt: null,
+    reviewNote: null,
+    reviewedContentHash: null,
+    reviewChecklist: null,
     conflictWithIds: [],
     createdAt,
     updatedAt: createdAt,
@@ -631,8 +720,68 @@ function updateKnowledgeItem(base: ProjectKnowledgeBase, itemId: string, updater
 }
 
 export function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
-  return (item.sourceType === "document-import" || item.sourceType === "qa-import") &&
-    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-");
+  return item.id.startsWith("knowledge-import-") ||
+    ((item.sourceType === "document-import" || item.sourceType === "qa-import") &&
+      (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
+}
+
+function hasHumanReviewRecord(item: KnowledgeItem): boolean {
+  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewedContentHash && item.reviewChecklist && hasCompleteReviewChecklist(item.reviewChecklist));
+}
+
+function assertKnowledgePublishSafe(item: KnowledgeItem, note = ""): void {
+  assertNoSensitiveKnowledgeContent(item.title);
+  assertNoSensitiveKnowledgeContent(item.summary);
+  assertNoSensitiveKnowledgeContent(item.content);
+  assertNoSensitiveKnowledgeContent(item.reviewNote ?? "");
+  assertNoSensitiveKnowledgeContent(note);
+  if (isPhase16LocalTextImportCandidate(item)) {
+    assertSafeKnowledgeImportBody(item.content);
+  }
+  for (const sapObject of item.sapObjects) {
+    assertNoSensitiveKnowledgeContent(sapObject);
+  }
+}
+
+function assertReviewedContentUnchanged(item: KnowledgeItem): void {
+  if (!item.reviewedContentHash || item.reviewedContentHash !== knowledgeReviewContentHash(item)) {
+    throw new Error("该知识候选在审核后发生变化，请重新记录人工审核后再确认入库。");
+  }
+}
+
+export function reviewKnowledgeItemForPublish(base: ProjectKnowledgeBase, input: KnowledgeReviewInput): ProjectKnowledgeBase {
+  return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
+    if (!isPhase16LocalTextImportCandidate(item)) {
+      throw new Error("当前审核门只用于本地文本导入候选，其他候选仍按原确认流程处理。");
+    }
+    if (item.status === "conflicted") {
+      throw new Error("该知识仍处于冲突状态，不能记录发布审核。请先处理适用范围或结论冲突。");
+    }
+    if (item.status === "expired") {
+      throw new Error("已失效知识不能记录发布审核。请重新生成候选知识后再确认。");
+    }
+    if (item.status === "published") {
+      throw new Error("该知识已经发布，不能重复记录发布审核。");
+    }
+    if (item.status !== "pending") {
+      throw new Error("只有待确认知识候选才能记录发布审核。");
+    }
+    if (item.conflictWithIds.length > 0) {
+      throw new Error("该知识仍关联冲突项，不能记录发布审核。请先处理冲突关系。");
+    }
+    assertKnowledgePublishSafe(item, input.note);
+    const reviewedContentHash = knowledgeReviewContentHash(item);
+    return {
+      ...item,
+      reviewer: "演示用户",
+      reviewedAt: updatedAt,
+      reviewNote: input.note,
+      reviewedContentHash,
+      reviewChecklist: input.checklist,
+      updatedAt,
+      timeline: [...item.timeline, event("reviewed", `phase19-knowledge-review-gate：${input.note}`, updatedAt)]
+    };
+  });
 }
 
 export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: KnowledgeItemActionInput): ProjectKnowledgeBase {
@@ -649,14 +798,17 @@ export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledg
     if (item.conflictWithIds.length > 0) {
       throw new Error("该知识仍关联冲突项，不能直接确认入库。请先处理冲突关系。");
     }
-    if (isPhase16LocalTextImportCandidate(item)) {
-      throw new Error("本地文本导入只生成待确认候选，暂不允许直接正式入库。");
+    if (isPhase16LocalTextImportCandidate(item) && !hasHumanReviewRecord(item)) {
+      throw new Error("本地文本导入候选必须先记录人工审核备注，才能确认入库。");
     }
-    assertNoSensitiveKnowledgeContent(item.content);
+    assertKnowledgePublishSafe(item, input.note ?? "");
+    if (isPhase16LocalTextImportCandidate(item)) {
+      assertReviewedContentUnchanged(item);
+    }
     return {
       ...item,
       status: "published",
-      reviewer: "演示用户",
+      reviewer: item.reviewer ?? "演示用户",
       updatedAt,
       publishedAt: updatedAt,
       timeline: [...item.timeline, event("published", input.note || "人工确认后入库。", updatedAt)]
@@ -722,6 +874,7 @@ export function renderProjectKnowledgeMarkdown(base: ProjectKnowledgeBase): stri
       `来源：${KNOWLEDGE_SOURCE_LABELS[item.sourceType]}`,
       item.sourceCaseId ? `来源案件：${item.sourceCaseId}` : "来源案件：无",
       item.sourceFilePath ? `来源文件：${item.sourceFilePath}` : "来源文件：无",
+      item.reviewedAt ? `审核：${item.reviewer ?? "未知"} 于 ${item.reviewedAt} 确认` : "审核：未审核",
       `摘要：${item.summary}`,
       ""
     );
