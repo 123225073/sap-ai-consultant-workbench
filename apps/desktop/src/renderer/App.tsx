@@ -112,6 +112,18 @@ function activeCase(state: WorkbenchState | null) {
   return activeProject(state)?.cases.find((caseItem) => caseItem.id === state?.activeCaseId);
 }
 
+function safeDraftModel(project: ProjectSummary | undefined) {
+  const provider = project?.config.apiProviders.find((item) => (
+    item.enabled &&
+    item.modelSyncStatus === "verified" &&
+    item.chatTestStatus === "verified" &&
+    item.lastVerificationMode === "http" &&
+    item.models.length > 0
+  ));
+  const model = provider?.models[0];
+  return provider && model ? { provider, model } : null;
+}
+
 function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFileNode[]; level?: number; selectedPath: string | null; onPreview: (node: CaseFileNode) => void }) {
   return (
     <>
@@ -164,12 +176,14 @@ function MessageBubble({ message, files, onPreview }: { message: CaseMessage; fi
     .map((fileId) => files.find((file) => file.relativePath === fileId))
     .filter((file): file is CaseFileNode => Boolean(file));
 
+  const isModelDraft = message.modelId !== "local-workflow" && message.modelId !== "demo-model";
+
   return (
     <article className="assistant-message">
-      <div className="run-time">本地输出回复 · {formatTime(message.createdAt)} &gt;</div>
+      <div className="run-time">{isModelDraft ? "模型草稿回复" : "本地输出回复"} · {formatTime(message.createdAt)} &gt;</div>
       <p>{message.content}</p>
       <ul>
-        <li><strong>边界：</strong>当前仅保存本地案件文件，不调用真实模型、SAP 或飞书。</li>
+        <li><strong>边界：</strong>{isModelDraft ? "只调用已验证模型生成安全本地草稿，不读取 SAP、不发布飞书。" : "当前仅保存本地案件文件，不调用真实模型、SAP 或飞书。"}</li>
         <li><strong>安全：</strong>所有文件位于被忽略的 local-data，候选知识不会自动入库。</li>
       </ul>
       {linkedFiles.length > 0 ? (
@@ -203,12 +217,13 @@ function App() {
   const [activeView, setActiveView] = useState<"case" | "config" | "standards" | "knowledge">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(true);
   const [selectedTaskMode, setSelectedTaskMode] = useState<TaskMode>("problem-analysis");
-  const [notice, setNotice] = useState("Phase 10：当前支持本地案件安全输出摘要搜索和本地案件文件只读预览；仍不读取真实 SAP、不调用真实模型、不发布飞书。");
+  const [notice, setNotice] = useState("Phase 11：当前支持已验证模型生成本地案件草稿；没有可用真实模型时继续保存本地草稿，仍不读取 SAP、不发布飞书。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
+  const selectedSafeDraftModel = useMemo(() => safeDraftModel(project), [project]);
   const flatFiles = useMemo(() => flattenFiles(state?.activeCaseFiles ?? []), [state]);
   const filteredCaseFiles = useMemo(() => filterFileNodes(state?.activeCaseFiles ?? [], fileSearchQuery), [state, fileSearchQuery]);
   const filteredFileCount = useMemo(() => flattenFiles(filteredCaseFiles).filter((node) => node.kind === "file").length, [filteredCaseFiles]);
@@ -274,7 +289,7 @@ function App() {
       setNotice("浏览器预览不会写入本地文件；请用桌面应用发送。");
       return;
     }
-    await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: "local-workflow" }));
+    await applyResponse(bridge.appendMessage({ content: message, taskMode: selectedTaskMode, modelId: selectedSafeDraftModel?.model.id ?? "local-workflow" }));
     setMessage("");
   }
 
@@ -385,8 +400,8 @@ function App() {
       const firstError = response.data.report.errors[0];
       setNotice(response.data.report.ok
         ? response.data.report.mode === "fake"
-          ? "模型渠道模拟验证通过：只证明本地模型验证流程可跑通，不代表真实模型渠道已连通。"
-          : "模型渠道真实验证通过：仅代表渠道连通和最小对话通过，尚未进入案件任务。"
+          ? "模型渠道模拟验证通过：只证明本地模型验证流程可跑通，不能用于案件模型草稿。"
+          : "模型渠道真实验证通过：可用于案件安全草稿；仍不读取 SAP、不发布飞书。"
         : `模型渠道验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
       return response.data.report;
     }
@@ -495,7 +510,7 @@ function App() {
         <div className="product-title">
           <span className="local-dot" aria-hidden="true" />
           <strong>{appInfo?.name ?? "SAP AI 顾问工作台"}</strong>
-          <span>{appInfo?.phase ?? "Phase 10"} · 本地模式</span>
+          <span>{appInfo?.phase ?? "Phase 11"} · 本地模式</span>
         </div>
         <div className="window-actions" aria-hidden="true">
           <span>－</span>
@@ -654,7 +669,7 @@ function App() {
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             <div className="mode-tabs" role="tablist" aria-label="任务模式">
               {modes.map((mode, index) => (
-                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 10 会按该模式生成可编辑本地案件文件，并支持本地案件安全输出摘要搜索；ABAP 模式会引用当前项目规范摘要" onClick={() => setSelectedTaskMode(mode.id)}>
+                <button className={mode.id === selectedTaskMode ? "selected" : ""} type="button" key={mode.id} title="Phase 11 会优先用已验证模型生成安全本地草稿；没有合格模型时仍生成可编辑本地案件文件" onClick={() => setSelectedTaskMode(mode.id)}>
                   {index === 0 ? <Sparkles size={15} /> : index === 1 ? <Bot size={15} /> : <File size={15} />}
                   {mode.label}
                 </button>
@@ -662,7 +677,9 @@ function App() {
             </div>
             <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={modePlaceholder[selectedTaskMode]} />
             <div className="composer-footer">
-              <button type="button" className="model-select disabled" title="Phase 10 仍不调用真实模型">本地输出工作流 · 不接模型 <ChevronDown size={15} /></button>
+              <button type="button" className={`model-select ${selectedSafeDraftModel ? "ready" : "disabled"}`} title={selectedSafeDraftModel ? `案件发送会尝试使用 ${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.id} 生成安全本地草稿` : "没有真实 HTTP 验证通过的模型渠道；发送时只生成本地草稿"}>
+                {selectedSafeDraftModel ? `已验证模型 · ${selectedSafeDraftModel.model.displayName}` : "未验证模型 · 使用本地草稿"} <ChevronDown size={15} />
+              </button>
               <div className="composer-actions">
                 <button type="button" aria-label="添加附件暂不可用" title="当前阶段暂不支持附件" className="icon-button" disabled><Paperclip size={18} /></button>
                 <button type="button" aria-label="语音输入暂不可用" title="当前阶段暂不支持语音" className="icon-button" disabled><Mic size={18} /></button>

@@ -1,5 +1,6 @@
 import { standardsSummaryForTask } from "./standardsService";
 import type { CaseGeneratedFile, CaseMessage, CaseSummary, CaseWorkflowInput, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
+import { renderSafeModelDraftFiles, safeModelDraftBoundary, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 
 export const TASK_MODE_LABELS: Record<TaskMode, string> = {
   "problem-analysis": "问题分析",
@@ -8,8 +9,8 @@ export const TASK_MODE_LABELS: Record<TaskMode, string> = {
   "flow-diagram": "画流程图"
 };
 
-const CASE_OUTPUT_PHASE = "Phase 10";
-const LOCAL_WORKFLOW_BOUNDARY = "本地草稿工作流：不读取真实 SAP、不调用真实模型、不创建或发布飞书文档。";
+const CASE_OUTPUT_PHASE = "Phase 11";
+const LOCAL_WORKFLOW_BOUNDARY = "本地案件工作流：没有合格模型时生成本地草稿；已验证模型只可生成安全本地草稿，不读取真实 SAP、不创建或发布飞书文档。";
 
 export interface CaseWorkflowArtifacts {
   currentSummary: string;
@@ -27,6 +28,16 @@ function nowIso(): string {
 
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function safeWorkflowModelHint(value: unknown): string {
+  if (typeof value !== "string") return "local-workflow";
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return "local-workflow";
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password|secure-store|https?:\/\//i.test(trimmed)) {
+    return "local-workflow";
+  }
+  return trimmed;
 }
 
 function csvCell(value: string): string {
@@ -74,7 +85,7 @@ export function parseCaseWorkflowInput(input: unknown): CaseWorkflowInput {
   return {
     content,
     taskMode: normalizeTaskMode(candidate.taskMode),
-    modelId: "local-workflow"
+    modelId: safeWorkflowModelHint(candidate.modelId)
   };
 }
 
@@ -125,7 +136,13 @@ function safeContentSummary(content: string, sourceLabel: string): string {
   return `${sourceLabel}已记录在本地案件对话中（${content.length} 字），输出文件不重复复制原文摘要。`;
 }
 
-function commonContext(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary): string {
+function modelBoundaryText(modelDraft?: SafeModelDraftRun): string {
+  if (!modelDraft) return LOCAL_WORKFLOW_BOUNDARY;
+  if (modelDraft.status === "success") return safeModelDraftBoundary;
+  return "安全模型草稿未生成：模型调用失败后只保存本地失败说明，不写 SAP、不发布飞书、不保存原始请求或响应。";
+}
+
+function commonContext(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary, modelDraft?: SafeModelDraftRun): string {
   const standardsSummary = standardsSummaryForTask(project.standards);
   return [
     `- 项目：${project.name}`,
@@ -133,19 +150,25 @@ function commonContext(input: CaseWorkflowInput, project: ProjectSummary, caseIt
     `- 任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
     `- 输入摘要：${safeContentSummary(input.content, "用户输入")}`,
     input.taskMode === "abap-development" ? `- 当前项目规范摘要：${standardsSummary}` : null,
-    `- 执行边界：${CASE_OUTPUT_PHASE} ${LOCAL_WORKFLOW_BOUNDARY}`,
+    `- 执行边界：${CASE_OUTPUT_PHASE} ${modelBoundaryText(modelDraft)}`,
     ""
   ].filter(Boolean).join("\n");
 }
 
-function traceabilityCsv(project: ProjectSummary, caseItem: CaseSummary, taskMode: TaskMode): string {
+function traceabilityCsv(project: ProjectSummary, caseItem: CaseSummary, taskMode: TaskMode, modelDraft?: SafeModelDraftRun): string {
+  const modelStatus = modelDraft?.status === "success" ? "已调用安全草稿" : modelDraft?.status === "failed" ? "调用失败" : "未调用";
+  const modelNote = modelDraft?.status === "success"
+    ? `已用 ${modelDraft.modelId} 生成本地草稿`
+    : modelDraft?.status === "failed"
+      ? "模型未返回可保存草稿，已保存安全失败说明"
+      : "没有合格模型时只生成本地草稿文件";
   return csvRows([
     ["类型", "名称", "状态", "说明"],
     ["项目", project.name, "已记录", `系统标签 ${project.systemLabel}`],
     ["案件", caseItem.title, "已记录", "所有输出写入当前案件文件夹"],
     ["任务模式", TASK_MODE_LABELS[taskMode], "已选择", "决定本地输出模板和文件目录"],
     ["SAP 写入", "禁用", "已锁定", "当前阶段不会写入、激活或释放传输"],
-    ["外部模型", "未调用", "已锁定", "当前阶段只生成本地草稿文件"],
+    ["外部模型", modelStatus, "受控", modelNote],
     ["飞书发布", "未发布", "已锁定", "当前阶段不会创建或更新飞书文档"]
   ]);
 }
@@ -170,10 +193,11 @@ export function createCaseMessage(
   };
 }
 
-function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary): CaseGeneratedFile[] {
+function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary, modelDraft?: SafeModelDraftRun): CaseGeneratedFile[] {
   const header = `# ${TASK_MODE_LABELS[input.taskMode]}本地输出\n\n`;
   const standardsSummary = standardsSummaryForTask(project.standards);
-  const context = commonContext(input, project, caseItem);
+  const context = commonContext(input, project, caseItem, modelDraft);
+  const modelBoundary = modelBoundaryText(modelDraft);
 
   if (input.taskMode === "abap-development") {
     return [
@@ -195,7 +219,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
       {
         relativePath: "technical/ABAP开发安全边界.md",
         purpose: "technical",
-        content: `# ABAP 开发安全边界\n\n- ${LOCAL_WORKFLOW_BOUNDARY}\n- SAP 密码、API Key、飞书 Token 不允许进入案件文件。\n- 真实 SAP 写入、对象激活、传输释放不属于当前 MVP。\n- 如果后续需要真实开发，必须先完成 ADT 只读验证和用户确认。\n`
+        content: `# ABAP 开发安全边界\n\n- ${modelBoundary}\n- SAP 密码、API Key、飞书 Token 不允许进入案件文件。\n- 真实 SAP 写入、对象激活、传输释放不属于当前 MVP。\n- 如果后续需要真实开发，必须先完成 ADT 只读验证和用户确认。\n`
       }
     ];
   }
@@ -205,7 +229,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
       {
         relativePath: "outputs/开发说明书.md",
         purpose: "output",
-        content: `${header}${context}\n## 基本信息\n\n| 字段 | 内容 |\n|---|---|\n| 项目 | ${project.name} |\n| 案件 | ${caseItem.title} |\n| 文档状态 | 本地 Markdown 草稿 |\n| 发布状态 | 未创建或发布飞书文档 |\n\n## 业务背景\n\n${safeContentSummary(input.content, "用户输入")}\n\n## 处理目标\n\n- 将当前案件整理成可编辑开发说明。\n- 保留后续接入 SAP 只读证据、流程图和交付物的位置。\n- 发布前由用户确认内容、范围和权限。\n\n## 关键逻辑\n\n当前阶段只根据本地案件上下文生成文档框架；真实业务逻辑需要后续读取 SAP 证据或用户补充后确认。\n\n## 数据来源\n\n- 当前案件对话。\n- 当前项目规范摘要。\n- 当前案件输出文件。\n\n## 异常与边界说明\n\n- 未读取真实 SAP。\n- 未调用真实模型。\n- 未创建、更新或发布飞书文档。\n- 未写入任何外部系统。\n\n## 交付物\n\n- outputs/开发说明书.md\n- outputs/上线确认清单.csv\n- outputs/飞书发布准备说明.md\n`
+        content: `${header}${context}\n## 基本信息\n\n| 字段 | 内容 |\n|---|---|\n| 项目 | ${project.name} |\n| 案件 | ${caseItem.title} |\n| 文档状态 | 本地 Markdown 草稿 |\n| 发布状态 | 未创建或发布飞书文档 |\n\n## 业务背景\n\n${safeContentSummary(input.content, "用户输入")}\n\n## 处理目标\n\n- 将当前案件整理成可编辑开发说明。\n- 保留后续接入 SAP 只读证据、流程图和交付物的位置。\n- 发布前由用户确认内容、范围和权限。\n\n## 关键逻辑\n\n当前阶段只根据本地案件上下文生成文档框架；真实业务逻辑需要后续读取 SAP 证据或用户补充后确认。\n\n## 数据来源\n\n- 当前案件对话。\n- 当前项目规范摘要。\n- 当前案件输出文件。\n\n## 异常与边界说明\n\n- 未读取真实 SAP。\n- ${modelDraft?.status === "success" ? "已调用已验证模型生成安全本地草稿。" : modelDraft?.status === "failed" ? "已尝试调用已验证模型，但未生成可保存草稿。" : "未调用真实模型。"}\n- 未创建、更新或发布飞书文档。\n- 未写入任何外部系统。\n\n## 交付物\n\n- outputs/开发说明书.md\n- outputs/上线确认清单.csv\n- outputs/飞书发布准备说明.md\n`
       },
       {
         relativePath: "outputs/上线确认清单.csv",
@@ -258,12 +282,12 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     {
       relativePath: "outputs/问题分析_处理结论.md",
       purpose: "output",
-      content: `${header}${context}\n## 当前结论\n\n当前问题已进入案件闭环，并生成可追溯的本地分析文件。由于本阶段不读取真实 SAP，根因结论必须标记为待确认。\n\n## 已完成\n\n- 记录本次案件输入到 conversation.md。\n- 刷新 timeline.md、context_pack.md 和 metadata.json。\n- 生成问题分析结论、核对清单、候选知识和本地证据文件。\n\n## 待确认\n\n1. 是否需要读取 SAP 对象或表结构作为证据。\n2. 是否需要补充影响范围、异常样例和期望结果。\n3. 是否把候选知识编辑后正式入库。\n\n## 安全边界\n\n${LOCAL_WORKFLOW_BOUNDARY}\n`
+      content: `${header}${context}\n## 当前结论\n\n当前问题已进入案件闭环，并生成可追溯的本地分析文件。由于本阶段不读取真实 SAP，根因结论必须标记为待确认。\n\n## 已完成\n\n- 记录本次案件输入到 conversation.md。\n- 刷新 timeline.md、context_pack.md 和 metadata.json。\n- 生成问题分析结论、核对清单、候选知识和本地证据文件。\n\n## 待确认\n\n1. 是否需要读取 SAP 对象或表结构作为证据。\n2. 是否需要补充影响范围、异常样例和期望结果。\n3. 是否把候选知识编辑后正式入库。\n\n## 安全边界\n\n${modelBoundary}\n`
     },
     {
       relativePath: "outputs/问题分析_核对清单.csv",
       purpose: "output",
-      content: traceabilityCsv(project, caseItem, input.taskMode)
+      content: traceabilityCsv(project, caseItem, input.taskMode, modelDraft)
     },
       {
         relativePath: "knowledge_candidates/问题处理经验候选.md",
@@ -273,17 +297,45 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
     {
       relativePath: "evidence/本地处理证据.md",
       purpose: "evidence",
-      content: `# 本地处理证据\n\n- 阶段：${CASE_OUTPUT_PHASE}\n- 输入：${safeContentSummary(input.content, "用户输入")}\n- 文件：问题分析输出、核对清单、候选知识已写入当前案件目录。\n- 边界：${LOCAL_WORKFLOW_BOUNDARY}\n`
+      content: `# 本地处理证据\n\n- 阶段：${CASE_OUTPUT_PHASE}\n- 输入：${safeContentSummary(input.content, "用户输入")}\n- 文件：问题分析输出、核对清单、候选知识已写入当前案件目录。\n- 边界：${modelBoundary}\n`
     }
   ];
 }
 
-export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: CaseGeneratedFile[]): string {
+export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: CaseGeneratedFile[], modelDraft?: SafeModelDraftRun): string {
   const fileList = generatedFiles.map((file) => `- ${file.relativePath}`).join("\n");
+  if (modelDraft?.status === "success") {
+    return [
+      `已用已验证模型「${modelDraft.modelId}」生成 ${CASE_OUTPUT_PHASE} 安全本地草稿。`,
+      "",
+      "本次只调用模型生成草稿；没有读取真实 SAP，没有写入 SAP，也没有创建或发布飞书文档。",
+      "",
+      "已更新：",
+      "- conversation.md",
+      "- timeline.md",
+      "- context_pack.md",
+      "- metadata.json",
+      fileList
+    ].join("\n");
+  }
+  if (modelDraft?.status === "failed") {
+    return [
+      `已尝试使用已验证模型「${modelDraft.modelId}」，但模型草稿未生成。`,
+      "",
+      "本次失败没有写入 SAP、没有发布飞书，也没有保存原始模型请求或响应。",
+      "",
+      "已更新：",
+      "- conversation.md",
+      "- timeline.md",
+      "- context_pack.md",
+      "- metadata.json",
+      fileList
+    ].join("\n");
+  }
   return [
     `已按「${TASK_MODE_LABELS[input.taskMode]}」模式生成 ${CASE_OUTPUT_PHASE} 本地案件输出。`,
     "",
-    "本次处理没有调用真实 SAP、模型或飞书；输出是可编辑、可追溯的本地草稿文件。",
+    "当前没有合格的已验证模型；本次处理没有调用真实 SAP、模型或飞书，输出是可编辑、可追溯的本地草稿文件。",
     "",
     "已更新：",
     "- conversation.md",
@@ -297,7 +349,7 @@ export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: 
 function renderConversation(messages: CaseMessage[]): string {
   return messages
     .map((message) => [
-      `## ${message.role === "user" ? "用户" : "本地工作流"} · ${message.createdAt}`,
+      `## ${message.role === "user" ? "用户" : message.modelId === "local-workflow" ? "本地工作流" : "模型草稿"} · ${message.createdAt}`,
       "",
       `任务模式：${TASK_MODE_LABELS[message.taskMode]}`,
       `模型：${message.modelId}`,
@@ -320,9 +372,14 @@ function renderTimeline(caseItem: CaseSummary, generatedFiles: CaseGeneratedFile
   ].join("\n");
 }
 
-function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): string {
-  const recentMessages = caseItem.messages.slice(-4).map((message) => `- ${message.role === "user" ? "用户" : "本地工作流"}：${safeContentSummary(message.content, message.role === "user" ? "用户输入" : "本地回复")}`);
+function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[], modelDraft?: SafeModelDraftRun): string {
+  const recentMessages = caseItem.messages.slice(-4).map((message) => `- ${message.role === "user" ? "用户" : message.modelId === "local-workflow" ? "本地工作流" : "模型草稿"}：${safeContentSummary(message.content, message.role === "user" ? "用户输入" : "本地回复")}`);
   const recentFiles = generatedFiles.map((file) => `- ${file.relativePath}（${file.purpose}）`);
+  const modelFact = modelDraft?.status === "success"
+    ? `- 已调用已验证模型 ${modelDraft.modelId} 生成安全本地草稿。`
+    : modelDraft?.status === "failed"
+      ? `- 已尝试调用已验证模型 ${modelDraft.modelId}，但草稿未生成。`
+      : "- 本次没有调用真实 SAP、模型 API、Codex 任务或飞书发布。";
   return [
     "# 上下文恢复包",
     "",
@@ -333,7 +390,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "## 已确认事实",
     "",
     `- 当前案件已生成 ${CASE_OUTPUT_PHASE} 本地输出文件。`,
-    "- 本次没有调用真实 SAP、模型 API、Codex 任务或飞书发布。",
+    modelFact,
     "- 候选知识仍为待确认，不能当作正式知识。",
     "",
     "## 关键结论",
@@ -361,8 +418,8 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 当前边界",
     "",
-    `- ${CASE_OUTPUT_PHASE} 只生成本地草稿文件、项目规范摘要和待确认知识候选。`,
-    "- 未调用真实 SAP、模型 API、Codex 任务或飞书发布。",
+    `- ${CASE_OUTPUT_PHASE} 只生成本地草稿文件、项目规范摘要、安全模型草稿和待确认知识候选。`,
+    `- ${modelBoundaryText(modelDraft)}`,
     "- 候选知识必须人工确认后才能正式入库。",
     "",
     "## 下一步",
@@ -402,9 +459,16 @@ function renderReadme(project: ProjectSummary, caseItem: CaseSummary, generatedF
   ].join("\n");
 }
 
-export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: CaseSummary, input: CaseWorkflowInput): CaseWorkflowArtifacts {
-  const generatedFiles = modeFilePlan(input, project, caseItem);
-  const currentSummary = `已按「${TASK_MODE_LABELS[input.taskMode]}」模式生成 ${generatedFiles.length} 个 ${CASE_OUTPUT_PHASE} 本地输出文件，等待用户确认或继续补充。`;
+export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: CaseSummary, input: CaseWorkflowInput, modelDraft?: SafeModelDraftRun): CaseWorkflowArtifacts {
+  const generatedFiles = [
+    ...(modelDraft ? renderSafeModelDraftFiles(modelDraft) : []),
+    ...modeFilePlan(input, project, caseItem, modelDraft)
+  ];
+  const currentSummary = modelDraft?.status === "success"
+    ? `已用已验证模型生成安全本地草稿，并生成 ${generatedFiles.length} 个 ${CASE_OUTPUT_PHASE} 本地输出文件，等待用户确认。`
+    : modelDraft?.status === "failed"
+      ? `已尝试调用已验证模型但未生成草稿，已保存安全说明和 ${generatedFiles.length} 个本地输出文件。`
+      : `已按「${TASK_MODE_LABELS[input.taskMode]}」模式生成 ${generatedFiles.length} 个 ${CASE_OUTPUT_PHASE} 本地输出文件，等待用户确认或继续补充。`;
   const enrichedCase: CaseSummary = { ...caseItem, currentSummary };
   return {
     currentSummary,
@@ -412,7 +476,7 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
     readme: renderReadme(project, enrichedCase, generatedFiles),
     conversation: renderConversation(enrichedCase.messages),
     timeline: renderTimeline(enrichedCase, generatedFiles),
-    contextPack: renderContextPack(project, enrichedCase, generatedFiles),
+    contextPack: renderContextPack(project, enrichedCase, generatedFiles, modelDraft),
     metadata: {
       schemaVersion: 1,
       caseId: enrichedCase.id,
@@ -421,10 +485,18 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
       status: enrichedCase.status,
       updatedAt: enrichedCase.updatedAt,
       lastTaskMode: input.taskMode,
-      lastModelId: input.modelId,
+      lastModelId: modelDraft?.modelId ?? input.modelId,
       generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
       outputPhase: CASE_OUTPUT_PHASE,
-      workflowBoundary: LOCAL_WORKFLOW_BOUNDARY,
+      workflowBoundary: modelBoundaryText(modelDraft),
+      safeModelDraft: modelDraft ? {
+        status: modelDraft.status,
+        providerName: modelDraft.providerName,
+        modelId: modelDraft.modelId,
+        generatedAt: modelDraft.generatedAt,
+        contextCharCount: modelDraft.contextAudit.contextCharCount,
+        safeOutputSummaryCount: modelDraft.contextAudit.safeOutputSummaryCount
+      } : null,
       standards: {
         sourceTemplateId: project.standards.sourceTemplateId,
         sourceTemplateName: project.standards.sourceTemplateName,
@@ -434,7 +506,7 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
       safety: {
         localOnly: true,
         sapWrite: "disabled",
-        externalModelCall: "not-run",
+        externalModelCall: modelDraft?.status === "success" ? "safe-draft-run" : modelDraft?.status === "failed" ? "failed-no-raw-response-saved" : "not-run",
         feishuPublish: "not-run",
         secretsStoredInCaseFiles: false
       }

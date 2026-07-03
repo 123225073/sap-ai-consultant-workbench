@@ -528,6 +528,42 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Model connector boundary scan"
+$safeModelMarkers = @(
+  @{ Pattern = "SAFE_MODEL_CONTEXT_ALLOWED_FIELDS"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "buildSafeModelDraftContext"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "assertNoUnsafeModelContextText"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "assertSafeModelDraftResponseText"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "safeModelDraftBoundary"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "renderSafeModelDraftFiles"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "generateSafeDraft"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "prepareSafeModelDraftRequest"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "WORKBENCH_ALLOW_FAKE_MODEL_EXECUTION"; Path = "apps/desktop/src/main/main.ts" }
+)
+foreach ($marker in $safeModelMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK safe model marker: $($marker.Pattern)"
+  } else {
+    throw "Safe model draft safety marker is missing: $($marker.Pattern)"
+  }
+}
+
+$unsafeSafeModelServiceHits = rg -n -- "ProjectConfig|WorkbenchState|readFile|readdir|node:fs|from ['""]fs['""]|sourceContent|currentContent|item\.content|searchWorkbench|previewCurrentCaseFile" apps/desktop/src/main/safeModelCaseDraftService.ts
+if ($LASTEXITCODE -eq 0) {
+  $unsafeSafeModelServiceHits | ForEach-Object { Write-Host $_ }
+  throw "Safe model draft service must not read workspace state, files, search results, or full standards/knowledge bodies."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Safe model draft service boundary scan failed."
+}
+
+$unsafeModelRequestHits = rg -n -- "tools\s*:|functions\s*:|web_search|response_format|stream\s*:\s*true" apps/desktop/src/main/modelProviderConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $unsafeModelRequestHits | ForEach-Object { Write-Host $_ }
+  throw "Safe model draft request must not enable tools, functions, web search, or streaming."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Safe model draft request scan failed."
+}
+
 $modelContextHits = rg -n -- "CaseMessage|conversation|caseItem|readCaseTree|caseFiles|activeCase|workspaceStore|readFile|readdir|fs\." apps/desktop/src/main/modelProviderConnector.ts
 if ($LASTEXITCODE -eq 0) {
   $modelContextHits | ForEach-Object { Write-Host $_ }
@@ -539,11 +575,18 @@ if ($LASTEXITCODE -eq 0) {
 $messageHits = rg -n -- "messages:" apps/desktop/src/main/modelProviderConnector.ts
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $messageHits) {
-    if ($line -notmatch 'messages:\s*\[\{\s*role:\s*"user",\s*content:\s*"ping"\s*\}\]') {
-      $line | ForEach-Object { Write-Host $_ }
-      throw "Model provider connector may only send the fixed ping chat test."
+    if ($line -match 'messages:\s*\[\{\s*role:\s*"user",\s*content:\s*"ping"\s*\}\]') {
+      Write-Host "OK fixed model chat test: $line"
+      continue
     }
-    Write-Host "OK fixed model chat test: $line"
+    if ($line -match 'messages:\s*input\.context\.messages') {
+      Write-Host "OK safe model draft messages: $line"
+      continue
+    }
+    else {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Model provider connector may only send the fixed ping chat test or prebuilt safe model draft context."
+    }
   }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Model connector message scan failed."

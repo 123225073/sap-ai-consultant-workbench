@@ -192,6 +192,7 @@ export interface ApiProviderConfig {
   models: ModelSummary[];
   modelSyncStatus: ConfigStatus;
   chatTestStatus: ConfigStatus;
+  lastVerificationMode: "fake" | "http" | null;
   lastCheckedAt: string | null;
 }
 

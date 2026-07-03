@@ -303,6 +303,7 @@ function FeishuVerificationReportView({ config, report, hasUnsavedDraft }: { con
 }
 
 function ModelProviderReportView({ provider, report }: { provider: ApiProviderConfig; report: ModelProviderVerificationReport | null }) {
+  const verificationMode = report?.mode ?? provider.lastVerificationMode ?? undefined;
   const steps = report?.steps ?? [
     {
       id: "models" as const,
@@ -322,7 +323,8 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
   const firstError = report?.errors[0];
   const models = report?.models ?? provider.models;
   const selectedModelId = report?.selectedModelId ?? null;
-  const isFakeReport = report?.mode === "fake";
+  const isFakeReport = verificationMode === "fake";
+  const eligibleForCaseDraft = provider.enabled && provider.modelSyncStatus === "verified" && provider.chatTestStatus === "verified" && provider.lastVerificationMode === "http" && provider.models.length > 0;
 
   return (
     <div className="adt-verification-report">
@@ -351,7 +353,7 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
         </div>
         <div>
           <dt>验证模式</dt>
-          <dd>{reportModeLabel(report?.mode)}</dd>
+          <dd>{reportModeLabel(verificationMode)}</dd>
         </div>
         <div>
           <dt>模型数量</dt>
@@ -367,7 +369,7 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
         </div>
         <div>
           <dt>验证结论</dt>
-          <dd>{report ? (report.ok ? (isFakeReport ? "模拟模型列表和最小对话通过，仅用于本地流程自测；不代表真实模型渠道已连通。" : "真实模型最小对话测试通过，尚未进入案件任务编排。") : "未通过，不能作为候选模型使用。") : "尚未执行本轮验证。"}</dd>
+          <dd>{report ? (report.ok ? (isFakeReport ? "模拟模型列表和最小对话通过，仅用于本地流程自测；不能用于案件模型草稿。" : "真实模型最小对话测试通过，可用于案件安全草稿。") : "未通过，不能作为候选模型使用。") : eligibleForCaseDraft ? "已通过真实 HTTP 验证，可用于案件安全草稿。" : "尚未获得真实 HTTP 验证资格。"}</dd>
         </div>
       </dl>
 

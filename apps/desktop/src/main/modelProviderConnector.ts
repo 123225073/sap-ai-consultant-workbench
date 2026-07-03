@@ -8,6 +8,7 @@ import type {
   ModelProviderVerificationStep,
   ModelSummary
 } from "../shared/workbenchTypes";
+import { assertSafeModelDraftResponseText, type SafeModelDraftContext } from "./safeModelCaseDraftService";
 
 export interface ModelProviderConnectorInput {
   id: string;
@@ -17,8 +18,21 @@ export interface ModelProviderConnectorInput {
   apiKey: string;
 }
 
+export interface SafeModelDraftConnectorInput extends ModelProviderConnectorInput {
+  modelId: string;
+  context: SafeModelDraftContext;
+}
+
+export interface SafeModelDraftConnectorResult {
+  provider: ModelProviderRedactedInfo;
+  modelId: string;
+  content: string;
+  generatedAt: string;
+}
+
 export interface ModelProviderConnector {
   verify(input: ModelProviderConnectorInput): Promise<ModelProviderVerificationReport>;
+  generateSafeDraft(input: SafeModelDraftConnectorInput): Promise<SafeModelDraftConnectorResult>;
 }
 
 interface OpenAiModelListResponse {
@@ -27,7 +41,12 @@ interface OpenAiModelListResponse {
 
 interface ChatCompletionResponse {
   id?: unknown;
-  choices?: unknown[];
+  choices?: Array<{
+    message?: {
+      content?: unknown;
+    };
+    text?: unknown;
+  }>;
 }
 
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -92,7 +111,7 @@ function endpoint(baseUrl: string, suffix: string): string {
 
 function isFakeProvider(baseUrl: string): boolean {
   try {
-    const host = new URL(baseUrl).host.toLowerCase();
+    const host = new URL(baseUrl).hostname.toLowerCase();
     return host === "api-demo.example.com" || host === "fake-models.local" || host === "fake-models.test";
   } catch {
     return false;
@@ -122,6 +141,23 @@ async function fetchJson(url: string, options: RequestInit, timeoutMs = DEFAULT_
 
 function chooseTestModel(models: ModelSummary[]): string | null {
   return models[0]?.id ?? null;
+}
+
+function connectorResult(input: SafeModelDraftConnectorInput, content: string): SafeModelDraftConnectorResult {
+  return {
+    provider: reportProvider(input),
+    modelId: input.modelId,
+    content: assertSafeModelDraftResponseText(content),
+    generatedAt: nowIso()
+  };
+}
+
+function extractChatContent(payload: ChatCompletionResponse): string {
+  const choice = payload.choices?.[0];
+  const messageContent = choice?.message?.content;
+  if (typeof messageContent === "string") return messageContent;
+  if (typeof choice?.text === "string") return choice.text;
+  throw new Error("模型服务没有返回可保存的草稿内容。");
 }
 
 function buildReport(
@@ -179,6 +215,28 @@ export class FakeModelProviderConnector implements ModelProviderConnector {
 
     steps.push(step("chat", "最小对话测试", "passed", `已用 ${selectedModelId} 完成最小对话测试。`, checkedAt));
     return buildReport("fake", input, steps, models, selectedModelId, errors, checkedAt);
+  }
+
+  async generateSafeDraft(input: SafeModelDraftConnectorInput): Promise<SafeModelDraftConnectorResult> {
+    if (input.modelId === "unsafe-output") {
+      return connectorResult(input, "api_key = abcdefghijklmnop");
+    }
+
+    const content = [
+      "已生成本地草稿：当前案件可以先按安全摘要继续推进。",
+      "",
+      "## 初步结论",
+      "",
+      "- 现有信息只能支持草稿判断，最终结论仍需用户确认。",
+      "- 本次没有读取 SAP，也没有发布飞书。",
+      "",
+      "## 建议下一步",
+      "",
+      "1. 补充业务影响范围和期望结果。",
+      "2. 如需真实证据，请先完成 ADT 只读验证。",
+      "3. 用户确认后，再决定是否生成候选知识。"
+    ].join("\n");
+    return connectorResult(input, content);
   }
 }
 
@@ -245,6 +303,26 @@ export class OpenAiCompatibleModelProviderConnector implements ModelProviderConn
     }
 
     return buildReport("http", input, steps, models, selectedModelId, errors, checkedAt);
+  }
+
+  async generateSafeDraft(input: SafeModelDraftConnectorInput): Promise<SafeModelDraftConnectorResult> {
+    const chatPayload = await fetchJson(endpoint(input.baseUrl, "/chat/completions"), {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${input.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json"
+      },
+      body: JSON.stringify({
+        model: input.modelId,
+        messages: input.context.messages,
+        max_tokens: 900,
+        temperature: 0.2,
+        stream: false
+      })
+    }) as ChatCompletionResponse;
+
+    return connectorResult(input, extractChatContent(chatPayload));
   }
 }
 

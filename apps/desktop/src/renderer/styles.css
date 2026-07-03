@@ -584,6 +584,12 @@ button {
   cursor: not-allowed;
 }
 
+.model-select.ready {
+  border-color: #a7d8bf;
+  background: #f0fdf4;
+  color: #166534;
+}
+
 .composer-actions {
   display: flex;
   gap: 8px;

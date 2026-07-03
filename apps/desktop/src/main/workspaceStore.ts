@@ -8,6 +8,7 @@ import {
   createCaseMessage,
   normalizeTaskMode,
   parseCaseWorkflowInput,
+  TASK_MODE_LABELS,
   type CaseWorkflowArtifacts
 } from "./caseWorkflowService";
 import {
@@ -20,6 +21,7 @@ import {
   projectStandardsView,
   renderProjectStandardsJson,
   renderProjectStandardsMarkdown,
+  standardsSummaryForTask,
   updateProjectStandards
 } from "./standardsService";
 import {
@@ -38,12 +40,23 @@ import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
 import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SecretHandle, SecretKind, SearchResult, WorkbenchState } from "../shared/workbenchTypes";
+import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 
 interface StoredState {
   schemaVersion: number;
   activeProjectId: string;
   activeCaseId: string;
   projects: ProjectSummary[];
+}
+
+export interface PreparedSafeModelDraftRequest {
+  projectId: string;
+  providerId: string;
+  providerName: string;
+  providerType: ProjectConfig["apiProviders"][number]["providerType"];
+  baseUrl: string;
+  modelId: string;
+  context: SafeModelDraftContext;
 }
 
 const DEMO_PROJECT_ID = "demo-s4hana";
@@ -281,6 +294,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
         models: [],
         modelSyncStatus: "pending-verification",
         chatTestStatus: "pending-verification",
+        lastVerificationMode: null,
         lastCheckedAt: null
       }
     ],
@@ -348,12 +362,26 @@ function safeId(value: unknown, fallback: string): string {
   return safe || fallback;
 }
 
+function safeMessageModelId(value: unknown): string {
+  if (typeof value !== "string") return "local-workflow";
+  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return "local-workflow";
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password|secure-store|https?:\/\//i.test(trimmed)) {
+    return "local-workflow";
+  }
+  return trimmed;
+}
+
 function bool(value: unknown, fallback = false): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
 function providerType(value: unknown): ProjectConfig["apiProviders"][number]["providerType"] {
   return value === "deepseek" || value === "custom" ? value : "openai-compatible";
+}
+
+function modelVerificationMode(value: unknown): ProjectConfig["apiProviders"][number]["lastVerificationMode"] {
+  return value === "fake" || value === "http" ? value : null;
 }
 
 function sslMode(value: unknown): ProjectConfig["adt"]["sslMode"] {
@@ -429,6 +457,15 @@ function normalizeModels(value: unknown): ModelSummary[] {
   });
 }
 
+function isFakeModelExecutionHost(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return host === "api-demo.example.com" || host === "fake-models.local" || host === "fake-models.test";
+  } catch {
+    return false;
+  }
+}
+
 function normalizeCaseStatus(value: unknown): CaseSummary["status"] {
   if (value === "solved" || value === "archived") return value;
   return "active";
@@ -447,7 +484,7 @@ function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | nul
     role,
     content: text(candidate.content),
     taskMode: normalizeTaskMode(candidate.taskMode),
-    modelId: "local-workflow",
+    modelId: safeMessageModelId(candidate.modelId),
     linkedFileIds,
     createdAt: text(candidate.createdAt, nowIso())
   };
@@ -526,7 +563,7 @@ export class WorkspaceStore {
     return this.withFiles(state);
   }
 
-  async appendMessage(input: unknown): Promise<WorkbenchState> {
+  async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun): Promise<WorkbenchState> {
     const workflowInput = parseCaseWorkflowInput(input);
     if (!workflowInput.content) {
       throw new Error("请输入案件问题或补充说明。");
@@ -536,23 +573,26 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     const currentCase = this.getActiveCase(state);
     const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
-    const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, workflowInput).generatedFiles;
-    const userMessage = createCaseMessage("user", currentCase.id, workflowInput.content, workflowInput.taskMode, workflowInput.modelId);
+    const persistedModelId = safeModelDraft ? safeMessageModelId(safeModelDraft.modelId) : "local-workflow";
+    const persistedModelDraft = safeModelDraft ? { ...safeModelDraft, modelId: persistedModelId } : undefined;
+    const persistedInput = { ...workflowInput, modelId: persistedModelId };
+    const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft).generatedFiles;
+    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId);
     const assistantMessage = createCaseMessage(
       "assistant",
       currentCase.id,
-      buildAssistantContent(workflowInput, previewFiles),
-      workflowInput.taskMode,
-      "local-workflow",
+      buildAssistantContent(persistedInput, previewFiles, persistedModelDraft),
+      persistedInput.taskMode,
+      persistedModelId,
       previewFiles.map((file) => file.relativePath)
     );
 
     currentCase.messages.push(userMessage, assistantMessage);
-    currentCase.currentSummary = `已按「${workflowInput.taskMode === "abap-development" ? "ABAP 开发" : workflowInput.taskMode === "document-generation" ? "文档生成" : workflowInput.taskMode === "flow-diagram" ? "画流程图" : "问题分析"}」模式处理最新输入，并生成 ${previewFiles.length} 个本地案件文件。`;
+    currentCase.currentSummary = `已按「${persistedInput.taskMode === "abap-development" ? "ABAP 开发" : persistedInput.taskMode === "document-generation" ? "文档生成" : persistedInput.taskMode === "flow-diagram" ? "画流程图" : "问题分析"}」模式处理最新输入，并生成 ${previewFiles.length} 个本地案件文件。`;
     currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
     currentCase.lastOpenedAt = nowIso();
-    const artifacts = buildCaseWorkflowArtifacts(project, currentCase, workflowInput);
+    const artifacts = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft);
     currentCase.currentSummary = artifacts.currentSummary;
     currentCase.summary = artifacts.currentSummary;
     project.knowledge = appendKnowledgeCandidatesFromCase(project, currentCase, artifacts.generatedFiles);
@@ -619,6 +659,62 @@ export class WorkspaceStore {
     const files = await this.readCaseTree(state);
     const safeOutputSummaries = await this.readAllSafeOutputSummaries(state, files);
     return searchWorkbench(this.database, state.projects, files, safeOutputSummaries, query);
+  }
+
+  async prepareSafeModelDraftRequest(input: unknown, options: { allowFakeModelExecution?: boolean } = {}): Promise<PreparedSafeModelDraftRequest | null> {
+    const workflowInput = parseCaseWorkflowInput(input);
+    if (!workflowInput.content) return null;
+    assertNoSensitiveCaseContent(workflowInput.content);
+
+    const state = await this.loadOrCreateState();
+    await this.ensureCaseFiles(state);
+    const currentCase = this.getActiveCase(state);
+    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const provider = project.config.apiProviders.find((item) => {
+      const realEligible = item.lastVerificationMode === "http";
+      const fakeEligible = options.allowFakeModelExecution === true && item.lastVerificationMode === "fake" && isFakeModelExecutionHost(item.baseUrl);
+      return (
+        item.enabled &&
+        item.credential.state === "set-in-secure-store" &&
+        item.modelSyncStatus === "verified" &&
+        item.chatTestStatus === "verified" &&
+        item.models.length > 0 &&
+        (realEligible || fakeEligible)
+      );
+    });
+    const model = provider?.models.find((item) => item.id === workflowInput.modelId) ?? provider?.models[0] ?? null;
+    if (!provider || !model) return null;
+
+    const files = await this.readCaseTree(state);
+    const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
+    try {
+      const context = buildSafeModelDraftContext({
+        taskMode: workflowInput.taskMode,
+        taskLabel: TASK_MODE_LABELS[workflowInput.taskMode],
+        userInput: workflowInput.content,
+        caseTitle: currentCase.title,
+        caseSummary: currentCase.currentSummary,
+        sapVersion: project.sapVersion,
+        standardsSummary: standardsSummaryForTask(project.standards),
+        safeOutputSummaries: safeOutputSummaries.map((summary) => ({
+          displayName: summary.displayName,
+          fileType: summary.fileType,
+          snippet: summary.snippet
+        }))
+      });
+
+      return {
+        projectId: project.id,
+        providerId: provider.id,
+        providerName: provider.name,
+        providerType: provider.providerType,
+        baseUrl: provider.baseUrl,
+        modelId: model.id,
+        context
+      };
+    } catch {
+      return null;
+    }
   }
 
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
@@ -839,6 +935,7 @@ export class WorkspaceStore {
     provider.models = report.models;
     provider.modelSyncStatus = report.modelSyncStatus;
     provider.chatTestStatus = report.chatTestStatus;
+    provider.lastVerificationMode = report.mode;
     provider.lastCheckedAt = report.checkedAt;
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
@@ -1106,6 +1203,7 @@ export class WorkspaceStore {
           models: preserveVerification ? normalizeModels(provider.models) : [],
           modelSyncStatus: preserveVerification ? normalizeConfigStatus(provider.modelSyncStatus, "pending-verification") : "pending-verification",
           chatTestStatus: preserveVerification ? normalizeConfigStatus(provider.chatTestStatus, "pending-verification") : "pending-verification",
+          lastVerificationMode: preserveVerification ? modelVerificationMode(provider.lastVerificationMode) : null,
           lastCheckedAt: preserveVerification ? nullableIso(provider.lastCheckedAt) : null
         };
       }),

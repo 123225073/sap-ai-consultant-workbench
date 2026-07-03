@@ -5,6 +5,7 @@ import { createFeishuCliConnector, createFeishuValidationFailureReport, type Fei
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
+import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
@@ -256,7 +257,7 @@ function validateModelProvider(provider: ApiProviderConfig): { ok: true } | { ok
         suggestion: "请只填写模型服务根地址，例如 https://api.example.com/v1，不要把 API Key 或参数放进 URL。"
       };
     }
-    if (!isDemoModelHost(parsed.host) && parsed.protocol !== "https:") {
+    if (!isDemoModelHost(parsed.hostname) && parsed.protocol !== "https:") {
       return {
         ok: false,
         code: "invalid-base-url",
@@ -264,7 +265,7 @@ function validateModelProvider(provider: ApiProviderConfig): { ok: true } | { ok
         suggestion: "请改用模型服务的 HTTPS 地址；本地、内网或明文 HTTP 地址不会携带 API Key 执行验证。"
       };
     }
-    if (!isDemoModelHost(parsed.host) && isUnsafeModelHost(parsed.hostname)) {
+    if (!isDemoModelHost(parsed.hostname) && isUnsafeModelHost(parsed.hostname)) {
       return {
         ok: false,
         code: "invalid-base-url",
@@ -388,6 +389,51 @@ async function verifyModelProvider(store: WorkspaceStore, secretStore: SecureSec
   return { report, state };
 }
 
+async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<WorkbenchState> {
+  const prepared = await store.prepareSafeModelDraftRequest(input, {
+    allowFakeModelExecution: process.env.WORKBENCH_ALLOW_FAKE_MODEL_EXECUTION === "1"
+  });
+  let modelDraft: SafeModelDraftRun | undefined;
+
+  if (prepared) {
+    try {
+      const apiKey = await secretStore.resolveProjectSecret(prepared.projectId, {
+        kind: "api-key",
+        providerId: prepared.providerId
+      });
+      const connector = createModelProviderConnector(prepared.baseUrl);
+      const draft = await connector.generateSafeDraft({
+        id: prepared.providerId,
+        name: prepared.providerName,
+        providerType: prepared.providerType,
+        baseUrl: prepared.baseUrl,
+        apiKey,
+        modelId: prepared.modelId,
+        context: prepared.context
+      });
+      modelDraft = {
+        status: "success",
+        providerName: safeModelDraftDisplayValue("模型渠道", prepared.providerName, "已验证模型渠道"),
+        modelId: safeModelDraftDisplayValue("模型名称", draft.modelId, "已验证模型"),
+        generatedAt: draft.generatedAt,
+        content: draft.content,
+        contextAudit: prepared.context.audit
+      };
+    } catch (error) {
+      modelDraft = {
+        status: "failed",
+        providerName: safeModelDraftDisplayValue("模型渠道", prepared.providerName, "已验证模型渠道"),
+        modelId: safeModelDraftDisplayValue("模型名称", prepared.modelId, "已验证模型"),
+        generatedAt: new Date().toISOString(),
+        errorMessage: safeErrorMessage(error),
+        contextAudit: prepared.context.audit
+      };
+    }
+  }
+
+  return store.appendMessage(input, modelDraft);
+}
+
 function validProjectId(projectId: unknown, action: string): string {
   if (typeof projectId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(projectId)) {
     throw new Error(`${action}请求缺少有效项目 ID。`);
@@ -399,7 +445,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:get-state", () => response(store.getState()));
   ipcMain.handle("workbench:create-demo-project", () => response(store.createDemoProject()));
   ipcMain.handle("workbench:create-demo-case", () => response(store.createDemoCase()));
-  ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(store.appendMessage(input)));
+  ipcMain.handle("workbench:append-message", (_event, input: unknown) => response(appendCaseMessage(store, secretStore, input)));
   ipcMain.handle("workbench:get-case-files", () => response(store.getCaseFiles()));
   ipcMain.handle("workbench:preview-current-case-file", (_event, input: unknown) => response(store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (_event, query: string) => response(store.search(query)));
