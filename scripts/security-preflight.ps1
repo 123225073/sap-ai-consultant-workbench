@@ -136,6 +136,7 @@ $allowedIpc = @(
   "workbench:standards-copy-project",
   "workbench:standards-save",
   "workbench:get-project-knowledge",
+  "workbench:knowledge-import-local-text",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
   "workbench:knowledge-expire"
@@ -339,7 +340,7 @@ if ($LASTEXITCODE -eq 0) {
 $previewUnsafePathHits = rg -n -- "SAP ABAP|SAPUILandscape|saplogon\.ini|\.sap-adt-cli|\.sap-abap-cli" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $previewUnsafePathHits) {
-    if ($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\](workspaceStore|searchService)\.ts") {
+    if ($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\](workspaceStore|searchService|knowledgeService)\.ts") {
       Write-Host "OK desktop safety code blocks old SAP workspace marker: $line"
     } else {
       $line | ForEach-Object { Write-Host $_ }
@@ -464,6 +465,107 @@ foreach ($marker in $knowledgeGuardMarkers) {
   } else {
     throw "Knowledge publish/search guard is missing: $($marker.Pattern)"
   }
+}
+
+Write-Section "Knowledge import firewall scan"
+$knowledgeImportMarkers = @(
+  @{ Pattern = "parseKnowledgeImportLocalTextInput"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "KNOWLEDGE_IMPORT_ALLOWED_KEYS"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "MAX_KNOWLEDGE_IMPORT_BODY_LENGTH"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "createImportedKnowledgeCandidate"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "isPhase16LocalTextImportCandidate"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "imported-knowledge-"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "assertSafeGeneratedWriteTarget"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "writeGeneratedFile"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "isSymbolicLink"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "importKnowledgeLocalText"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "writeCaseGeneratedFiles"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:knowledge-import-local-text"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "importKnowledgeLocalText"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "importKnowledgeLocalText"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "documentJobId"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "knowledgeItemId"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "phase16-document-ingestion-firewall"; Path = "scripts/phase16-document-ingestion-firewall-probe.mjs" }
+)
+foreach ($marker in $knowledgeImportMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK knowledge import marker: $($marker.Pattern)"
+  } else {
+    throw "Knowledge import firewall marker is missing: $($marker.Pattern)"
+  }
+}
+
+function Get-SourceBlock {
+  param(
+    [string]$Path,
+    [string]$StartMarker,
+    [string]$EndMarker
+  )
+  $source = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path
+  $start = $source.IndexOf($StartMarker, [System.StringComparison]::Ordinal)
+  if ($start -lt 0) {
+    throw "Missing source block start marker: $StartMarker"
+  }
+  $end = $source.IndexOf($EndMarker, $start + $StartMarker.Length, [System.StringComparison]::Ordinal)
+  if ($end -le $start) {
+    throw "Missing source block end marker for: $StartMarker"
+  }
+  return $source.Substring($start, $end - $start)
+}
+
+$knowledgeImportForbiddenCapabilities = @(
+  "showOpenDialog",
+  "dialog.show",
+  "readFile(",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "exec(",
+  "openExternal",
+  "openPath",
+  "loadURL",
+  "feishu-sync",
+  "unlink",
+  "rm("
+)
+
+$knowledgeImportBlocks = @(
+  @{ Name = "store import method"; Path = "apps/desktop/src/main/workspaceStore.ts"; Start = "async importKnowledgeLocalText(input: unknown)"; End = "async copyProjectStandardsTemplate" },
+  @{ Name = "knowledge import parser"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function parseKnowledgeImportLocalTextInput"; End = "export function assertNoSensitiveKnowledgeContent" },
+  @{ Name = "knowledge candidate builder"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function createImportedKnowledgeCandidate"; End = "export function createKnowledgeCandidateFromCase" },
+  @{ Name = "renderer import submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function submitImport"; End = "if (!project || !view)" }
+)
+foreach ($blockSpec in $knowledgeImportBlocks) {
+  $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
+  foreach ($forbidden in $knowledgeImportForbiddenCapabilities) {
+    if ($block.Contains($forbidden)) {
+      throw "Knowledge import $($blockSpec.Name) contains forbidden capability marker: $forbidden"
+    }
+  }
+  Write-Host "OK knowledge import block capability scan: $($blockSpec.Name)"
+}
+
+$knowledgeImportUnsafeHits = rg -n -- "knowledge-import-local-text|importKnowledgeLocalText|parseKnowledgeImportLocalTextInput|createImportedKnowledgeCandidate" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer |
+  Select-String -Pattern "showOpenDialog|dialog\.show|readFile\(|fetch\(|execFile\(|spawn\(|exec\(|openExternal|openPath|loadURL|feishu-sync|unlink|rm\("
+if ($knowledgeImportUnsafeHits) {
+  $knowledgeImportUnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge import firewall must not read arbitrary files, open dialogs, call Feishu/network/commands, or delete."
+}
+
+$knowledgeImportPublishHits = rg -n -- "createImportedKnowledgeCandidate|importKnowledgeLocalText|knowledge-import-local-text" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer |
+  Select-String -Pattern "status:\s*['""]published['""]|publishedAt:\s*['""][^'""]+['""]|publishKnowledgeItem"
+if ($knowledgeImportPublishHits) {
+  $knowledgeImportPublishHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge import firewall must not auto-publish knowledge."
+}
+
+$knowledgeImportSourcePathHits = rg -n -- "sourceFilePath\s*:\s*(input|importInput|candidate|.*sourceName)|readFile\(.*sourceFilePath|path\.join\(.*sourceFilePath|openPath\(.*sourceFilePath|shell\.openPath\(.*sourceFilePath" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $knowledgeImportSourcePathHits | ForEach-Object { Write-Host $_ }
+  throw "Knowledge import sourceFilePath must be generated by the main process and must not become a filesystem path."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Knowledge import source path scan failed."
 }
 
 $knowledgeImportHits = rg -n -- "showOpenDialog|dialog\.show|readFile\(|fetch\(|execFile\(|spawn\(|exec\(|openExternal|loadURL|feishu-sync" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/renderer/KnowledgeCenter.tsx

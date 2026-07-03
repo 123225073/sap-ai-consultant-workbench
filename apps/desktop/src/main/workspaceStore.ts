@@ -26,10 +26,12 @@ import {
 } from "./standardsService";
 import {
   appendKnowledgeCandidatesFromCase,
+  createImportedKnowledgeCandidate,
   createProjectKnowledge,
   expireKnowledgeItem,
   markKnowledgeItemConflicted,
   normalizeProjectKnowledge,
+  parseKnowledgeImportLocalTextInput,
   parseKnowledgeActionInput,
   projectKnowledgeView,
   publishKnowledgeItem,
@@ -39,7 +41,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -463,6 +465,17 @@ function uniqueEntityId(prefix: string, existingIds: Iterable<string>): string {
     if (!existing.has(candidate)) return candidate;
   }
   throw new Error("Unable to allocate a unique local ID.");
+}
+
+function safeKnowledgeImportFileName(title: string): string {
+  const slug = title
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9_-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48) || "imported-knowledge";
+  return `imported-knowledge-${slug}-${timestampIdSegment()}.md`;
 }
 
 function createLocalCaseRecord(projectId: string, title: string, existingCaseIds: Iterable<string>): CaseSummary {
@@ -1260,6 +1273,50 @@ export class WorkspaceStore {
     return projectKnowledgeView(project.knowledge);
   }
 
+  async importKnowledgeLocalText(input: unknown): Promise<KnowledgeImportLocalTextResult> {
+    return this.runExclusive(async () => {
+    const importInput = parseKnowledgeImportLocalTextInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === importInput.projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法导入知识候选。");
+    }
+    const caseItem = project.cases.find((item) => item.id === state.activeCaseId && item.projectId === project.id) ?? project.cases[0];
+    if (!caseItem) {
+      throw new Error("当前项目没有可写入候选文件的本地案件。");
+    }
+
+    state.activeProjectId = project.id;
+    state.activeCaseId = caseItem.id;
+    caseItem.lastOpenedAt = nowIso();
+    syncProjectLocalStorage(project, caseItem);
+    const relativePath = `knowledge_candidates/${safeKnowledgeImportFileName(importInput.title)}`;
+    const candidate = createImportedKnowledgeCandidate(project.id, importInput, relativePath);
+    const item = { ...candidate.item, sourceCaseId: caseItem.id };
+    await this.writeCaseGeneratedFiles(project, caseItem, [candidate.artifact]);
+    const updatedAt = nowIso();
+    project.knowledge = {
+      ...project.knowledge,
+      items: [item, ...project.knowledge.items].slice(0, 500),
+      documentJobs: [candidate.job, ...project.knowledge.documentJobs].slice(0, 100),
+      updatedAt
+    };
+    project.updatedAt = updatedAt;
+
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
+    await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
+    return {
+      state: await this.withFiles(state),
+      documentJobId: candidate.job.id,
+      knowledgeItemId: item.id,
+      generatedFiles: [relativePath]
+    };
+    });
+  }
+
   async copyProjectStandardsTemplate(projectId: string, input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const copyInput = parseCopyProjectStandardsInput(input);
@@ -2041,6 +2098,66 @@ export class WorkspaceStore {
     return resolvedTarget;
   }
 
+  private async assertSafeGeneratedWriteTarget(caseRoot: string, target: string): Promise<string> {
+    const resolvedCaseRoot = path.resolve(caseRoot);
+    const resolvedTarget = this.assertInsideWorkspace(target);
+    const parent = path.dirname(resolvedTarget);
+    const relativeParent = path.relative(resolvedCaseRoot, parent);
+    if (relativeParent.startsWith("..") || path.isAbsolute(relativeParent)) {
+      throw new Error("生成文件目录超出当前案件目录，已阻止写入。");
+    }
+
+    let cursor = resolvedCaseRoot;
+    if (relativeParent) {
+      for (const part of relativeParent.split(path.sep).filter(Boolean)) {
+        cursor = path.join(cursor, part);
+        try {
+          const stats = await fs.lstat(cursor);
+          if (stats.isSymbolicLink() || !stats.isDirectory()) {
+            throw new Error("生成文件目录包含符号链接或非目录节点，已阻止写入。");
+          }
+        } catch (error) {
+          if (isFileNotFound(error)) break;
+          throw error;
+        }
+      }
+    }
+
+    await fs.mkdir(parent, { recursive: true });
+    cursor = resolvedCaseRoot;
+    if (relativeParent) {
+      for (const part of relativeParent.split(path.sep).filter(Boolean)) {
+        cursor = path.join(cursor, part);
+        const stats = await fs.lstat(cursor);
+        if (stats.isSymbolicLink() || !stats.isDirectory()) {
+          throw new Error("生成文件目录包含符号链接或非目录节点，已阻止写入。");
+        }
+      }
+    }
+
+    try {
+      const targetStats = await fs.lstat(resolvedTarget);
+      if (targetStats.isSymbolicLink() || !targetStats.isFile()) {
+        throw new Error("生成文件目标包含符号链接或非文件节点，已阻止写入。");
+      }
+    } catch (error) {
+      if (!isFileNotFound(error)) throw error;
+    }
+
+    const realCaseRoot = await fs.realpath(resolvedCaseRoot);
+    const realParent = await fs.realpath(parent);
+    if (realParent !== realCaseRoot && !realParent.startsWith(`${realCaseRoot}${path.sep}`)) {
+      throw new Error("生成文件真实目录超出当前案件目录，已阻止写入。");
+    }
+    return resolvedTarget;
+  }
+
+  private async writeGeneratedFile(caseRoot: string, file: CaseGeneratedFile): Promise<void> {
+    const target = this.generatedFileTarget(caseRoot, file);
+    const safeTarget = await this.assertSafeGeneratedWriteTarget(caseRoot, target);
+    await fs.writeFile(safeTarget, file.content, "utf8");
+  }
+
   private async ensureCaseFiles(state: StoredState): Promise<void> {
     const caseRoot = this.caseRoot(state);
     await Promise.all(state.projects.map((project) => this.ensureProjectStandardsFiles(project)));
@@ -2128,9 +2245,7 @@ export class WorkspaceStore {
     const caseRoot = this.caseRootFor(project, caseItem);
     await fs.mkdir(caseRoot, { recursive: true });
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {
-      const target = this.generatedFileTarget(caseRoot, file);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, file.content, "utf8");
+      await this.writeGeneratedFile(caseRoot, file);
     });
 
     await Promise.all([
@@ -2149,9 +2264,7 @@ export class WorkspaceStore {
     const caseRoot = this.caseRootFor(project, caseItem);
     await fs.mkdir(caseRoot, { recursive: true });
     await Promise.all(generatedFiles.map(async (file) => {
-      const target = this.generatedFileTarget(caseRoot, file);
-      await fs.mkdir(path.dirname(target), { recursive: true });
-      await fs.writeFile(target, file.content, "utf8");
+      await this.writeGeneratedFile(caseRoot, file);
     }));
   }
 

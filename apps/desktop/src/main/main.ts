@@ -512,6 +512,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:standards-copy-project", (_event, projectId: unknown, input: unknown) => response(store.copyProjectStandardsFromProject(validProjectId(projectId, "复制其他项目规范"), input)));
   ipcMain.handle("workbench:standards-save", (_event, projectId: unknown, input: unknown) => response(store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
   ipcMain.handle("workbench:get-project-knowledge", (_event, projectId: unknown) => response(store.getProjectKnowledge(validProjectId(projectId, "读取项目知识库"))));
+  ipcMain.handle("workbench:knowledge-import-local-text", (_event, input: unknown) => response(store.importKnowledgeLocalText(input)));
   ipcMain.handle("workbench:knowledge-publish", (_event, projectId: unknown, input: unknown) => response(store.publishKnowledge(validProjectId(projectId, "确认知识入库"), input)));
   ipcMain.handle("workbench:knowledge-mark-conflict", (_event, projectId: unknown, input: unknown) => response(store.markKnowledgeConflicted(validProjectId(projectId, "标记知识冲突"), input)));
   ipcMain.handle("workbench:knowledge-expire", (_event, projectId: unknown, input: unknown) => response(store.expireKnowledge(validProjectId(projectId, "标记知识失效"), input)));

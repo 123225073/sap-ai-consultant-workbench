@@ -1699,6 +1699,87 @@ button {
   line-height: 1.5;
 }
 
+.knowledge-import-form {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid #e5e9f0;
+  margin-top: 16px;
+  padding-top: 16px;
+}
+
+.knowledge-import-fields {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.knowledge-import-form label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-import-form label span,
+.knowledge-import-footer span {
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.knowledge-import-form input,
+.knowledge-import-form select,
+.knowledge-import-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #111827;
+  font: inherit;
+  outline: 0;
+}
+
+.knowledge-import-form input,
+.knowledge-import-form select {
+  height: 38px;
+  padding: 0 10px;
+}
+
+.knowledge-import-form textarea {
+  min-height: 132px;
+  max-height: 260px;
+  resize: vertical;
+  padding: 10px;
+  line-height: 1.5;
+}
+
+.knowledge-import-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.knowledge-import-footer button {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #2563eb;
+  border-radius: 7px;
+  padding: 0 14px;
+  color: #ffffff;
+  background: #2563eb;
+}
+
+.knowledge-import-footer button:disabled {
+  border-color: #d8dee8;
+  color: #6b7280;
+  background: #f3f4f6;
+  cursor: not-allowed;
+}
+
 .knowledge-actions button,
 .knowledge-detail-actions button {
   min-height: 38px;
@@ -2006,6 +2087,7 @@ button {
   .standards-editor,
   .standards-copy-project,
   .knowledge-actions,
+  .knowledge-import-fields,
   .knowledge-grid,
   .knowledge-parser-queue > div {
     grid-template-columns: 1fr;

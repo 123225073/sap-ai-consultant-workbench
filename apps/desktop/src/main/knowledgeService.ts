@@ -2,6 +2,8 @@ import type {
   CaseGeneratedFile,
   CaseSummary,
   KnowledgeDocumentJob,
+  KnowledgeImportLocalTextInput,
+  KnowledgeImportSourceKind,
   KnowledgeItem,
   KnowledgeItemActionInput,
   KnowledgeItemStatus,
@@ -16,6 +18,12 @@ import type {
 
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 12000;
 const MAX_KNOWLEDGE_ITEMS = 500;
+export const KNOWLEDGE_IMPORT_ALLOWED_KEYS = new Set(["projectId", "title", "sourceKind", "sourceName", "body", "sapObjects"]);
+export const MAX_KNOWLEDGE_IMPORT_BODY_LENGTH = 8000;
+const MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH = 120;
+const MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH = 160;
+const MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS = 12;
+const KNOWLEDGE_IMPORT_ALLOWED_SOURCE_KINDS = new Set<KnowledgeImportSourceKind>(["local-text", "markdown-note", "qa-text"]);
 
 const KNOWLEDGE_STATUS_LABELS: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -249,7 +257,7 @@ function normalizeDocumentJob(projectId: string, value: unknown): KnowledgeDocum
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<KnowledgeDocumentJob>;
   const createdAt = typeof candidate.createdAt === "string" ? candidate.createdAt : nowIso();
-  const source = candidate.source === "qa-import" ? candidate.source : "upload";
+  const source = candidate.source === "qa-import" || candidate.source === "local-text" ? candidate.source : "upload";
   const status = candidate.status === "parsed" || candidate.status === "needs-review" || candidate.status === "blocked" ? candidate.status : "queued";
   return {
     id: safeId(candidate.id, `docjob-${Date.now()}`),
@@ -309,6 +317,123 @@ export function parseKnowledgeActionInput(input: unknown): KnowledgeItemActionIn
   return { itemId: candidate.itemId, note };
 }
 
+function assertStrictKnowledgeProjectId(value: unknown): string {
+  if (typeof value !== "string" || value !== value.trim() || !/^[A-Za-z0-9_-]{1,80}$/.test(value)) {
+    throw new Error("项目 ID 无效，无法导入知识候选。");
+  }
+  return value;
+}
+
+function assertSafeKnowledgeImportText(label: string, value: unknown, maxLength: number): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label}必须是文本。`);
+  }
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
+  if (!normalized) {
+    throw new Error(`${label}不能为空。`);
+  }
+  if (normalized.length > maxLength) {
+    throw new Error(`${label}过长。`);
+  }
+  const lower = normalized.toLowerCase();
+  const pathLike = (
+    normalized.includes("/") ||
+    normalized.includes("\\") ||
+    normalized.startsWith(".") ||
+    /^[a-zA-Z]:/.test(normalized) ||
+    /^[a-z][a-z0-9+.-]*:/i.test(normalized) ||
+    lower.includes(".env") ||
+    lower.includes(".sap-adt-cli") ||
+    lower.includes(".sap-abap-cli") ||
+    lower.includes("messages.json") ||
+    lower.includes("metadata.json") ||
+    lower.includes("app-state.json") ||
+    lower.includes("project.json")
+  );
+  const secretLike = /(authorization|cookie|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|secret|credential|token|secure-store|sap_sessionid|mysapsso2)/i.test(normalized);
+  if (pathLike || secretLike) {
+    throw new Error(`${label}包含路径、内部文件名或敏感字段，已阻止。`);
+  }
+  assertNoSensitiveKnowledgeContent(normalized);
+  return normalized;
+}
+
+function assertSafeKnowledgeImportBody(value: unknown): string {
+  if (typeof value !== "string") {
+    throw new Error("导入正文必须是文本。");
+  }
+  const body = value.replace(/\u0000/g, "").trim();
+  if (!body) {
+    throw new Error("导入正文不能为空。");
+  }
+  if (body.length > MAX_KNOWLEDGE_IMPORT_BODY_LENGTH) {
+    throw new Error("导入正文过长，请先拆分为更小的已脱敏文本。");
+  }
+  assertNoSensitiveKnowledgeContent(body);
+  const importUnsafePatterns = [
+    /^\s*(REPORT|PROGRAM|CLASS|INTERFACE|FUNCTION|FORM|MODULE|METHOD)\s+[\w/]+/im,
+    /^\s*(DATA|TYPES|CONSTANTS|SELECT-OPTIONS|PARAMETERS)\s*[:\s]/im,
+    /\bSELECT\s+[\s\S]{0,300}\s+FROM\s+[\w/]+/i,
+    /\bCALL\s+(FUNCTION|TRANSACTION)\b/i,
+    /\bINSERT\s+[\w/]+\b|\bUPDATE\s+[\w/]+\b|\bMODIFY\s+[\w/]+\b|\bDELETE\s+FROM\s+[\w/]+\b/i
+  ];
+  if (importUnsafePatterns.some((pattern) => pattern.test(body))) {
+    throw new Error("导入正文包含疑似 ABAP 源码或写操作片段，请先脱敏并改写为业务结论。");
+  }
+  const unsafeBodyMarkers = [
+    /[A-Za-z]:[\\/]|\.{2}[\\/]|\/etc\/|\/users\/|\/home\//i,
+    /\.env|\.sap-adt-cli|\.sap-abap-cli|messages\.json|metadata\.json|app-state\.json|project\.json/i
+  ];
+  if (unsafeBodyMarkers.some((pattern) => pattern.test(body))) {
+    throw new Error("导入正文包含路径或内部文件名，请先改写为脱敏业务结论。");
+  }
+  const rows = body.split(/\r?\n/).filter((line) => line.trim().length > 0);
+  const structuredRows = rows.filter((line) => line.split(/\t|,|，|\||;|；/).filter((cell) => cell.trim().length > 0).length >= 5);
+  if (structuredRows.length >= 6) {
+    throw new Error("导入正文疑似包含成批业务表格数据，请先汇总为脱敏结论。");
+  }
+  const jsonLikeRows = rows.filter((line) => /^\s*[{[]/.test(line) || /["'][^"']{1,80}["']\s*:/.test(line));
+  if (jsonLikeRows.length >= 3 || (body.trim().startsWith("[") && body.trim().endsWith("]"))) {
+    throw new Error("导入正文疑似包含结构化明细数据，请先汇总为脱敏结论。");
+  }
+  return body;
+}
+
+function normalizeKnowledgeImportSourceKind(value: unknown): KnowledgeImportSourceKind {
+  if (typeof value !== "string" || !KNOWLEDGE_IMPORT_ALLOWED_SOURCE_KINDS.has(value as KnowledgeImportSourceKind)) {
+    throw new Error("导入来源类型不在允许范围内。");
+  }
+  return value as KnowledgeImportSourceKind;
+}
+
+function normalizeKnowledgeImportSapObjects(value: unknown): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("SAP 对象标签必须是数组。");
+  }
+  const objects = value.map((item) => assertSafeKnowledgeImportText("SAP 对象标签", item, 80));
+  return [...new Set(objects)].slice(0, MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS);
+}
+
+export function parseKnowledgeImportLocalTextInput(input: unknown): KnowledgeImportLocalTextInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("知识导入请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !KNOWLEDGE_IMPORT_ALLOWED_KEYS.has(key))) {
+    throw new Error("知识导入请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<KnowledgeImportLocalTextInput>;
+  return {
+    projectId: assertStrictKnowledgeProjectId(candidate.projectId),
+    title: assertSafeKnowledgeImportText("知识标题", candidate.title, MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH),
+    sourceKind: normalizeKnowledgeImportSourceKind(candidate.sourceKind),
+    sourceName: assertSafeKnowledgeImportText("来源名称", candidate.sourceName, MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH),
+    body: assertSafeKnowledgeImportBody(candidate.body),
+    sapObjects: normalizeKnowledgeImportSapObjects(candidate.sapObjects)
+  };
+}
+
 export function assertNoSensitiveKnowledgeContent(content: string): void {
   const patterns = [
     /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i,
@@ -324,6 +449,14 @@ export function assertNoSensitiveKnowledgeContent(content: string): void {
     /x-csrf-token/i,
     /sap_sessionid/i,
     /mysapsso2/i,
+    /app[_-]?secret\s*[:=]/i,
+    /refresh[_-]?token\s*[:=]/i,
+    /device[_-]?code\s*[:=]/i,
+    /verification[_-]?uri\s*[:=]/i,
+    /document[_-]?id\s*[:=]/i,
+    /https?:\/\/[^\s]*(feishu|larksuite|larkoffice|open\.feishu)/i,
+    /(^|[^a-z0-9_-])[tu]-[a-z0-9_-]{20,}($|[^a-z0-9_-])/i,
+    /(^|[^a-z0-9_-])[a-z0-9_-]{48,}($|[^a-z0-9_-])/i,
     /tenant[_-]?access[_-]?token/i,
     /user[_-]?access[_-]?token/i,
     /api[_-]?key\s*[:=]/i,
@@ -340,6 +473,81 @@ export function assertNoSensitiveKnowledgeContent(content: string): void {
   if (patterns.some((pattern) => pattern.test(content))) {
     throw new Error("知识内容包含疑似密钥、授权信息或大段源码，已阻止入库。");
   }
+}
+
+export interface ImportedKnowledgeCandidate {
+  job: KnowledgeDocumentJob;
+  item: KnowledgeItem;
+  artifact: CaseGeneratedFile;
+}
+
+function importedSourceLabel(sourceKind: KnowledgeImportSourceKind): string {
+  if (sourceKind === "qa-text") return "QA 文本";
+  if (sourceKind === "markdown-note") return "Markdown 笔记";
+  return "本地文本";
+}
+
+export function createImportedKnowledgeCandidate(projectId: string, input: KnowledgeImportLocalTextInput, sourceFilePath: string): ImportedKnowledgeCandidate {
+  const createdAt = nowIso();
+  const suffix = `${createdAt.replace(/[^0-9]/g, "")}-${Math.random().toString(16).slice(2, 8)}`;
+  const sourceLabel = importedSourceLabel(input.sourceKind);
+  const itemType: KnowledgeItemType = input.sourceKind === "qa-text" ? "qa" : "doc";
+  const sourceType: KnowledgeSourceType = input.sourceKind === "qa-text" ? "qa-import" : "document-import";
+  const summary = `${sourceLabel}「${input.sourceName}」导入为待确认知识候选，仍需人工复核后才能正式入库。`;
+  const job: KnowledgeDocumentJob = {
+    id: `docjob-import-${suffix}`,
+    projectId,
+    title: input.title,
+    source: input.sourceKind === "qa-text" ? "qa-import" : "local-text",
+    status: "needs-review",
+    detail: `${sourceLabel}已通过本地导入防火墙，等待人工确认；未读取文件路径，未连接飞书，未自动入库。`,
+    createdAt,
+    updatedAt: createdAt
+  };
+  const item: KnowledgeItem = {
+    id: `knowledge-import-${suffix}`,
+    projectId,
+    title: input.title,
+    type: itemType,
+    status: "pending",
+    sourceType,
+    sourceCaseId: null,
+    sourceFilePath,
+    sapObjects: input.sapObjects ?? [],
+    summary,
+    content: input.body,
+    confidence: null,
+    effectiveFrom: null,
+    effectiveTo: null,
+    reviewer: null,
+    conflictWithIds: [],
+    createdAt,
+    updatedAt: createdAt,
+    publishedAt: null,
+    timeline: [event("created", `${sourceLabel}通过导入防火墙生成待确认知识。`, createdAt)]
+  };
+  const artifact: CaseGeneratedFile = {
+    relativePath: sourceFilePath,
+    purpose: "candidate_knowledge",
+    content: [
+      `# ${input.title}`,
+      "",
+      "安全标记：phase16-document-ingestion-firewall",
+      "",
+      `来源类型：${sourceLabel}`,
+      `来源名称：${input.sourceName}`,
+      `知识项 ID：${item.id}`,
+      `文档任务 ID：${job.id}`,
+      "",
+      "状态：待人工确认，不是正式知识。",
+      "",
+      "## 待确认内容",
+      "",
+      input.body,
+      ""
+    ].join("\n")
+  };
+  return { job, item, artifact };
 }
 
 export function createKnowledgeCandidateFromCase(project: ProjectSummary, caseItem: CaseSummary, file: CaseGeneratedFile): KnowledgeItem {
@@ -422,6 +630,11 @@ function updateKnowledgeItem(base: ProjectKnowledgeBase, itemId: string, updater
   };
 }
 
+export function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
+  return (item.sourceType === "document-import" || item.sourceType === "qa-import") &&
+    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-");
+}
+
 export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: KnowledgeItemActionInput): ProjectKnowledgeBase {
   return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
     if (item.status === "conflicted") {
@@ -435,6 +648,9 @@ export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledg
     }
     if (item.conflictWithIds.length > 0) {
       throw new Error("该知识仍关联冲突项，不能直接确认入库。请先处理冲突关系。");
+    }
+    if (isPhase16LocalTextImportCandidate(item)) {
+      throw new Error("Phase 16 本地文本导入只生成待确认候选，暂不允许直接正式入库。");
     }
     assertNoSensitiveKnowledgeContent(item.content);
     return {

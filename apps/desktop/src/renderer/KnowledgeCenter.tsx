@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, CheckCircle2, FileText, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeDocumentJobStatus, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -20,9 +20,15 @@ const statusTone: Record<KnowledgeItemStatus, "neutral" | "green" | "orange" | "
 
 const jobLabels: Record<KnowledgeDocumentJobStatus, string> = {
   queued: "排队中",
-  parsed: "已解析，待复核",
+  parsed: "已整理，待复核",
   "needs-review": "需人工确认",
   blocked: "暂不可处理"
+};
+
+const sourceKindLabels: Record<KnowledgeImportLocalTextInput["sourceKind"], string> = {
+  "local-text": "本地文本",
+  "markdown-note": "Markdown 笔记",
+  "qa-text": "QA 文本"
 };
 
 const typeLabels: Record<KnowledgeItem["type"], string> = {
@@ -44,6 +50,11 @@ function statusPill(status: KnowledgeItemStatus) {
   return <span className={`status-pill status-${statusTone[status]}`}>{statusLabels[status]}</span>;
 }
 
+function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
+  return (item.sourceType === "document-import" || item.sourceType === "qa-import") &&
+    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-");
+}
+
 function formatTime(value: string | null): string {
   if (!value) return "无";
   const date = new Date(value);
@@ -55,17 +66,24 @@ interface KnowledgeCenterProps {
   project?: ProjectSummary;
   notice: string;
   onBack: () => void;
+  onImport: (input: KnowledgeImportLocalTextInput) => Promise<boolean>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, notice, onBack, onImport, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
   const [query, setQuery] = useState("");
   const [busyItemId, setBusyItemId] = useState("");
+  const [importTitle, setImportTitle] = useState("");
+  const [importSourceKind, setImportSourceKind] = useState<KnowledgeImportLocalTextInput["sourceKind"]>("local-text");
+  const [importSourceName, setImportSourceName] = useState("本地粘贴文本");
+  const [importSapObjects, setImportSapObjects] = useState("");
+  const [importBody, setImportBody] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
 
   useEffect(() => {
     let ignore = false;
@@ -111,6 +129,31 @@ function KnowledgeCenter({ project, notice, onBack, onPublish, onMarkConflict, o
       }
     } finally {
       setBusyItemId("");
+    }
+  }
+
+  async function submitImport(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!project || importBusy) return;
+    setImportBusy(true);
+    try {
+      const sapObjects = importSapObjects.split(/[\s,，;；]+/).map((item) => item.trim()).filter(Boolean);
+      const ok = await onImport({
+        projectId: project.id,
+        title: importTitle,
+        sourceKind: importSourceKind,
+        sourceName: importSourceName,
+        body: importBody,
+        sapObjects
+      });
+      if (ok) {
+        setImportTitle("");
+        setImportBody("");
+        setImportSapObjects("");
+        setSelectedStatus("pending");
+      }
+    } finally {
+      setImportBusy(false);
     }
   }
 
@@ -166,15 +209,46 @@ function KnowledgeCenter({ project, notice, onBack, onPublish, onMarkConflict, o
         </section>
 
         <section className="knowledge-actions">
-          <button disabled title="后续阶段启用，现在不解析真实文件"><FileText size={16} />上传文档（后续）</button>
-          <button disabled title="后续阶段启用，现在不导入真实 QA 表"><Archive size={16} />导入 QA 表（后续）</button>
-          <button disabled title="后续阶段启用，现在不调用飞书"><FileText size={16} />从飞书同步（后续）</button>
+          <button disabled title="真实文件读取后续再启用"><FileText size={16} />文件读取关闭</button>
+          <button disabled title="当前只支持粘贴已脱敏 QA 文本，不读取表格文件"><Archive size={16} />QA 表读取关闭</button>
+          <button disabled title="当前不调用飞书"><FileText size={16} />飞书同步关闭</button>
           <label>
             <Search size={16} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索问题、SAP对象、文档、逻辑图、QA" />
           </label>
         </section>
-        <p className="knowledge-action-note">当前阶段只做本地知识审核：不读取上传文件、不导入真实 QA、不连接飞书。</p>
+        <p className="knowledge-action-note">当前阶段只粘贴已脱敏的本地文本：不会读取文件路径，不会连接飞书，不会自动正式入库。</p>
+
+        <form className="knowledge-import-form" onSubmit={submitImport}>
+          <div className="knowledge-import-fields">
+            <label>
+              <span>知识标题</span>
+              <input value={importTitle} onChange={(event) => setImportTitle(event.target.value)} placeholder="例如：采购订单审批口径" />
+            </label>
+            <label>
+              <span>来源类型</span>
+              <select value={importSourceKind} onChange={(event) => setImportSourceKind(event.target.value as KnowledgeImportLocalTextInput["sourceKind"])}>
+                {Object.entries(sourceKindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>来源名称</span>
+              <input value={importSourceName} onChange={(event) => setImportSourceName(event.target.value)} placeholder="例如：会议纪要摘录" />
+            </label>
+            <label>
+              <span>SAP 对象</span>
+              <input value={importSapObjects} onChange={(event) => setImportSapObjects(event.target.value)} placeholder="可选，用空格分隔" />
+            </label>
+          </div>
+          <label className="knowledge-import-body">
+            <span>待确认文本</span>
+            <textarea value={importBody} onChange={(event) => setImportBody(event.target.value)} placeholder="粘贴已脱敏的业务结论、QA 文本或 Markdown 摘录" />
+          </label>
+          <div className="knowledge-import-footer">
+            <span>当前只生成待确认候选，不会直接进入正式知识库。</span>
+            <button disabled={importBusy || !importTitle.trim() || !importSourceName.trim() || !importBody.trim()} type="submit"><ShieldCheck size={16} />生成候选</button>
+          </div>
+        </form>
 
         <section className="knowledge-grid">
           <aside className="knowledge-status-list">
@@ -201,8 +275,8 @@ function KnowledgeCenter({ project, notice, onBack, onPublish, onMarkConflict, o
         </section>
 
         <section className="knowledge-parser-queue">
-          <h2>后续解析入口</h2>
-          <p>这里先显示本地待处理队列，不代表已经读取或解析真实文档。</p>
+          <h2>候选处理队列</h2>
+          <p>这里只显示本地待确认候选，不代表已经读取真实文件或连接飞书。</p>
           <div>
             {view.documentJobs.map((job) => (
               <article key={job.id}>
@@ -245,7 +319,7 @@ function KnowledgeCenter({ project, notice, onBack, onPublish, onMarkConflict, o
             ) : null}
 
             <section className="knowledge-detail-actions">
-              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} title={selectedItem.status === "conflicted" ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
+              <button disabled={busyItemId === selectedItem.id || isPhase16LocalTextImportCandidate(selectedItem) || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} title={isPhase16LocalTextImportCandidate(selectedItem) ? "Phase 16 本地文本导入只生成候选，暂不直接入库" : selectedItem.status === "conflicted" ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
             </section>

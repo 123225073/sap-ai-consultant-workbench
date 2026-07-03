@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, ModelProviderVerificationReport, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -239,7 +239,7 @@ function App() {
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
-  const [notice, setNotice] = useState("Phase 15：真实本地项目和案件已启用；SAP 仍默认只读，飞书仍只生成本地草稿。");
+  const [notice, setNotice] = useState("Phase 16：本地文本可导入为待确认知识候选；不会读取任意文件、不会连接飞书、不会自动入库。");
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const bridge = window.workbench;
@@ -613,6 +613,22 @@ function App() {
     }
   }
 
+  async function importKnowledgeLocalText(input: KnowledgeImportLocalTextInput): Promise<boolean> {
+    if (!bridge) {
+      setNotice("请在桌面应用中导入本地知识候选。");
+      return false;
+    }
+    const response = await bridge.importKnowledgeLocalText(input);
+    if (response.ok) {
+      setState(response.data.state);
+      setNotice("知识候选已创建，仍需人工确认后才会正式入库。");
+      return true;
+    } else {
+      setNotice(response.error);
+      return false;
+    }
+  }
+
   async function markKnowledgeConflicted(projectId: string, input: KnowledgeItemActionInput) {
     if (!bridge) {
       setNotice("请在桌面应用中标记知识冲突。");
@@ -785,6 +801,7 @@ function App() {
             project={project}
             notice={notice}
             onBack={() => setActiveView("case")}
+            onImport={importKnowledgeLocalText}
             onPublish={publishKnowledge}
             onMarkConflict={markKnowledgeConflicted}
             onExpire={expireKnowledge}

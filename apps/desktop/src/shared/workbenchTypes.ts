@@ -15,7 +15,8 @@ export type KnowledgeItemType = "qa" | "doc" | "sap_object" | "case_note" | "tim
 export type KnowledgeItemStatus = "draft" | "pending" | "published" | "conflicted" | "expired";
 export type KnowledgeSourceType = "case-candidate" | "document-import" | "qa-import" | "manual";
 export type KnowledgeDocumentJobStatus = "queued" | "parsed" | "needs-review" | "blocked";
-export type KnowledgeDocumentJobSource = "upload" | "qa-import";
+export type KnowledgeDocumentJobSource = "upload" | "local-text" | "qa-import";
+export type KnowledgeImportSourceKind = "local-text" | "markdown-note" | "qa-text";
 export type AdtVerificationStepId = "config" | "status" | "t000";
 export type AdtVerificationStepStatus = "passed" | "failed" | "skipped";
 export type AdtVerificationErrorCode =
@@ -430,6 +431,22 @@ export interface ProjectKnowledgeView {
 export interface KnowledgeItemActionInput {
   itemId: string;
   note?: string;
+}
+
+export interface KnowledgeImportLocalTextInput {
+  projectId: string;
+  title: string;
+  sourceKind: KnowledgeImportSourceKind;
+  sourceName: string;
+  body: string;
+  sapObjects?: string[];
+}
+
+export interface KnowledgeImportLocalTextResult {
+  state: WorkbenchState;
+  documentJobId: string;
+  knowledgeItemId: string;
+  generatedFiles: string[];
 }
 
 export interface CreateLocalProjectInput {
