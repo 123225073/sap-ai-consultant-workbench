@@ -122,9 +122,9 @@ Blocked:
 - [x] Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\security-preflight.ps1`.
 - [x] Run `git diff --check`.
 - [x] Update the adversarial review with actual evidence.
-- [ ] Commit as `feat: add Feishu CLI safe draft handoff`.
-- [ ] Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\security-preflight.ps1 -RequireClean`.
-- [ ] Push `codex/phase-14-feishu-cli-safe-draft-handoff`.
+- [x] Commit as `feat: add Feishu CLI safe draft handoff`.
+- [x] Run `powershell -NoProfile -ExecutionPolicy Bypass -File scripts\security-preflight.ps1 -RequireClean`.
+- [x] Push `codex/phase-14-feishu-cli-safe-draft-handoff`.
 
 ## Acceptance Criteria
 
