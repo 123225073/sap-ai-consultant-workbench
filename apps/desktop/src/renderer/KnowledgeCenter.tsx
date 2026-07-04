@@ -83,12 +83,32 @@ function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
   );
 }
 
+function knowledgeSourceLabel(item: KnowledgeItem): string {
+  const sourceState = item.status === "published" ? "知识" : item.status === "expired" ? "历史" : "候选";
+  if (isCaseGeneratedKnowledgeCandidate(item)) return item.status === "published" ? "案件经验知识" : `案件生成${sourceState}`;
+  if (item.sourceType === "document-import") return `文档导入${sourceState}`;
+  if (item.sourceType === "qa-import") return `QA 导入${sourceState}`;
+  return sourceTypeLabels[item.sourceType];
+}
+
+function knowledgeReuseLabel(item: KnowledgeItem, hasReusableReview: boolean): string {
+  if (item.status === "published" && hasReusableReview) return "发布后可复用";
+  if (item.status === "pending") return "审核后才可入库";
+  if (item.status === "conflicted") return "需先处理冲突";
+  if (item.status === "expired") return "已失效保留历史";
+  return "人工维护";
+}
+
 function hasCompleteReview(item: KnowledgeItem): boolean {
   return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewedContentHash && item.reviewChecklist);
 }
 
 function hasReusableReviewRecord(item: KnowledgeItem): boolean {
-  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewChecklist);
+  return hasCompleteReview(item) &&
+    item.reviewNote !== null &&
+    item.reviewChecklist !== null &&
+    item.reviewNote.trim().length >= 8 &&
+    reviewChecklistComplete(item.reviewChecklist);
 }
 
 function reviewChecklistComplete(checklist: KnowledgeReviewInput["checklist"]): boolean {
@@ -164,7 +184,15 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     const normalized = query.trim().toLowerCase();
     return (view?.items ?? []).filter((item) => {
       const statusMatched = selectedStatus === "all" || item.status === selectedStatus;
-      const textMatched = !normalized || [item.title, item.summary, item.content, item.type, item.sourceFilePath ?? "", ...item.sapObjects].join(" ").toLowerCase().includes(normalized);
+      const textMatched = !normalized || [
+        item.title,
+        item.summary,
+        item.content,
+        item.type,
+        knowledgeSourceLabel(item),
+        knowledgeReuseLabel(item, hasReusableReviewRecord(item)),
+        ...item.sapObjects
+      ].join(" ").toLowerCase().includes(normalized);
       return statusMatched && textMatched;
     });
   }, [view, selectedStatus, query]);
@@ -438,8 +466,8 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
                   <strong>{item.title}</strong>
                   {statusPill(item.status)}
                 </div>
-                <span>{item.sourceCaseId ? `案件：${item.sourceCaseId}` : sourceTypeLabels[item.sourceType]} · {item.sapObjects.length ? `对象：${item.sapObjects.join("、")}` : "未绑定对象"}</span>
-                <small>{item.confidence !== null ? `置信度 ${Math.round(item.confidence * 100)}%` : item.status === "pending" ? "待人工判断" : "人工维护"}</small>
+                <span>{knowledgeSourceLabel(item)} · {item.sapObjects.length ? `对象：${item.sapObjects.join("、")}` : "未绑定对象"}</span>
+                <small>{knowledgeReuseLabel(item, hasReusableReviewRecord(item))}{item.confidence !== null ? ` · 置信度 ${Math.round(item.confidence * 100)}%` : ""}</small>
               </button>
             )) : <div className="empty-state">没有匹配的知识项。</div>}
           </div>
@@ -471,13 +499,21 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
               <dl>
                 <div><dt>项目</dt><dd>{project.name}</dd></div>
                 <div><dt>类型</dt><dd>{typeLabels[selectedItem.type]}</dd></div>
-                <div><dt>来源</dt><dd>{selectedItem.sourceFilePath ?? sourceTypeLabels[selectedItem.sourceType]}</dd></div>
+                <div><dt>来源</dt><dd>{knowledgeSourceLabel(selectedItem)}</dd></div>
                 <div><dt>SAP对象</dt><dd>{selectedItem.sapObjects.length ? selectedItem.sapObjects.join("、") : "未绑定"}</dd></div>
                 <div><dt>生效时间</dt><dd>{selectedItem.effectiveFrom ?? "待确认"}</dd></div>
                 <div><dt>更新时间</dt><dd>{formatTime(selectedItem.updatedAt)}</dd></div>
                 <div><dt>审核状态</dt><dd>{selectedHasReview ? `${selectedItem.reviewer} · ${formatTime(selectedItem.reviewedAt)}` : "未审核"}</dd></div>
+                <div><dt>复用状态</dt><dd>{knowledgeReuseLabel(selectedItem, selectedHasReusableReview)}</dd></div>
               </dl>
             </section>
+
+            {selectedCaseGeneratedCandidate ? (
+              <section className="knowledge-source-note">
+                <ShieldAlert size={16} />
+                <span>候选来源：当前案件的待确认知识文件。必须先人工审核，确认无敏感信息和适用范围后，才能发布为正式知识。</span>
+              </section>
+            ) : null}
 
             <section>
               <h3>内容预览</h3>

@@ -127,11 +127,15 @@ assert(!/probe-password|secure-store|Authorization|Cookie|SAP_SESSIONID|MYSAPSSO
 pass("metadataNoRawSecret");
 
 const searchResults = await store.search("UI2");
-assert(searchResults.some((item) => item.sourcePath?.startsWith("outputs/")), "safe output evidence summary was not searchable");
-assert(searchResults.some((item) => item.sourcePath?.startsWith("outputs/") && item.title.includes("sap-object-evidence-summary")), "safe output evidence summary was not searchable as a file summary");
+const safeOutputResults = searchResults.filter((item) => item.id.startsWith("file-summary-"));
+assert(safeOutputResults.length > 0, "safe output evidence summary was not searchable");
+assert(safeOutputResults.some((item) => item.title.includes("sap-object-evidence-summary")), "safe output evidence summary was not searchable as a file summary");
+assert(searchResults.every((item) => !item.sourcePath), "search results must not expose file paths");
 const fullEvidenceResults = await store.search("read-only demo evidence");
-assert(fullEvidenceResults.every((item) => !item.sourcePath || item.sourcePath.startsWith("outputs/")), "full evidence text entered search results");
-assert(!fullEvidenceResults.some((item) => item.sourcePath?.startsWith("evidence/") || item.sourcePath?.startsWith("snapshots/") || item.sourcePath?.startsWith("technical/")), "non-output evidence file entered search results");
+assert(fullEvidenceResults.every((item) => !item.sourcePath), "full evidence text search leaked file paths");
+assert(!JSON.stringify(fullEvidenceResults).includes("evidence/"), "non-output evidence path entered search results");
+assert(!JSON.stringify(fullEvidenceResults).includes("snapshots/"), "snapshot path entered search results");
+assert(!JSON.stringify(fullEvidenceResults).includes("technical/"), "technical path entered search results");
 pass("safeSummaryIndexedOnly");
 
 const context = buildSafeModelDraftContext({
@@ -143,7 +147,7 @@ const context = buildSafeModelDraftContext({
   sapVersion: "S4",
   standardsSummary: "Project standards summary only.",
   knowledgeReferences: [],
-  safeOutputSummaries: searchResults.filter((item) => item.sourcePath?.startsWith("outputs/")).map((item) => ({
+  safeOutputSummaries: safeOutputResults.map((item) => ({
     displayName: item.title,
     fileType: "md",
     snippet: item.snippet

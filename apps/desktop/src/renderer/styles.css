@@ -1006,6 +1006,40 @@ button {
   cursor: not-allowed;
 }
 
+.file-purpose-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -6px 0 12px;
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.file-purpose-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 22px;
+}
+
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+}
+
+.legend-green {
+  background: #16a34a;
+}
+
+.legend-orange {
+  background: #f97316;
+}
+
+.legend-blue {
+  background: #2563eb;
+}
+
 .file-tree {
   overflow: auto;
   display: grid;
@@ -1050,6 +1084,33 @@ button {
   color: #6b7280;
   font-style: normal;
   font-size: 12px;
+}
+
+.file-purpose {
+  justify-self: end;
+  border-radius: 6px;
+  padding: 2px 7px;
+  white-space: nowrap;
+}
+
+.file-purpose-green {
+  color: #16834a;
+  background: #e8f5ef;
+}
+
+.file-purpose-orange {
+  color: #f97316;
+  background: #fff3e7;
+}
+
+.file-purpose-blue {
+  color: #2563eb;
+  background: #eaf2ff;
+}
+
+.file-purpose-neutral {
+  color: #4b5563;
+  background: #eef2f7;
 }
 
 .file-excel svg {
@@ -2204,6 +2265,19 @@ button {
   gap: 8px;
   align-items: center;
   font-size: 13px;
+}
+
+.knowledge-source-note {
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #9a3412;
+  background: #fff7ed;
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .knowledge-edit-form {

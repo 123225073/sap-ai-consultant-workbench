@@ -82,24 +82,37 @@ function searchResultLabel(result: SearchResult): string {
   return result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件";
 }
 
-function searchResultPreviewPath(result: SearchResult, state: WorkbenchState | null): string | null {
-  if (
-    result.type !== "file" ||
-    !result.sourcePath ||
-    result.projectId !== state?.activeProjectId ||
-    result.caseId !== state?.activeCaseId
-  ) return null;
-  return result.sourcePath;
-}
-
 function fileIcon(node: CaseFileNode) {
   if (node.kind === "directory") return Folder;
   if (node.fileType === "xlsx" || node.fileType === "xls" || node.fileType === "csv" || node.name.includes("核对") || node.name.includes("清单")) return FileSpreadsheet;
   return File;
 }
 
+const PHASE25_CASE_FILE_KNOWLEDGE_STATUS_MARKER = "phase25-case-file-knowledge-status-clarity";
+
+function caseFilePurposeLabel(node: CaseFileNode): string {
+  if (node.purpose === "output") return "交付物";
+  if (node.purpose === "candidate_knowledge") return "待确认知识";
+  if (node.purpose === "technical" || node.purpose === "evidence" || node.purpose === "snapshot") return "技术证据/过程材料";
+  if (node.purpose === "summary" || node.purpose === "conversation") return "案件记录";
+  return node.kind === "directory" ? "文件夹" : "文件";
+}
+
+function caseFilePurposeTone(node: CaseFileNode): "blue" | "orange" | "green" | "neutral" {
+  if (node.purpose === "candidate_knowledge") return "orange";
+  if (node.purpose === "output") return "green";
+  if (node.purpose === "technical" || node.purpose === "evidence" || node.purpose === "snapshot") return "blue";
+  return "neutral";
+}
+
 function fileAnchorId(relativePath: string): string {
   return `file-${encodeURIComponent(relativePath)}`;
+}
+
+function filePreviewSubtitle(filePreview: CaseFilePreview | null, selectedPreviewNode: CaseFileNode | null): string {
+  if (selectedPreviewNode) return `当前案件文件 · ${caseFilePurposeLabel(selectedPreviewNode)}`;
+  if (filePreview) return "当前案件文件 · 安全文本预览";
+  return "点击上方文件查看安全文本预览";
 }
 
 function flattenFiles(nodes: CaseFileNode[]): CaseFileNode[] {
@@ -111,7 +124,10 @@ function filterFileNodes(nodes: CaseFileNode[], query: string): CaseFileNode[] {
   if (!normalized) return nodes;
   return nodes.flatMap((node) => {
     const children = node.children ? filterFileNodes(node.children, query) : [];
-    const matched = node.name.toLowerCase().includes(normalized) || node.relativePath.toLowerCase().includes(normalized);
+    const matched = [node.name, node.displayName, caseFilePurposeLabel(node), node.purpose]
+      .join(" ")
+      .toLowerCase()
+      .includes(normalized);
     if (!matched && children.length === 0) return [];
     return [{ ...node, children }];
   });
@@ -200,8 +216,10 @@ function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFi
         const rowContent = (
           <>
             <Icon size={18} />
-            <span title={node.relativePath}>{node.name}</span>
-            <em>{node.kind === "directory" ? "" : `${formatSize(node.sizeBytes)} · 预览`}</em>
+            <span title={caseFilePurposeLabel(node)}>{node.name}</span>
+            <em className={`file-purpose file-purpose-${caseFilePurposeTone(node)}`}>
+              {node.kind === "directory" ? caseFilePurposeLabel(node) : `${caseFilePurposeLabel(node)} · ${formatSize(node.sizeBytes)}`}
+            </em>
           </>
         );
         return (
@@ -522,7 +540,7 @@ function App() {
         setState(response.data.state);
         setSapEvidenceName("");
         setSapEvidenceFunctionGroup("");
-        setNotice(`SAP read-only evidence attached: ${response.data.summary.objectType} ${response.data.summary.objectName}. Files: ${response.data.generatedFiles.join(", ")}`);
+        setNotice(`已补充 SAP 只读证据：${response.data.summary.objectType} ${response.data.summary.objectName}；新文件可在右侧案件文件面板查看。`);
       } else {
         setNotice(response.error);
       }
@@ -541,7 +559,7 @@ function App() {
       const response = await bridge.prepareFeishuHandoff();
       if (response.ok) {
         setState(response.data.state);
-        setNotice(`Local Feishu draft prepared. Cloud document creation remains blocked. Local-only status: ${response.data.publishStatus}. Files: ${response.data.generatedFiles.join(", ")}`);
+        setNotice(`飞书本地草稿已生成，云端创建仍关闭；本次生成 ${response.data.generatedFiles.length} 个本地草稿文件，可在右侧案件文件面板查看。`);
       } else {
         setNotice(response.error);
       }
@@ -572,13 +590,6 @@ function App() {
       setFilePreviewError(response.error);
       setNotice(response.error);
     }
-  }
-
-  async function previewSearchResult(result: SearchResult) {
-    const previewPath = searchResultPreviewPath(result, state);
-    if (!previewPath) return;
-    const node = flatFiles.find((file) => file.kind === "file" && file.relativePath === previewPath);
-    if (node) await previewCaseFile(node);
   }
 
   async function saveProjectConfig(projectId: string, config: ProjectSummary["config"]) {
@@ -873,26 +884,14 @@ function App() {
           {searchResults.length > 0 ? (
             <section className="search-results">
               <strong>搜索结果 · 含本地案件安全输出摘要</strong>
-              {searchResults.map((result) => {
-                const canPreview = Boolean(searchResultPreviewPath(result, state));
-                const content = (
-                  <>
-                    <span>{searchResultLabel(result)}</span>
-                    <b>{result.title}</b>
-                    <small>{result.location}</small>
-                    <p>{result.snippet}</p>
-                  </>
-                );
-                return canPreview ? (
-                  <button className="search-result search-result-button" type="button" onClick={() => void previewSearchResult(result)} title="在右侧打开当前案件只读预览" key={result.id}>
-                    {content}
-                  </button>
-                ) : (
-                  <div className="search-result" key={result.id}>
-                    {content}
-                  </div>
-                );
-              })}
+              {searchResults.map((result) => (
+                <div className="search-result" key={result.id}>
+                  <span>{searchResultLabel(result)}</span>
+                  <b>{result.title}</b>
+                  <small>{result.location}</small>
+                  <p>{result.snippet}</p>
+                </div>
+              ))}
             </section>
           ) : null}
 
@@ -1166,10 +1165,15 @@ function App() {
             <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索当前案件文件名" />
           </label>
           <div className="file-panel-actions">
-            <button type="button" onClick={() => void prepareFeishuHandoff()} disabled={feishuHandoffBusy || outputFileCount === 0} title="Generate local Feishu-ready draft files from current case outputs. This does not publish or update cloud documents.">
+            <button type="button" onClick={() => void prepareFeishuHandoff()} disabled={feishuHandoffBusy || outputFileCount === 0} title="只从当前案件交付物生成飞书本地草稿，不发布或更新云端文档。">
               <FileText size={15} />
-              {feishuHandoffBusy ? "Preparing local draft" : "Prepare local Feishu draft"}
+              {feishuHandoffBusy ? "正在生成本地草稿" : "生成飞书本地草稿"}
             </button>
+          </div>
+          <div className="file-purpose-legend" aria-label="当前案件文件说明" data-phase={PHASE25_CASE_FILE_KNOWLEDGE_STATUS_MARKER}>
+            <span><b className="legend-dot legend-green" />交付物</span>
+            <span><b className="legend-dot legend-orange" />待确认知识</span>
+            <span><b className="legend-dot legend-blue" />技术证据/过程材料</span>
           </div>
           <div className="file-tree">
             {state?.activeCaseFiles.length ? (
@@ -1180,7 +1184,7 @@ function App() {
             <div className="file-preview-heading">
               <div>
                 <strong>{filePreview?.displayName ?? selectedPreviewNode?.displayName ?? "本地只读预览"}</strong>
-                <span>{filePreview?.relativePath ?? selectedPreviewNode?.relativePath ?? "点击上方文件查看安全文本预览"}</span>
+                <span>{filePreviewSubtitle(filePreview, selectedPreviewNode)}</span>
               </div>
               <Eye size={16} />
             </div>

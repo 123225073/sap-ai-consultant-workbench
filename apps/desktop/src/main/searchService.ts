@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CaseFileNode, KnowledgeItemStatus, KnowledgeItemType, KnowledgeSourceType, ProjectSummary, SearchResult } from "../shared/workbenchTypes";
 import type { DatabaseService, SearchDocumentRecord } from "./databaseService";
 
@@ -67,7 +68,7 @@ export function buildSearchDocuments(projects: ProjectSummary[], files: CaseFile
         title: caseItem.title,
         location: project.name,
         snippet: caseItem.currentSummary,
-        sourcePath: caseItem.folderName,
+        sourcePath: null,
         status: caseItem.status,
         content: [caseItem.title, caseItem.currentSummary, caseItem.summary].join(" "),
         updatedAt: caseItem.updatedAt
@@ -82,8 +83,7 @@ export function buildSearchDocuments(projects: ProjectSummary[], files: CaseFile
         project.name,
         statusLabel,
         sourceLabel,
-        item.sourceCaseId ? `案件 ${item.sourceCaseId}` : "",
-        item.sourceFilePath ? `来源文件 ${item.sourceFilePath}` : ""
+        item.sourceCaseId ? "案件候选来源" : ""
       ].filter(Boolean);
         records.push({
           id: `knowledge-${project.id}-${item.id}`,
@@ -93,7 +93,7 @@ export function buildSearchDocuments(projects: ProjectSummary[], files: CaseFile
         title: item.title,
         location: sourceParts.join(" · "),
         snippet: item.summary,
-        sourcePath: item.sourceFilePath,
+        sourcePath: null,
         status: statusLabel,
         content: [
           item.title,
@@ -101,7 +101,6 @@ export function buildSearchDocuments(projects: ProjectSummary[], files: CaseFile
           statusLabel,
           typeLabel,
           sourceLabel,
-          item.sourceFilePath ?? "",
           ...item.sapObjects
         ].join(" "),
         updatedAt: item.updatedAt
@@ -177,7 +176,7 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
           snippet: caseItem.currentSummary,
           projectId: project.id,
           caseId: caseItem.id,
-          sourcePath: caseItem.folderName
+          sourcePath: null
         });
       }
     }
@@ -190,8 +189,7 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
         project.name,
         statusLabel,
         sourceLabel,
-        item.sourceCaseId ? `案件 ${item.sourceCaseId}` : "",
-        item.sourceFilePath ? `来源文件 ${item.sourceFilePath}` : ""
+        item.sourceCaseId ? "案件候选来源" : ""
       ].filter(Boolean);
       const searchable = [
         item.title,
@@ -202,7 +200,6 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
         item.type,
         typeLabel,
         sourceLabel,
-        item.sourceFilePath ?? "",
         ...item.sapObjects
       ].join(" ").toLowerCase();
       if (searchable.includes(trimmed)) {
@@ -214,7 +211,7 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
           snippet: item.summary,
           projectId: project.id,
           caseId: item.sourceCaseId,
-          sourcePath: item.sourceFilePath
+          sourcePath: null
         });
       }
     }
@@ -223,15 +220,16 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
   const flatten = (nodes: CaseFileNode[]) => {
     for (const node of nodes) {
       if (isUnsafeFileSearchPath(node.relativePath)) continue;
-      if (node.name.toLowerCase().includes(trimmed) || node.relativePath.toLowerCase().includes(trimmed)) {
+      const searchable = [node.name, node.displayName, safeFilePurposeLabel(node.purpose), node.purpose].join(" ").toLowerCase();
+      if (searchable.includes(trimmed)) {
         results.push({
-          id: `file-${node.relativePath}`,
+          id: `file-${safeSearchId(node.caseId, node.relativePath)}`,
           title: node.name,
           type: "file",
-          location: node.relativePath,
-          snippet: `当前案件文件：${node.purpose}`,
+          location: `当前案件 · ${safeFilePurposeLabel(node.purpose)}`,
+          snippet: `当前案件文件：${safeFilePurposeLabel(node.purpose)}`,
           caseId: node.caseId,
-          sourcePath: node.relativePath
+          sourcePath: null
         });
       }
       if (node.children) flatten(node.children);
@@ -242,21 +240,20 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
   for (const summary of safeOutputSummaries) {
     const searchable = [
       summary.displayName,
-      summary.relativePath,
       summary.fileType,
       summary.snippet,
       summary.content
     ].join(" ").toLowerCase();
     if (searchable.includes(trimmed)) {
       results.push({
-        id: `file-summary-${summary.projectId}-${summary.caseId}-${summary.relativePath}`,
+        id: `file-summary-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
         title: summary.displayName,
         type: "file",
-        location: `${summary.projectName} · ${summary.caseTitle} · ${summary.relativePath} · 安全输出摘要`,
+        location: `${summary.projectName} · ${summary.caseTitle} · 安全输出摘要`,
         snippet: `安全输出摘要：${summary.snippet}`,
         projectId: summary.projectId,
         caseId: summary.caseId,
-        sourcePath: summary.relativePath
+        sourcePath: null
       });
     }
   }
@@ -267,14 +264,14 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
 function appendSafeOutputSummaries(records: SearchDocumentRecord[], safeOutputSummaries: SafeOutputSummaryRecord[]): void {
   for (const summary of safeOutputSummaries) {
     records.push({
-      id: `file-summary-${summary.projectId}-${summary.caseId}-${summary.relativePath}`,
+      id: `file-summary-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
       type: "file",
       projectId: summary.projectId,
       caseId: summary.caseId,
       title: summary.displayName,
-      location: `${summary.projectName} · ${summary.caseTitle} · ${summary.relativePath} · 安全输出摘要`,
+      location: `${summary.projectName} · ${summary.caseTitle} · 安全输出摘要`,
       snippet: `安全输出摘要：${summary.snippet}`,
-      sourcePath: summary.relativePath,
+      sourcePath: null,
       status: "safe-output-summary",
       content: summary.content,
       updatedAt: summary.updatedAt
@@ -287,21 +284,33 @@ function flattenFiles(nodes: CaseFileNode[], records: SearchDocumentRecord[], up
     if (isUnsafeFileSearchPath(node.relativePath)) continue;
     if (node.kind === "file") {
       records.push({
-        id: `file-${node.relativePath}`,
+        id: `file-${safeSearchId(node.caseId, node.relativePath)}`,
         type: "file",
         projectId: "active-project",
         caseId: node.caseId,
         title: node.name,
-        location: node.relativePath,
-        snippet: `当前案件文件：${node.purpose}`,
-        sourcePath: node.relativePath,
+        location: `当前案件 · ${safeFilePurposeLabel(node.purpose)}`,
+        snippet: `当前案件文件：${safeFilePurposeLabel(node.purpose)}`,
+        sourcePath: null,
         status: node.purpose,
-        content: [node.name, node.relativePath, node.purpose].join(" "),
+        content: [node.name, safeFilePurposeLabel(node.purpose), node.purpose].join(" "),
         updatedAt
       });
     }
     if (node.children) flattenFiles(node.children, records, updatedAt);
   }
+}
+
+function safeFilePurposeLabel(purpose: CaseFileNode["purpose"]): string {
+  if (purpose === "output") return "交付物";
+  if (purpose === "candidate_knowledge") return "待确认知识";
+  if (purpose === "technical" || purpose === "evidence" || purpose === "snapshot") return "技术证据/过程材料";
+  if (purpose === "summary" || purpose === "conversation") return "案件记录";
+  return "文件";
+}
+
+function safeSearchId(...parts: string[]): string {
+  return createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 16);
 }
 
 function isUnsafeFileSearchPath(relativePath: string): boolean {

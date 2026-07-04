@@ -1072,6 +1072,96 @@ foreach ($marker in $phase24ProjectionRequiredMarkers) {
 }
 Write-Host "OK phase24 candidate projection keeps knowledge pending, unreviewed, and review-gated."
 
+Write-Section "Phase 25 case file and knowledge status clarity scan"
+$phase25StatusClarityMarkers = @(
+  @{ Pattern = "phase25-case-file-knowledge-status-clarity"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "caseFilePurposeLabel"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "caseFilePurposeTone"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "filePreviewSubtitle"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "file-purpose-legend"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "knowledgeSourceLabel"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "knowledgeReuseLabel"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "isInternalCaseTreeEntry"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "INTERNAL_CASE_TREE_PATH_NAMES"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "safeFilePurposeLabel"; Path = "apps/desktop/src/main/searchService.ts" },
+  @{ Pattern = "safeSearchId"; Path = "apps/desktop/src/main/searchService.ts" },
+  @{ Pattern = "phase25-case-file-knowledge-status-clarity-probe"; Path = "scripts/phase25-case-file-knowledge-status-clarity-probe.mjs" }
+)
+foreach ($marker in $phase25StatusClarityMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase25 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 25 status clarity marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase25RendererSources = @(
+  (Get-Content -Raw "apps/desktop/src/renderer/App.tsx"),
+  (Get-Content -Raw "apps/desktop/src/renderer/KnowledgeCenter.tsx")
+)
+$phase25RendererSource = $phase25RendererSources -join "`n"
+foreach ($forbidden in @(
+  "readFile(",
+  "showOpenDialog",
+  "dialog.show",
+  "openExternal",
+  "openPath",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "loadURL",
+  "feishu-sync",
+  "knowledge-publish-auto",
+  "sap-write",
+  "transport-release",
+  "workbench:phase25"
+)) {
+  if ($phase25RendererSource.Contains($forbidden)) {
+    throw "Phase 25 renderer status clarity contains forbidden capability marker: $forbidden"
+  }
+}
+Write-Host "OK phase25 status clarity is renderer-only and adds no unsafe capability."
+
+$phase25AppSource = Get-Content -Raw "apps/desktop/src/renderer/App.tsx"
+$phase25KnowledgeSource = Get-Content -Raw "apps/desktop/src/renderer/KnowledgeCenter.tsx"
+$phase25SearchSource = Get-Content -Raw "apps/desktop/src/main/searchService.ts"
+$phase25WorkspaceSource = Get-Content -Raw "apps/desktop/src/main/workspaceStore.ts"
+foreach ($forbiddenVisiblePath in @(
+  "filePreview?.relativePath",
+  "title={node.relativePath}",
+  "selectedItem.sourceFilePath ?? sourceTypeLabels",
+  'item.sourceFilePath ?? "",',
+  '来源文件 ${item.sourceFilePath}',
+  "location: node.relativePath",
+  "node.relativePath.toLowerCase()",
+  "sourcePath: node.relativePath",
+  "sourcePath: summary.relativePath",
+  "result.sourcePath",
+  "response.data.generatedFiles.join"
+)) {
+  if (
+    $phase25AppSource.Contains($forbiddenVisiblePath) -or
+    $phase25KnowledgeSource.Contains($forbiddenVisiblePath) -or
+    $phase25SearchSource.Contains($forbiddenVisiblePath)
+  ) {
+    throw "Phase 25 must not expose internal paths in visible UI/search text: $forbiddenVisiblePath"
+  }
+}
+foreach ($requiredBoundary in @(
+  'INTERNAL_CASE_TREE_FILENAMES = new Set(["messages.json", "metadata.json", "project.json", "app-state.json"])',
+  "INTERNAL_CASE_TREE_PATH_NAMES",
+  "if (isInternalCaseTreeEntry(relativePath, kind)) continue",
+  "safeFilePurposeLabel(node.purpose)",
+  "safeSearchId(node.caseId, node.relativePath)",
+  "sourcePath: null"
+)) {
+  if (-not ($phase25WorkspaceSource.Contains($requiredBoundary) -or $phase25SearchSource.Contains($requiredBoundary))) {
+    throw "Phase 25 internal path/state boundary marker is missing: $requiredBoundary"
+  }
+}
+Write-Host "OK phase25 hides internal state files and visible internal paths."
+
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {

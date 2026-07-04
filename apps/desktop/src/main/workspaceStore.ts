@@ -557,6 +557,17 @@ function purposeFor(relativePath: string, kind: "file" | "directory"): CaseFileN
   return "other";
 }
 
+const INTERNAL_CASE_TREE_FILENAMES = new Set(["messages.json", "metadata.json", "project.json", "app-state.json"]);
+const INTERNAL_CASE_TREE_PATH_NAMES = new Set([".env", ".sap-adt-cli", ".sap-abap-cli", ".lark-cli", ".feishu", "secure-store", "secrets", "credentials"]);
+
+function isInternalCaseTreeEntry(relativePath: string, kind: "file" | "directory"): boolean {
+  const parts = relativePath.split(/[\\/]/).map((part) => part.toLowerCase()).filter(Boolean);
+  const basename = parts.at(-1) ?? path.basename(relativePath).toLowerCase();
+  if (parts.some((part) => INTERNAL_CASE_TREE_PATH_NAMES.has(part) || part.includes("credential") || part.includes("secret"))) return true;
+  if (INTERNAL_CASE_TREE_FILENAMES.has(basename)) return true;
+  return kind === "file" && (basename.includes("credential") || basename.includes("secret"));
+}
+
 function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
@@ -2528,6 +2539,7 @@ export class WorkspaceStore {
         continue;
       }
       const kind = isDirectory ? "directory" : "file";
+      if (isInternalCaseTreeEntry(relativePath, kind)) continue;
       const fileType = isDirectory ? "directory" : path.extname(entry.name).replace(".", "").toLowerCase() || "text";
       nodes.push({
         id: relativePath,
