@@ -27,12 +27,16 @@ import type {
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 12000;
 const MAX_KNOWLEDGE_ITEMS = 500;
 const PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER = "phase21-knowledge-edit-conflict-resolution";
+const PHASE24_CASE_KNOWLEDGE_CANDIDATE_PROJECTION_MARKER = "phase24-case-knowledge-candidate-projection";
 export const PHASE22_PUBLISHED_KNOWLEDGE_CASE_CONTEXT_MARKER = "phase22-published-knowledge-case-context";
 export const KNOWLEDGE_IMPORT_ALLOWED_KEYS = new Set(["projectId", "title", "sourceKind", "sourceName", "body", "sapObjects"]);
 export const KNOWLEDGE_EDIT_ALLOWED_KEYS = new Set(["itemId", "title", "summary", "content", "sapObjects", "effectiveFrom", "effectiveTo", "note"]);
 export const MAX_KNOWLEDGE_IMPORT_BODY_LENGTH = 8000;
 export const MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES = 32 * 1024;
 export const KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS = [".md", ".markdown", ".txt"] as const;
+const MAX_CASE_CANDIDATE_TITLE_LENGTH = 120;
+const MAX_CASE_CANDIDATE_SUMMARY_LENGTH = 500;
+const MAX_CASE_CANDIDATE_CONTENT_LENGTH = 1600;
 const MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH = 120;
 const MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH = 160;
 const MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS = 12;
@@ -765,22 +769,53 @@ export function createImportedKnowledgeCandidate(projectId: string, input: Knowl
   return { job, item, artifact };
 }
 
+function safeCaseCandidateLine(value: string, maxLength: number): string {
+  const normalized = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  assertNoSensitiveKnowledgeContent(normalized);
+  return normalized;
+}
+
+function safeCaseCandidateContent(value: string): string {
+  const normalized = value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, " ")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim()
+    .slice(0, MAX_CASE_CANDIDATE_CONTENT_LENGTH);
+  assertNoSensitiveKnowledgeContent(normalized);
+  return normalized;
+}
+
+function caseCandidateProjection(project: ProjectSummary, caseItem: CaseSummary, file: CaseGeneratedFile) {
+  const content = safeCaseCandidateContent(file.content);
+  const title = safeCaseCandidateLine(`${caseItem.title} 经验候选`, MAX_CASE_CANDIDATE_TITLE_LENGTH);
+  const summary = safeCaseCandidateLine(
+    `来自项目「${project.name}」案件「${caseItem.title}」和文件 ${file.relativePath} 的待确认知识候选，需人工确认后才能入库。`,
+    MAX_CASE_CANDIDATE_SUMMARY_LENGTH
+  );
+  return {
+    title,
+    summary,
+    content,
+    confidence: null
+  };
+}
+
 export function createKnowledgeCandidateFromCase(project: ProjectSummary, caseItem: CaseSummary, file: CaseGeneratedFile): KnowledgeItem {
   const createdAt = nowIso();
-  const summary = `来自案件「${caseItem.title}」的待确认知识候选。`;
+  const projection = caseCandidateProjection(project, caseItem, file);
   return {
     id: `knowledge-${caseItem.id}-${createdAt.replace(/[^0-9]/g, "")}-${Math.random().toString(16).slice(2, 8)}`,
     projectId: project.id,
-    title: `${caseItem.title} 经验候选`,
+    title: projection.title,
     type: "case_note",
     status: "pending",
     sourceType: "case-candidate",
     sourceCaseId: caseItem.id,
     sourceFilePath: file.relativePath,
     sapObjects: [],
-    summary,
-    content: summary,
-    confidence: 0.82,
+    summary: projection.summary,
+    content: projection.content,
+    confidence: projection.confidence,
     effectiveFrom: null,
     effectiveTo: null,
     reviewer: null,
@@ -820,10 +855,22 @@ export function appendKnowledgeCandidatesFromCase(project: ProjectSummary, caseI
       ...project.knowledge.items.map((item) => {
         const key = `${item.sourceCaseId ?? ""}:${item.sourceFilePath ?? ""}`;
         if (!candidateKeys.has(key) || !refreshedKeys.has(key) || item.status !== "pending") return item;
+        const sourceFile = candidateFiles.find((file) => `${caseItem.id}:${file.relativePath}` === key);
+        if (!sourceFile) return item;
+        const projection = caseCandidateProjection(project, caseItem, sourceFile);
         return {
           ...item,
+          title: projection.title,
+          summary: projection.summary,
+          content: projection.content,
+          confidence: projection.confidence,
+          reviewer: null,
+          reviewedAt: null,
+          reviewNote: null,
+          reviewedContentHash: null,
+          reviewChecklist: null,
           updatedAt,
-          timeline: [...item.timeline, event("edited", `案件 ${caseItem.id} 再次刷新待确认知识候选。`, updatedAt)]
+          timeline: [...item.timeline, event("edited", `${PHASE24_CASE_KNOWLEDGE_CANDIDATE_PROJECTION_MARKER}：案件 ${caseItem.id} 再次刷新待确认知识候选。`, updatedAt)]
         };
       })
     ].slice(0, MAX_KNOWLEDGE_ITEMS),
@@ -855,6 +902,12 @@ export function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean 
       (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
 }
 
+export function isCaseGeneratedKnowledgeCandidate(item: KnowledgeItem): boolean {
+  return item.sourceType === "case-candidate" &&
+    typeof item.sourceCaseId === "string" &&
+    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/");
+}
+
 function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
   return item.timeline.some((timelineEvent) =>
     timelineEvent.action === "edited" && timelineEvent.note.includes(PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER)
@@ -862,7 +915,7 @@ function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
 }
 
 function requiresHumanReviewBeforePublish(item: KnowledgeItem): boolean {
-  return isPhase16LocalTextImportCandidate(item) || isPhase21EditedCandidate(item);
+  return isPhase16LocalTextImportCandidate(item) || isCaseGeneratedKnowledgeCandidate(item) || isPhase21EditedCandidate(item);
 }
 
 function hasHumanReviewRecord(item: KnowledgeItem): boolean {

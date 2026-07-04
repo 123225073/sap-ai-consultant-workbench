@@ -71,6 +71,12 @@ function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
       (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
 }
 
+function isCaseGeneratedKnowledgeCandidate(item: KnowledgeItem): boolean {
+  return item.sourceType === "case-candidate" &&
+    typeof item.sourceCaseId === "string" &&
+    (item.sourceFilePath ?? "").startsWith("knowledge_candidates/");
+}
+
 function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
   return item.timeline.some((timelineEvent) =>
     timelineEvent.action === "edited" && timelineEvent.note.includes(PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER)
@@ -181,8 +187,9 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   }, [selectedItem?.id, selectedItem?.updatedAt]);
 
   const selectedImportedCandidate = selectedItem ? isPhase16LocalTextImportCandidate(selectedItem) : false;
+  const selectedCaseGeneratedCandidate = selectedItem ? isCaseGeneratedKnowledgeCandidate(selectedItem) : false;
   const selectedEditedCandidate = selectedItem ? isPhase21EditedCandidate(selectedItem) : false;
-  const selectedRequiresReviewGate = selectedImportedCandidate || selectedEditedCandidate;
+  const selectedRequiresReviewGate = selectedImportedCandidate || selectedCaseGeneratedCandidate || selectedEditedCandidate;
   const selectedHasReview = selectedItem ? hasCompleteReview(selectedItem) : false;
   const selectedHasReusableReview = selectedItem ? hasReusableReviewRecord(selectedItem) : false;
   const selectedHasBlockingConflict = selectedItem ? selectedItem.status === "conflicted" || selectedItem.conflictWithIds.length > 0 : false;
@@ -432,7 +439,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
                   {statusPill(item.status)}
                 </div>
                 <span>{item.sourceCaseId ? `案件：${item.sourceCaseId}` : sourceTypeLabels[item.sourceType]} · {item.sapObjects.length ? `对象：${item.sapObjects.join("、")}` : "未绑定对象"}</span>
-                <small>{item.confidence !== null ? `置信度 ${Math.round(item.confidence * 100)}%` : "人工维护"}</small>
+                <small>{item.confidence !== null ? `置信度 ${Math.round(item.confidence * 100)}%` : item.status === "pending" ? "待人工判断" : "人工维护"}</small>
               </button>
             )) : <div className="empty-state">没有匹配的知识项。</div>}
           </div>

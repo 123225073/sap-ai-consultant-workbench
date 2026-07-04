@@ -1006,6 +1006,72 @@ foreach ($required in @("metadataKnowledgeReferences", "renderKnowledgeReference
 }
 Write-Host "OK phase22 case artifact rendering includes references and metadata marker."
 
+Write-Section "Phase 24 case knowledge candidate projection scan"
+$phase24CaseCandidateMarkers = @(
+  @{ Pattern = "phase24-case-knowledge-candidate-projection"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "renderProblemAnalysisKnowledgeCandidate"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "isCaseGeneratedKnowledgeCandidate"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "isCaseGeneratedKnowledgeCandidate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "caseCandidateProjection"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "safeCaseCandidateContent"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "phase24-case-knowledge-candidate-projection-probe"; Path = "scripts/phase24-case-knowledge-candidate-projection-probe.mjs" }
+)
+foreach ($marker in $phase24CaseCandidateMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase24 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 24 case knowledge candidate marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase24ForbiddenCapabilities = @(
+  "readFile(",
+  "readdir",
+  "node:fs",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "openExternal",
+  "openPath",
+  "workbench:",
+  "reviewKnowledgeItemForPublish",
+  "publishKnowledgeItem",
+  'status: "published"'
+)
+$phase24Blocks = @(
+  @{ Name = "case candidate renderer"; Path = "apps/desktop/src/main/caseWorkflowService.ts"; Start = "function renderProblemAnalysisKnowledgeCandidate"; End = "function modeFilePlan" },
+  @{ Name = "case candidate projection"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "function caseCandidateProjection"; End = "export function appendKnowledgeCandidatesFromCase" }
+)
+foreach ($blockSpec in $phase24Blocks) {
+  $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
+  foreach ($forbidden in $phase24ForbiddenCapabilities) {
+    if ($block.Contains($forbidden)) {
+      throw "Phase 24 case knowledge candidate $($blockSpec.Name) contains forbidden marker: $forbidden"
+    }
+  }
+  Write-Host "OK phase24 block capability scan: $($blockSpec.Name)"
+}
+
+$phase24ProjectionRequiredMarkers = @(
+  @{ Pattern = "reviewedContentHash: null"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "reviewChecklist: null"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'status: "pending"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "sourceFilePath: file.relativePath"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "isCaseGeneratedKnowledgeCandidate(item)"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "confidence: null"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "selectedCaseGeneratedCandidate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "selectedImportedCandidate || selectedCaseGeneratedCandidate || selectedEditedCandidate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = 'item.status === "pending"'; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" }
+)
+foreach ($marker in $phase24ProjectionRequiredMarkers) {
+  $projectionHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if (-not $projectionHit) {
+    throw "Phase 24 projection/review gate marker is missing: $($marker.Pattern)"
+  }
+}
+Write-Host "OK phase24 candidate projection keeps knowledge pending, unreviewed, and review-gated."
+
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {

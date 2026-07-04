@@ -188,6 +188,36 @@ function traceabilityCsv(project: ProjectSummary, caseItem: CaseSummary, taskMod
   ]);
 }
 
+function renderProblemAnalysisKnowledgeCandidate(input: CaseWorkflowInput, project: ProjectSummary, caseItem: CaseSummary, modelDraft?: SafeModelDraftRun): string {
+  return [
+    "# 问题处理经验候选",
+    "",
+    "状态：待确认",
+    "",
+    `来源案件：${caseItem.title}`,
+    `来源项目：${project.name}`,
+    `任务模式：${TASK_MODE_LABELS[input.taskMode]}`,
+    "",
+    "## 来源摘要",
+    "",
+    `- ${safeContentSummary(input.content, "用户输入")}`,
+    `- 当前边界：${modelBoundaryText(modelDraft)}`,
+    "- 本候选不是正式知识，不能直接作为长期经验引用。",
+    "",
+    "## 候选内容",
+    "",
+    "当前案件形成了一条待整理经验：先在本地案件中沉淀问题、结论、核对清单和证据，再由用户确认是否进入正式知识库。",
+    "",
+    "## 入库前必须确认",
+    "",
+    "- 内容是否适用于当前项目。",
+    "- 是否需要补充 SAP 对象、业务范围或失效条件。",
+    "- 是否与已有知识冲突。",
+    "- 是否已经去除 SAP 源码、客户明细、密码、Token 和授权信息。",
+    ""
+  ].join("\n");
+}
+
 export function createCaseMessage(
   role: CaseMessage["role"],
   caseId: string,
@@ -307,7 +337,7 @@ function modeFilePlan(input: CaseWorkflowInput, project: ProjectSummary, caseIte
       {
         relativePath: "knowledge_candidates/问题处理经验候选.md",
         purpose: "candidate_knowledge",
-        content: `# 问题处理经验候选\n\n状态：待确认\n\n来源案件：${caseItem.title}\n\n## 候选内容\n\n当前案件形成了一条待整理经验：先在本地案件中沉淀问题、结论、核对清单和证据，再由用户确认是否进入正式知识库。\n\n## 入库前必须确认\n\n- 内容是否适用于当前项目。\n- 是否需要补充 SAP 对象、业务范围或失效条件。\n- 是否与已有知识冲突。\n`
+        content: renderProblemAnalysisKnowledgeCandidate(input, project, caseItem, modelDraft)
       },
     {
       relativePath: "evidence/本地处理证据.md",
