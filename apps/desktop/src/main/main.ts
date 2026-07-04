@@ -549,6 +549,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:create-local-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalProject(input)));
   ipcMain.handle("workbench:create-local-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalCase(input)));
   ipcMain.handle("workbench:switch-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchProject(input)));
+  ipcMain.handle("workbench:hide-project-from-sidebar", (event, input: unknown) => trustedResponse(event, appRoot, () => store.hideProjectFromSidebar(input)));
   ipcMain.handle("workbench:switch-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchCase(input)));
   ipcMain.handle("workbench:append-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendCaseMessage(store, secretStore, input)));
   ipcMain.handle("workbench:get-case-files", (event) => trustedResponse(event, appRoot, () => store.getCaseFiles()));

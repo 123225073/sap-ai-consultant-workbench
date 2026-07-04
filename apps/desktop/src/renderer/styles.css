@@ -339,6 +339,18 @@ button {
   gap: 8px;
 }
 
+.project-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.project-hide-button:disabled {
+  color: #9ca3af;
+  cursor: not-allowed;
+  background: #f3f4f6;
+}
+
 .project-switch {
   min-width: 0;
   flex: 1;

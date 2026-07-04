@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationResult, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -12,6 +12,7 @@ interface WorkbenchBridge {
   createLocalProject: (input: CreateLocalProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   createLocalCase: (input: CreateLocalCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchProject: (input: SwitchProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  hideProjectFromSidebar: (input: HideProjectFromSidebarInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchCase: (input: SwitchCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   appendMessage: (input: CaseWorkflowInput | string) => Promise<WorkbenchResponse<WorkbenchState>>;
   getCaseFiles: () => Promise<WorkbenchResponse<CaseFileNode[]>>;

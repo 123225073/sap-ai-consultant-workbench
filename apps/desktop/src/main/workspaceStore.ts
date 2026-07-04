@@ -47,7 +47,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -447,6 +447,18 @@ function parseSwitchProjectInput(input: unknown): SwitchProjectInput {
   return { projectId };
 }
 
+function parseHideProjectFromSidebarInput(input: unknown): HideProjectFromSidebarInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Hide project request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "projectId") {
+    throw new Error("Hide project request may only contain projectId.");
+  }
+  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<HideProjectFromSidebarInput>).projectId);
+  return { projectId };
+}
+
 function parseSwitchCaseInput(input: unknown): SwitchCaseInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     throw new Error("Switch case request is invalid.");
@@ -840,6 +852,15 @@ function caseReferenceFingerprint(state: StoredState): unknown {
   }));
 }
 
+function projectVisibilityFingerprint(state: StoredState): unknown {
+  const projects = Array.isArray(state.projects) ? state.projects : [];
+  return projects.map((project) => ({
+    id: project.id,
+    isVisible: project.isVisible !== false,
+    visibleOrder: typeof project.visibleOrder === "number" ? project.visibleOrder : 1
+  }));
+}
+
 export class WorkspaceStore {
   private readonly workspaceRoot: string;
   private readonly statePath: string;
@@ -974,6 +995,9 @@ export class WorkspaceStore {
       if (!project) {
         throw new Error("Target project is no longer available.");
       }
+      if (project.isVisible === false) {
+        throw new Error("Project is hidden from the sidebar.");
+      }
       const activeCase = [...project.cases].sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime())[0];
       if (!activeCase) {
         throw new Error("Target project has no local case.");
@@ -990,6 +1014,51 @@ export class WorkspaceStore {
     });
   }
 
+  async hideProjectFromSidebar(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { projectId } = parseHideProjectFromSidebarInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        throw new Error("Target project is no longer available.");
+      }
+      if (project.isVisible === false) {
+        throw new Error("Project is already hidden from the sidebar.");
+      }
+      const visibleProjects = state.projects.filter((item) => item.isVisible !== false);
+      if (visibleProjects.length <= 1) {
+        throw new Error("Keep at least one project visible in the sidebar.");
+      }
+
+      project.isVisible = false;
+      project.updatedAt = nowIso();
+
+      if (state.activeProjectId === project.id) {
+        const nextProject = state.projects
+          .filter((item) => item.id !== project.id && item.isVisible !== false)
+          .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0];
+        if (!nextProject) {
+          throw new Error("No visible project is available to switch to.");
+        }
+        const nextCase = [...nextProject.cases].sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime())[0];
+        if (!nextCase) {
+          throw new Error("Target project has no local case.");
+        }
+        nextCase.lastOpenedAt = nowIso();
+        syncProjectLocalStorage(nextProject, nextCase);
+        state.activeProjectId = nextProject.id;
+        state.activeCaseId = nextCase.id;
+        await this.writeProjectMetadata(nextProject);
+      }
+
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
   async switchCase(input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
       const { projectId, caseId } = parseSwitchCaseInput(input);
@@ -997,6 +1066,9 @@ export class WorkspaceStore {
       const project = state.projects.find((item) => item.id === projectId);
       if (!project) {
         throw new Error("Target project is no longer available.");
+      }
+      if (project.isVisible === false) {
+        throw new Error("Project is hidden from the sidebar.");
       }
       const caseItem = project.cases.find((item) => item.id === caseId);
       if (!caseItem) {
@@ -1804,7 +1876,9 @@ export class WorkspaceStore {
   }
 
   private activeProjectFromState(state: StoredState): ProjectSummary {
-    return state.projects.find((project) => project.id === state.activeProjectId) ?? state.projects[0] ?? demoProject();
+    const requestedProject = state.projects.find((project) => project.id === state.activeProjectId);
+    if (requestedProject && requestedProject.isVisible !== false) return requestedProject;
+    return state.projects.find((project) => project.isVisible !== false) ?? state.projects[0] ?? demoProject();
   }
 
   private async shouldPersistActiveProjectMetadata(project: ProjectSummary): Promise<boolean> {
@@ -1827,6 +1901,7 @@ export class WorkspaceStore {
     if (parsed.schemaVersion !== normalized.schemaVersion) return true;
     if (parsed.activeProjectId !== normalized.activeProjectId || parsed.activeCaseId !== normalized.activeCaseId) return true;
     if (JSON.stringify(caseReferenceFingerprint(parsed)) !== JSON.stringify(caseReferenceFingerprint(normalized))) return true;
+    if (JSON.stringify(projectVisibilityFingerprint(parsed)) !== JSON.stringify(projectVisibilityFingerprint(normalized))) return true;
     const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
     const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
     if (!parsedProject || !normalizedProject) return true;
@@ -1890,8 +1965,16 @@ export class WorkspaceStore {
         config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config, { preserveVerification: true })
       });
     });
+    if (!normalizedProjects.some((project) => project.isVisible !== false) && normalizedProjects[0]) {
+      normalizedProjects[0].isVisible = true;
+    }
     const requestedProjectId = safeId(state.activeProjectId, DEMO_PROJECT_ID);
-    const activeProject = normalizedProjects.find((project) => project.id === requestedProjectId) ?? normalizedProjects[0] ?? demoProject();
+    const requestedProject = normalizedProjects.find((project) => project.id === requestedProjectId);
+    const activeProject = requestedProject && requestedProject.isVisible !== false
+      ? requestedProject
+      : normalizedProjects
+        .filter((project) => project.isVisible !== false)
+        .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0] ?? requestedProject ?? normalizedProjects[0] ?? demoProject();
     const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? DEMO_CASE_ID);
     const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? demoCase();
     syncProjectLocalStorage(activeProject, activeCase);
@@ -2462,6 +2545,8 @@ export class WorkspaceStore {
       name: project.name,
       sapVersion: project.sapVersion,
       systemLabel: project.systemLabel,
+      isVisible: project.isVisible,
+      visibleOrder: project.visibleOrder,
       connectionState: project.connectionState,
       createdAt: project.createdAt,
       updatedAt: project.updatedAt,

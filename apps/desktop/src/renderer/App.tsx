@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Database,
   Eye,
+  EyeOff,
   File,
   FileSpreadsheet,
   FileText,
@@ -321,6 +322,11 @@ function App() {
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
+  const visibleProjects = useMemo(() => {
+    return (state?.projects ?? [])
+      .filter((item) => item.isVisible !== false)
+      .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"));
+  }, [state]);
   const safeDraftOptions = useMemo(() => safeDraftModelOptions(project), [project]);
   const modelProviderErrors = useMemo(() => providerErrorStates(project), [project]);
   const selectedSafeDraftModel = useMemo(() => {
@@ -469,6 +475,24 @@ function App() {
       setFilePreview(null);
       setFilePreviewError(null);
       setNotice(nextView === "config" ? "Project switched. The config center now points to that project." : "Project switched. The conversation and file panel now point to that project.");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function hideProjectFromSidebar(projectId: string) {
+    if (!bridge) {
+      setNotice("Please use the desktop app to hide projects from the sidebar.");
+      return;
+    }
+    const response = await bridge.hideProjectFromSidebar({ projectId });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setSelectedPreviewPath(null);
+      setFilePreview(null);
+      setFilePreviewError(null);
+      setNotice("Project hidden from the sidebar only. Its cases, files, config, standards, and knowledge are still saved.");
     } else {
       setNotice(response.error);
     }
@@ -921,7 +945,7 @@ function App() {
           </form>
 
           <div className="project-list">
-            {(state?.projects ?? []).map((item) => (
+            {visibleProjects.map((item) => (
               <section className={`project-card${item.id === state?.activeProjectId ? " active" : ""}`} key={item.id}>
                 <div className="project-card-title">
                   <button type="button" className="project-switch" onClick={() => void switchProject(item.id)} title="Switch to this project">
@@ -931,7 +955,19 @@ function App() {
                       <StatusPill label={item.connectionState === "local-demo" ? "本地模式" : "未验证"} tone={item.connectionState === "local-demo" ? "blue" : "orange"} />
                     </div>
                   </button>
-                  <button aria-label={`${item.name} settings`} className="icon-button" onClick={() => void switchProject(item.id, "config")} title="Switch to this project config"><Settings size={16} /></button>
+                  <div className="project-actions">
+                    <button aria-label={`${item.name} settings`} className="icon-button" onClick={() => void switchProject(item.id, "config")} title="Switch to this project config"><Settings size={16} /></button>
+                    <button
+                      aria-label={`Hide ${item.name} from sidebar`}
+                      className="icon-button project-hide-button"
+                      disabled={visibleProjects.length <= 1}
+                      onClick={() => void hideProjectFromSidebar(item.id)}
+                      title="Hide in sidebar only, without deleting project files"
+                      type="button"
+                    >
+                      <EyeOff size={16} />
+                    </button>
+                  </div>
                 </div>
                 <div className="case-list">
                   {item.cases.map((caseItem) => (

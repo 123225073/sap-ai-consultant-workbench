@@ -531,6 +531,10 @@ export interface SwitchProjectInput {
   projectId: string;
 }
 
+export interface HideProjectFromSidebarInput {
+  projectId: string;
+}
+
 export interface SwitchCaseInput {
   projectId: string;
   caseId: string;

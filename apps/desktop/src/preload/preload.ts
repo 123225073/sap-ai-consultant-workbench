@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationResult, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 contextBridge.exposeInMainWorld("workbench", {
   getAppInfo: () => ({
@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld("workbench", {
   createLocalProject: (input: CreateLocalProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-local-project", input),
   createLocalCase: (input: CreateLocalCaseInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-local-case", input),
   switchProject: (input: SwitchProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:switch-project", input),
+  hideProjectFromSidebar: (input: HideProjectFromSidebarInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:hide-project-from-sidebar", input),
   switchCase: (input: SwitchCaseInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:switch-case", input),
   appendMessage: (input: CaseWorkflowInput | string): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:append-message", input),
   getCaseFiles: (): Promise<WorkbenchResponse<CaseFileNode[]>> => ipcRenderer.invoke("workbench:get-case-files"),

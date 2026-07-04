@@ -119,6 +119,7 @@ $allowedIpc = @(
   "workbench:create-local-project",
   "workbench:create-local-case",
   "workbench:switch-project",
+  "workbench:hide-project-from-sidebar",
   "workbench:switch-case",
   "workbench:append-message",
   "workbench:get-case-files",
@@ -1161,6 +1162,59 @@ foreach ($requiredBoundary in @(
   }
 }
 Write-Host "OK phase25 hides internal state files and visible internal paths."
+
+Write-Section "Phase 26 project visible list removal scan"
+$phase26ProjectVisibilityMarkers = @(
+  @{ Pattern = "HideProjectFromSidebarInput"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "hideProjectFromSidebar"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "parseHideProjectFromSidebarInput"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "projectVisibilityFingerprint"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:hide-project-from-sidebar"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:hide-project-from-sidebar"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "hideProjectFromSidebar"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "visibleProjects"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "Project hidden from the sidebar only"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "project-actions"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "phase26-project-visible-list-removal-probe"; Path = "scripts/phase26-project-visible-list-removal-probe.mjs" }
+)
+foreach ($marker in $phase26ProjectVisibilityMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase26 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 26 project visibility marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase26Sources = @(
+  "apps/desktop/src/shared/workbenchTypes.ts",
+  "apps/desktop/src/main/workspaceStore.ts",
+  "apps/desktop/src/main/main.ts",
+  "apps/desktop/src/preload/preload.ts",
+  "apps/desktop/src/renderer/vite-env.d.ts",
+  "apps/desktop/src/renderer/App.tsx"
+)
+$phase26UnsafeHits = rg -n -- "workbench:delete-project|deleteProject|removeProjectFiles|state\.projects\s*=\s*state\.projects\.filter|\.projects\.splice|shell\.trashItem|fs\.rm|fs\.unlink|feishu-sync|sap-write|transport-release|activateObject" $phase26Sources
+if ($LASTEXITCODE -eq 0) {
+  $phase26UnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 26 project visibility must not delete projects, open external surfaces, or add SAP/Feishu write capabilities."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 26 unsafe capability scan failed."
+}
+$phase26ExternalSurfaceSources = @(
+  "apps/desktop/src/main/workspaceStore.ts",
+  "apps/desktop/src/preload/preload.ts",
+  "apps/desktop/src/renderer/vite-env.d.ts",
+  "apps/desktop/src/renderer/App.tsx"
+)
+$phase26ExternalSurfaceHits = rg -n -- "openExternal|openPath|showOpenDialog|execFile\(|spawn\(" $phase26ExternalSurfaceSources
+if ($LASTEXITCODE -eq 0) {
+  $phase26ExternalSurfaceHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 26 project visibility must not add renderer/store external surfaces or command execution."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 26 external surface scan failed."
+}
+Write-Host "OK phase26 hides projects from the sidebar without delete or external capabilities."
 
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src
