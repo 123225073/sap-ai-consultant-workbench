@@ -57,6 +57,7 @@ const safeInput = {
   caseSummary: "当前只有脱敏摘要，等待用户确认业务口径。",
   sapVersion: "S4",
   standardsSummary: "S4 默认规范模板 v1；当前项目仍沿用模板默认内容",
+  knowledgeReferences: [],
   safeOutputSummaries: [
     {
       displayName: "处理结论.md",

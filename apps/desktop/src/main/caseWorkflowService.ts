@@ -555,6 +555,7 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
         modelId: modelDraft.modelId,
         generatedAt: modelDraft.generatedAt,
         contextCharCount: modelDraft.contextAudit.contextCharCount,
+        referencedKnowledgeCount: modelDraft.contextAudit.referencedKnowledgeCount,
         safeOutputSummaryCount: modelDraft.contextAudit.safeOutputSummaryCount
       } : null,
       standards: {

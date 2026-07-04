@@ -990,6 +990,14 @@ if ($phase22ReferenceBuilderBlock.Contains("item.content")) {
 }
 Write-Host "OK phase22 safe reference builder copies summary/source metadata only and requires review."
 
+$phase22ReusableReviewBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "function hasReusableReviewRecord" -EndMarker "export function createCaseKnowledgeReference"
+foreach ($required in @("hasHumanReviewRecord(item)", "knowledgeReviewContentHash(item)")) {
+  if (-not $phase22ReusableReviewBlock.Contains($required)) {
+    throw "Reusable published knowledge must require intact human review hash: $required"
+  }
+}
+Write-Host "OK reusable published knowledge requires intact review hash."
+
 foreach ($required in @("metadataKnowledgeReferences", "renderKnowledgeReferenceSection", "phase22-published-knowledge-case-context")) {
   $caseWorkflowHit = Select-String -SimpleMatch -Pattern $required -Path "apps/desktop/src/main/caseWorkflowService.ts"
   if (-not $caseWorkflowHit) {
@@ -1118,13 +1126,19 @@ if ($LASTEXITCODE -eq 0) {
 Write-Section "Model connector boundary scan"
 $safeModelMarkers = @(
   @{ Pattern = "SAFE_MODEL_CONTEXT_ALLOWED_FIELDS"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "SafeModelKnowledgeReferenceInput"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "buildSafeModelDraftContext"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "assertNoUnsafeModelContextText"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "assertSafeModelDraftResponseText"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "safeModelDraftBoundary"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "referencedKnowledgeCount"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
+  @{ Pattern = "MAX_KNOWLEDGE_REFERENCES"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "renderSafeModelDraftFiles"; Path = "apps/desktop/src/main/safeModelCaseDraftService.ts" },
   @{ Pattern = "generateSafeDraft"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
   @{ Pattern = "prepareSafeModelDraftRequest"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "knowledgeReferences: currentCase.knowledgeReferences.map"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "referencedKnowledgeCount"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "phase23-referenced-knowledge-safe-model-context-probe"; Path = "scripts/phase23-referenced-knowledge-safe-model-context-probe.mjs" },
   @{ Pattern = "WORKBENCH_ALLOW_FAKE_MODEL_EXECUTION"; Path = "apps/desktop/src/main/main.ts" }
 )
 foreach ($marker in $safeModelMarkers) {
@@ -1136,7 +1150,7 @@ foreach ($marker in $safeModelMarkers) {
   }
 }
 
-$unsafeSafeModelServiceHits = rg -n -- "ProjectConfig|WorkbenchState|readFile|readdir|node:fs|from ['""]fs['""]|sourceContent|currentContent|item\.content|searchWorkbench|previewCurrentCaseFile" apps/desktop/src/main/safeModelCaseDraftService.ts
+$unsafeSafeModelServiceHits = rg -n -- "ProjectConfig|WorkbenchState|readFile|readdir|node:fs|from ['""]fs['""]|sourceContent|currentContent|item\.content|sourceFilePath|searchWorkbench|previewCurrentCaseFile" apps/desktop/src/main/safeModelCaseDraftService.ts
 if ($LASTEXITCODE -eq 0) {
   $unsafeSafeModelServiceHits | ForEach-Object { Write-Host $_ }
   throw "Safe model draft service must not read workspace state, files, search results, or full standards/knowledge bodies."

@@ -1035,7 +1035,7 @@ function safeReferenceText(value: string, maxLength: number): string {
 }
 
 function hasReusableReviewRecord(item: KnowledgeItem): boolean {
-  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewChecklist && hasCompleteReviewChecklist(item.reviewChecklist));
+  return hasHumanReviewRecord(item) && item.reviewedContentHash === knowledgeReviewContentHash(item);
 }
 
 export function createCaseKnowledgeReference(item: KnowledgeItem, attachedAt: string): CaseKnowledgeReference {

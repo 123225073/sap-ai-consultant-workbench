@@ -142,6 +142,7 @@ const context = buildSafeModelDraftContext({
   caseSummary: "One safe evidence summary exists.",
   sapVersion: "S4",
   standardsSummary: "Project standards summary only.",
+  knowledgeReferences: [],
   safeOutputSummaries: searchResults.filter((item) => item.sourcePath?.startsWith("outputs/")).map((item) => ({
     displayName: item.title,
     fileType: "md",

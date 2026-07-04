@@ -8,16 +8,21 @@ export const SAFE_MODEL_CONTEXT_ALLOWED_FIELDS = [
   "caseSummary",
   "sapVersion",
   "standardsSummary",
+  "knowledgeReferences",
   "safeOutputSummaries",
   "boundary"
 ] as const;
 
-export const safeModelDraftBoundary = "安全模型草稿：只使用当前输入、案件摘要、项目规范摘要和安全输出摘要；只生成本地草稿，不读取 SAP、不写 SAP、不发布飞书、不保存密钥。";
+export const safeModelDraftBoundary = "安全模型草稿：只使用当前输入、案件摘要、项目规范摘要、已引用已发布知识摘要和安全输出摘要；只生成本地草稿，不读取 SAP、不写 SAP、不发布飞书、不保存密钥。";
 
 const MAX_USER_INPUT_CHARS = 1200;
 const MAX_CASE_TITLE_CHARS = 160;
 const MAX_CASE_SUMMARY_CHARS = 500;
 const MAX_STANDARDS_SUMMARY_CHARS = 300;
+const MAX_KNOWLEDGE_REFERENCES = 5;
+const MAX_KNOWLEDGE_TITLE_CHARS = 140;
+const MAX_KNOWLEDGE_SUMMARY_CHARS = 420;
+const MAX_KNOWLEDGE_SAP_OBJECTS = 8;
 const MAX_SAFE_SUMMARIES = 5;
 const MAX_SAFE_SUMMARY_CHARS = 360;
 const MAX_MODEL_CONTEXT_CHARS = 5200;
@@ -61,6 +66,15 @@ export interface SafeModelOutputSummaryInput {
   snippet: string;
 }
 
+export interface SafeModelKnowledgeReferenceInput {
+  title: string;
+  summary: string;
+  sourceType: string;
+  sapObjects: string[];
+  publishedAt: string | null;
+  attachedAt: string;
+}
+
 export interface SafeModelDraftContextInput {
   taskMode: TaskMode;
   taskLabel: string;
@@ -69,6 +83,7 @@ export interface SafeModelDraftContextInput {
   caseSummary: string;
   sapVersion: ProjectSummary["sapVersion"];
   standardsSummary: string;
+  knowledgeReferences: SafeModelKnowledgeReferenceInput[];
   safeOutputSummaries: SafeModelOutputSummaryInput[];
 }
 
@@ -80,6 +95,7 @@ export interface SafeModelDraftMessage {
 export interface SafeModelDraftContextAudit {
   allowedFields: typeof SAFE_MODEL_CONTEXT_ALLOWED_FIELDS;
   contextCharCount: number;
+  referencedKnowledgeCount: number;
   safeOutputSummaryCount: number;
   maxContextChars: number;
   createdAt: string;
@@ -152,8 +168,23 @@ function safeSummary(item: SafeModelOutputSummaryInput): SafeModelOutputSummaryI
   };
 }
 
+function safeKnowledgeReference(item: SafeModelKnowledgeReferenceInput): SafeModelKnowledgeReferenceInput {
+  return {
+    title: safeField("已引用知识标题", item.title, MAX_KNOWLEDGE_TITLE_CHARS),
+    summary: safeField("已引用知识摘要", item.summary, MAX_KNOWLEDGE_SUMMARY_CHARS),
+    sourceType: safeField("已引用知识来源类型", item.sourceType, 40).replace(/[^a-z0-9_-]/gi, "").slice(0, 40) || "knowledge",
+    sapObjects: item.sapObjects
+      .slice(0, MAX_KNOWLEDGE_SAP_OBJECTS)
+      .map((sapObject) => safeField("已引用知识 SAP 对象", sapObject, 80))
+      .filter((sapObject) => sapObject !== "未提供"),
+    publishedAt: item.publishedAt ? safeField("已引用知识发布时间", item.publishedAt, 40) : null,
+    attachedAt: safeField("已引用知识加入时间", item.attachedAt, 40)
+  };
+}
+
 export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): SafeModelDraftContext {
   const safeSummaries = input.safeOutputSummaries.slice(0, MAX_SAFE_SUMMARIES).map(safeSummary);
+  const safeKnowledgeReferences = input.knowledgeReferences.slice(0, MAX_KNOWLEDGE_REFERENCES).map(safeKnowledgeReference);
   const userInputSummary = safeField("用户输入摘要", input.userInput, MAX_USER_INPUT_CHARS);
   const caseTitle = safeField("案件标题", input.caseTitle, MAX_CASE_TITLE_CHARS);
   const caseSummary = safeField("案件摘要", input.caseSummary, MAX_CASE_SUMMARY_CHARS);
@@ -164,6 +195,12 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
   const summaryLines = safeSummaries.length > 0
     ? safeSummaries.map((item, index) => `${index + 1}. ${item.displayName}（${item.fileType}）：${item.snippet}`)
     : ["无可用安全输出摘要。"];
+  const knowledgeReferenceLines = safeKnowledgeReferences.length > 0
+    ? safeKnowledgeReferences.map((item, index) => {
+        const sapObjects = item.sapObjects.length > 0 ? item.sapObjects.join("、") : "未提供";
+        return `${index + 1}. ${item.title}：${item.summary}；SAP对象：${sapObjects}；来源：${item.sourceType}；发布时间：${item.publishedAt ?? "未提供"}；引用时间：${item.attachedAt}`;
+      })
+    : ["当前案件未加入已发布知识摘要。"];
 
   const userContext = [
     "请基于以下安全上下文生成一份当前案件的本地草稿回复。",
@@ -174,6 +211,9 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
     `案件当前摘要：${caseSummary}`,
     `SAP 版本：${sapVersion}`,
     `项目规范摘要：${standardsSummary}`,
+    "",
+    "已引用已发布知识摘要：",
+    ...knowledgeReferenceLines,
     "",
     "安全输出摘要：",
     ...summaryLines,
@@ -207,6 +247,7 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
     audit: {
       allowedFields: SAFE_MODEL_CONTEXT_ALLOWED_FIELDS,
       contextCharCount,
+      referencedKnowledgeCount: safeKnowledgeReferences.length,
       safeOutputSummaryCount: safeSummaries.length,
       maxContextChars: MAX_MODEL_CONTEXT_CHARS,
       createdAt: nowIso()
@@ -289,6 +330,7 @@ export function renderSafeModelDraftFiles(run: SafeModelDraftRun): CaseGenerated
         csvLine("模型", modelId),
         csvLine("渠道", providerName),
         csvLine("上下文字数", run.contextAudit.contextCharCount),
+        csvLine("已引用知识摘要数量", run.contextAudit.referencedKnowledgeCount),
         csvLine("安全输出摘要数量", run.contextAudit.safeOutputSummaryCount),
         csvLine("允许字段", run.contextAudit.allowedFields.join(";")),
         csvLine("生成时间", run.generatedAt)

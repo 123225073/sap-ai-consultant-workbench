@@ -1150,6 +1150,14 @@ export class WorkspaceStore {
         caseSummary: currentCase.currentSummary,
         sapVersion: project.sapVersion,
         standardsSummary: standardsSummaryForTask(project.standards),
+        knowledgeReferences: currentCase.knowledgeReferences.map((reference) => ({
+          title: reference.title,
+          summary: reference.summary,
+          sourceType: reference.sourceType,
+          sapObjects: reference.sapObjects,
+          publishedAt: reference.publishedAt,
+          attachedAt: reference.attachedAt
+        })),
         safeOutputSummaries: safeOutputSummaries.map((summary) => ({
           displayName: summary.displayName,
           fileType: summary.fileType,
