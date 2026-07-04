@@ -3,6 +3,7 @@ import type {
   CaseGeneratedFile,
   CaseSummary,
   KnowledgeDocumentJob,
+  KnowledgeEditInput,
   KnowledgeImportLocalTextInput,
   KnowledgeImportSourceKind,
   KnowledgeImportTextFileInput,
@@ -23,7 +24,9 @@ import type {
 
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 12000;
 const MAX_KNOWLEDGE_ITEMS = 500;
+const PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER = "phase21-knowledge-edit-conflict-resolution";
 export const KNOWLEDGE_IMPORT_ALLOWED_KEYS = new Set(["projectId", "title", "sourceKind", "sourceName", "body", "sapObjects"]);
+export const KNOWLEDGE_EDIT_ALLOWED_KEYS = new Set(["itemId", "title", "summary", "content", "sapObjects", "effectiveFrom", "effectiveTo", "note"]);
 export const MAX_KNOWLEDGE_IMPORT_BODY_LENGTH = 8000;
 export const MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES = 32 * 1024;
 export const KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS = [".md", ".markdown", ".txt"] as const;
@@ -400,6 +403,49 @@ export function parseKnowledgeReviewInput(input: unknown): KnowledgeReviewInput 
       noSapSourceOrWriteOpsConfirmed: true,
       noCustomerDetailsConfirmed: true
     }
+  };
+}
+
+function normalizeKnowledgeEditDate(label: string, value: unknown): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    throw new Error(`${label}必须是 YYYY-MM-DD 格式。`);
+  }
+  return value.trim();
+}
+
+export function parseKnowledgeEditInput(input: unknown): KnowledgeEditInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("知识编辑请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !KNOWLEDGE_EDIT_ALLOWED_KEYS.has(key))) {
+    throw new Error("知识编辑请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<KnowledgeEditInput>;
+  const actionInput = parseKnowledgeActionInput({ itemId: candidate.itemId, note: candidate.note });
+  const note = (actionInput.note ?? "").trim();
+  if (note.length < 6) {
+    throw new Error("请填写至少 6 个字的修改说明。");
+  }
+  const title = assertSafeKnowledgeImportText("知识标题", candidate.title, MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH);
+  const summary = assertSafeKnowledgeImportText("知识摘要", candidate.summary, 500);
+  const content = assertSafeKnowledgeImportBody(candidate.content);
+  const sapObjects = normalizeKnowledgeImportSapObjects(candidate.sapObjects);
+  const effectiveFrom = normalizeKnowledgeEditDate("生效时间", candidate.effectiveFrom);
+  const effectiveTo = normalizeKnowledgeEditDate("失效时间", candidate.effectiveTo);
+  if (effectiveFrom && effectiveTo && effectiveFrom > effectiveTo) {
+    throw new Error("失效时间不能早于生效时间。");
+  }
+  return {
+    itemId: actionInput.itemId,
+    title,
+    summary,
+    content,
+    sapObjects,
+    effectiveFrom,
+    effectiveTo,
+    note
   };
 }
 
@@ -793,6 +839,16 @@ export function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean 
       (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
 }
 
+function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
+  return item.timeline.some((timelineEvent) =>
+    timelineEvent.action === "edited" && timelineEvent.note.includes(PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER)
+  );
+}
+
+function requiresHumanReviewBeforePublish(item: KnowledgeItem): boolean {
+  return isPhase16LocalTextImportCandidate(item) || isPhase21EditedCandidate(item);
+}
+
 function hasHumanReviewRecord(item: KnowledgeItem): boolean {
   return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewedContentHash && item.reviewChecklist && hasCompleteReviewChecklist(item.reviewChecklist));
 }
@@ -803,7 +859,7 @@ function assertKnowledgePublishSafe(item: KnowledgeItem, note = ""): void {
   assertNoSensitiveKnowledgeContent(item.content);
   assertNoSensitiveKnowledgeContent(item.reviewNote ?? "");
   assertNoSensitiveKnowledgeContent(note);
-  if (isPhase16LocalTextImportCandidate(item)) {
+  if (requiresHumanReviewBeforePublish(item)) {
     assertSafeKnowledgeImportBody(item.content);
   }
   for (const sapObject of item.sapObjects) {
@@ -819,8 +875,8 @@ function assertReviewedContentUnchanged(item: KnowledgeItem): void {
 
 export function reviewKnowledgeItemForPublish(base: ProjectKnowledgeBase, input: KnowledgeReviewInput): ProjectKnowledgeBase {
   return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
-    if (!isPhase16LocalTextImportCandidate(item)) {
-      throw new Error("当前审核门只用于本地文本导入候选，其他候选仍按原确认流程处理。");
+    if (!requiresHumanReviewBeforePublish(item)) {
+      throw new Error("当前审核门只用于本地文本导入候选或已编辑候选，其他候选仍按原确认流程处理。");
     }
     if (item.status === "conflicted") {
       throw new Error("该知识仍处于冲突状态，不能记录发布审核。请先处理适用范围或结论冲突。");
@@ -852,6 +908,42 @@ export function reviewKnowledgeItemForPublish(base: ProjectKnowledgeBase, input:
   });
 }
 
+export function editKnowledgeCandidate(base: ProjectKnowledgeBase, editInput: KnowledgeEditInput): ProjectKnowledgeBase {
+  return updateKnowledgeItem(base, editInput.itemId, (item, updatedAt) => {
+    if (item.status === "published") {
+      throw new Error("已发布知识不能直接编辑。请重新生成待确认候选后再替代。");
+    }
+    if (item.status === "expired") {
+      throw new Error("已失效知识不能直接编辑复活。请重新生成候选知识。");
+    }
+    if (item.status !== "draft" && item.status !== "pending" && item.status !== "conflicted") {
+      throw new Error("只有草稿、待确认或冲突候选可以编辑。");
+    }
+    const editedItem: KnowledgeItem = {
+      ...item,
+      title: editInput.title,
+      summary: editInput.summary,
+      content: editInput.content,
+      sapObjects: editInput.sapObjects ?? [],
+      effectiveFrom: editInput.effectiveFrom ?? null,
+      effectiveTo: editInput.effectiveTo ?? null
+    };
+    assertKnowledgePublishSafe(editedItem, editInput.note);
+    return {
+      ...editedItem,
+      status: "pending",
+      reviewer: null,
+      reviewedAt: null,
+      reviewNote: null,
+      reviewedContentHash: null,
+      reviewChecklist: null,
+      conflictWithIds: [],
+      updatedAt,
+      timeline: [...item.timeline, event("edited", `${PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER}：${editInput.note}`, updatedAt)]
+    };
+  });
+}
+
 export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: KnowledgeItemActionInput): ProjectKnowledgeBase {
   return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
     if (item.status === "conflicted") {
@@ -866,11 +958,12 @@ export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledg
     if (item.conflictWithIds.length > 0) {
       throw new Error("该知识仍关联冲突项，不能直接确认入库。请先处理冲突关系。");
     }
-    if (isPhase16LocalTextImportCandidate(item) && !hasHumanReviewRecord(item)) {
-      throw new Error("本地文本导入候选必须先记录人工审核备注，才能确认入库。");
+    const needsHumanReview = requiresHumanReviewBeforePublish(item);
+    if (needsHumanReview && !hasHumanReviewRecord(item)) {
+      throw new Error("该知识候选必须先记录人工审核备注，才能确认入库。");
     }
     assertKnowledgePublishSafe(item, input.note ?? "");
-    if (isPhase16LocalTextImportCandidate(item)) {
+    if (needsHumanReview) {
       assertReviewedContentUnchanged(item);
     }
     return {
@@ -885,22 +978,38 @@ export function publishKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledg
 }
 
 export function markKnowledgeItemConflicted(base: ProjectKnowledgeBase, input: KnowledgeItemActionInput): ProjectKnowledgeBase {
-  return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => ({
-    ...item,
-    status: "conflicted",
-    updatedAt,
-    timeline: [...item.timeline, event("marked-conflicted", input.note || "人工标记为存在适用范围或结论冲突。", updatedAt)]
-  }));
+  return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
+    if (item.status === "published") {
+      throw new Error("已发布知识不能改为冲突状态。请新建待确认候选记录冲突说明。");
+    }
+    if (item.status === "expired") {
+      throw new Error("已失效知识不能改为冲突状态。请重新生成候选知识。");
+    }
+    return {
+      ...item,
+      status: "conflicted",
+      updatedAt,
+      timeline: [...item.timeline, event("marked-conflicted", input.note || "人工标记为存在适用范围或结论冲突。", updatedAt)]
+    };
+  });
 }
 
 export function expireKnowledgeItem(base: ProjectKnowledgeBase, input: KnowledgeItemActionInput): ProjectKnowledgeBase {
-  return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => ({
-    ...item,
-    status: "expired",
-    effectiveTo: updatedAt.slice(0, 10),
-    updatedAt,
-    timeline: [...item.timeline, event("expired", input.note || "人工标记为已失效，保留历史记录。", updatedAt)]
-  }));
+  return updateKnowledgeItem(base, input.itemId, (item, updatedAt) => {
+    if (item.status === "published") {
+      throw new Error("已发布知识不能直接改为失效。请新建待确认候选并在后续版本中处理替代关系。");
+    }
+    if (item.status === "expired") {
+      throw new Error("该知识已经失效，不能重复修改失效状态。");
+    }
+    return {
+      ...item,
+      status: "expired",
+      effectiveTo: updatedAt.slice(0, 10),
+      updatedAt,
+      timeline: [...item.timeline, event("expired", input.note || "人工标记为已失效，保留历史记录。", updatedAt)]
+    };
+  });
 }
 
 export function knowledgeCounts(items: KnowledgeItem[]): KnowledgeStatusCounts {

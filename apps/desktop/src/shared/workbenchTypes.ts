@@ -451,6 +451,17 @@ export interface KnowledgeReviewInput {
   checklist: KnowledgeReviewChecklist;
 }
 
+export interface KnowledgeEditInput {
+  itemId: string;
+  title: string;
+  summary: string;
+  content: string;
+  sapObjects?: string[];
+  effectiveFrom?: string | null;
+  effectiveTo?: string | null;
+  note: string;
+}
+
 export interface KnowledgeImportLocalTextInput {
   projectId: string;
   title: string;

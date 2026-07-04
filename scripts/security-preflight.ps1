@@ -139,6 +139,7 @@ $allowedIpc = @(
   "workbench:knowledge-import-local-text",
   "workbench:knowledge-import-text-file",
   "workbench:knowledge-review-for-publish",
+  "workbench:knowledge-edit-candidate",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
   "workbench:knowledge-expire"
@@ -618,7 +619,7 @@ $knowledgeReviewBlocks = @(
   @{ Name = "store review method"; Path = "apps/desktop/src/main/workspaceStore.ts"; Start = "async reviewKnowledgeForPublish(projectId: string, input: unknown)"; End = "async markKnowledgeConflicted" },
   @{ Name = "knowledge review parser"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function parseKnowledgeReviewInput"; End = "function assertStrictKnowledgeProjectId" },
   @{ Name = "knowledge review transition"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function reviewKnowledgeItemForPublish"; End = "export function publishKnowledgeItem" },
-  @{ Name = "renderer review submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function runReview"; End = "async function submitImport" }
+  @{ Name = "renderer review submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function runReview"; End = "async function runEdit" }
 )
 foreach ($blockSpec in $knowledgeReviewBlocks) {
   $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
@@ -803,6 +804,116 @@ foreach ($forbidden in @("showOpenDialog", "dialog.show", "readFile(", "fetch(",
   }
 }
 Write-Host "OK phase20 parser/builder block capability scan."
+
+Write-Section "Phase 21 knowledge edit conflict resolution scan"
+$phase21KnowledgeEditMarkers = @(
+  @{ Pattern = "parseKnowledgeEditInput"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "KNOWLEDGE_EDIT_ALLOWED_KEYS"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "editKnowledgeCandidate"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "requiresHumanReviewBeforePublish"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "editKnowledgeCandidate"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:knowledge-edit-candidate"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "editKnowledgeCandidate"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "editKnowledgeCandidate"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "editKnowledgeCandidate"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "runEdit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "selectedRequiresReviewGate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "knowledge-edit-form"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "phase21-knowledge-edit-conflict-resolution"; Path = "scripts/phase21-knowledge-edit-conflict-resolution-probe.mjs" }
+)
+foreach ($marker in $phase21KnowledgeEditMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase21 knowledge edit marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 21 knowledge edit marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase21AllowedKeysLine = Select-String -SimpleMatch -Pattern "KNOWLEDGE_EDIT_ALLOWED_KEYS" -Path "apps/desktop/src/main/knowledgeService.ts" | Select-Object -First 1
+if (-not $phase21AllowedKeysLine) {
+  throw "Phase 21 edit allowed keys marker is missing."
+}
+foreach ($forbiddenInput in @('"status"', '"reviewer"', '"reviewedAt"', '"reviewedContentHash"', '"reviewChecklist"', '"publishedAt"', '"sourceFilePath"')) {
+  if ($phase21AllowedKeysLine.Line.Contains($forbiddenInput)) {
+    throw "Phase 21 edit input must not accept forbidden field: $forbiddenInput"
+  }
+}
+Write-Host "OK phase21 edit input allowlist excludes state, review, publish, and source path fields."
+
+$phase21KnowledgeEditForbiddenCapabilities = @(
+  "showOpenDialog",
+  "dialog.show",
+  "readFile(",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "exec(",
+  "openExternal",
+  "openPath",
+  "loadURL",
+  "feishu-sync",
+  "unlink",
+  "rm(",
+  'status: "published"',
+  "publishedAt:",
+  "publishKnowledgeItem"
+)
+
+$phase21KnowledgeEditBlocks = @(
+  @{ Name = "store edit method"; Path = "apps/desktop/src/main/workspaceStore.ts"; Start = "async editKnowledgeCandidate(projectId: string, input: unknown)"; End = "async markKnowledgeConflicted" },
+  @{ Name = "knowledge edit parser"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function parseKnowledgeEditInput"; End = "function assertStrictKnowledgeProjectId" },
+  @{ Name = "knowledge edit transition"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function editKnowledgeCandidate"; End = "export function publishKnowledgeItem" },
+  @{ Name = "renderer edit submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function runEdit"; End = "function restoreEditFields" }
+)
+foreach ($blockSpec in $phase21KnowledgeEditBlocks) {
+  $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
+  foreach ($forbidden in $phase21KnowledgeEditForbiddenCapabilities) {
+    if ($block.Contains($forbidden)) {
+      throw "Phase 21 knowledge edit $($blockSpec.Name) contains forbidden marker: $forbidden"
+    }
+  }
+  Write-Host "OK phase21 knowledge edit block capability scan: $($blockSpec.Name)"
+}
+
+if (-not ((Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function editKnowledgeCandidate" -EndMarker "export function publishKnowledgeItem").Contains("reviewedContentHash: null"))) {
+  throw "Phase 21 edit transition must clear reviewedContentHash."
+}
+if (-not ((Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function editKnowledgeCandidate" -EndMarker "export function publishKnowledgeItem").Contains('status: "pending"'))) {
+  throw "Phase 21 edit transition must return candidates to pending."
+}
+Write-Host "OK phase21 edit transition invalidates review and returns to pending."
+
+$phase21PublishTransitionBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function publishKnowledgeItem" -EndMarker "export function markKnowledgeItemConflicted"
+foreach ($required in @("requiresHumanReviewBeforePublish(item)", "hasHumanReviewRecord(item)", "assertReviewedContentUnchanged(item)")) {
+  if (-not $phase21PublishTransitionBlock.Contains($required)) {
+    throw "Phase 21 publish transition must require review for edited candidates: $required"
+  }
+}
+$phase21ReviewTransitionBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function reviewKnowledgeItemForPublish" -EndMarker "export function editKnowledgeCandidate"
+if (-not $phase21ReviewTransitionBlock.Contains("requiresHumanReviewBeforePublish(item)")) {
+  throw "Phase 21 review transition must support edited candidates."
+}
+Write-Host "OK phase21 edited candidates require review before publish."
+
+$phase21ConflictTransitionBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function markKnowledgeItemConflicted" -EndMarker "export function expireKnowledgeItem"
+foreach ($required in @('item.status === "published"', 'item.status === "expired"')) {
+  if (-not $phase21ConflictTransitionBlock.Contains($required)) {
+    throw "Phase 21 conflict transition must keep published and expired knowledge read-only: $required"
+  }
+}
+$phase21ExpireTransitionBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function expireKnowledgeItem" -EndMarker "export function knowledgeCounts"
+foreach ($required in @('item.status === "published"', 'item.status === "expired"')) {
+  if (-not $phase21ExpireTransitionBlock.Contains($required)) {
+    throw "Phase 21 expire transition must keep published and expired knowledge read-only: $required"
+  }
+}
+$phase21RendererActionsBlock = Get-SourceBlock -Path "apps/desktop/src/renderer/KnowledgeCenter.tsx" -StartMarker '<section className="knowledge-detail-actions">' -EndMarker '<section className="knowledge-timeline">'
+$phase21PublishedRendererGuardCount = [regex]::Matches($phase21RendererActionsBlock, [regex]::Escape('selectedItem.status === "published"')).Count
+if ($phase21PublishedRendererGuardCount -lt 2) {
+  throw "Phase 21 renderer actions must disable both conflict and expire controls for published knowledge."
+}
+Write-Host "OK phase21 conflict and expire transitions keep published history read-only."
 
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src

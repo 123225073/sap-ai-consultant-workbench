@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Archive, ArrowLeft, CheckCircle2, FileText, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import { Archive, ArrowLeft, CheckCircle2, FileText, RefreshCcw, Save, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
+import type { KnowledgeDocumentJobStatus, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -17,6 +17,7 @@ const statusTone: Record<KnowledgeItemStatus, "neutral" | "green" | "orange" | "
   conflicted: "red",
   expired: "blue"
 };
+const PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER = "phase21-knowledge-edit-conflict-resolution";
 
 const jobLabels: Record<KnowledgeDocumentJobStatus, string> = {
   queued: "排队中",
@@ -70,6 +71,12 @@ function isPhase16LocalTextImportCandidate(item: KnowledgeItem): boolean {
       (item.sourceFilePath ?? "").startsWith("knowledge_candidates/imported-knowledge-"));
 }
 
+function isPhase21EditedCandidate(item: KnowledgeItem): boolean {
+  return item.timeline.some((timelineEvent) =>
+    timelineEvent.action === "edited" && timelineEvent.note.includes(PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER)
+  );
+}
+
 function hasCompleteReview(item: KnowledgeItem): boolean {
   return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewedContentHash && item.reviewChecklist);
 }
@@ -92,12 +99,13 @@ interface KnowledgeCenterProps {
   onImport: (input: KnowledgeImportLocalTextInput) => Promise<boolean>;
   onImportTextFile: (projectId: string) => Promise<KnowledgeImportTextFileResult | null>;
   onReview: (projectId: string, input: KnowledgeReviewInput) => Promise<void>;
+  onEdit: (projectId: string, input: KnowledgeEditInput) => Promise<boolean>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onEdit, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -113,6 +121,13 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   const [importFileStatus, setImportFileStatus] = useState("");
   const [reviewNote, setReviewNote] = useState("");
   const [reviewChecklist, setReviewChecklist] = useState<KnowledgeReviewInput["checklist"]>(emptyReviewChecklist);
+  const [editTitle, setEditTitle] = useState("");
+  const [editSummary, setEditSummary] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editSapObjects, setEditSapObjects] = useState("");
+  const [editEffectiveFrom, setEditEffectiveFrom] = useState("");
+  const [editEffectiveTo, setEditEffectiveTo] = useState("");
+  const [editNote, setEditNote] = useState("");
 
   useEffect(() => {
     let ignore = false;
@@ -150,11 +165,25 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     setReviewChecklist(selectedItem?.reviewChecklist ?? emptyReviewChecklist);
   }, [selectedItem?.id, selectedItem?.reviewedAt]);
 
+  useEffect(() => {
+    setEditTitle(selectedItem?.title ?? "");
+    setEditSummary(selectedItem?.summary ?? "");
+    setEditContent(selectedItem?.content ?? "");
+    setEditSapObjects(selectedItem?.sapObjects.join(" ") ?? "");
+    setEditEffectiveFrom(selectedItem?.effectiveFrom ?? "");
+    setEditEffectiveTo(selectedItem?.effectiveTo ?? "");
+    setEditNote("");
+  }, [selectedItem?.id, selectedItem?.updatedAt]);
+
   const selectedImportedCandidate = selectedItem ? isPhase16LocalTextImportCandidate(selectedItem) : false;
+  const selectedEditedCandidate = selectedItem ? isPhase21EditedCandidate(selectedItem) : false;
+  const selectedRequiresReviewGate = selectedImportedCandidate || selectedEditedCandidate;
   const selectedHasReview = selectedItem ? hasCompleteReview(selectedItem) : false;
   const selectedHasBlockingConflict = selectedItem ? selectedItem.status === "conflicted" || selectedItem.conflictWithIds.length > 0 : false;
-  const canReviewSelected = Boolean(selectedItem && selectedImportedCandidate && selectedItem.status === "pending" && !selectedHasBlockingConflict && !busyItemId);
+  const canReviewSelected = Boolean(selectedItem && selectedRequiresReviewGate && selectedItem.status === "pending" && !selectedHasBlockingConflict && !busyItemId);
+  const canEditSelected = Boolean(selectedItem && (selectedItem.status === "draft" || selectedItem.status === "pending" || selectedItem.status === "conflicted") && !busyItemId);
   const reviewReady = reviewNote.trim().length >= 8 && reviewChecklistComplete(reviewChecklist);
+  const editReady = editTitle.trim().length > 0 && editSummary.trim().length > 0 && editContent.trim().length > 0 && editNote.trim().length >= 6;
   const publishDisabled = Boolean(
     !selectedItem ||
     busyItemId === selectedItem.id ||
@@ -162,7 +191,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     selectedItem.status === "conflicted" ||
     selectedItem.status === "expired" ||
     selectedItem.conflictWithIds.length > 0 ||
-    (selectedImportedCandidate && !selectedHasReview)
+    (selectedRequiresReviewGate && !selectedHasReview)
   );
 
   async function runAction(action: "publish" | "conflict" | "expire", item: KnowledgeItem) {
@@ -193,6 +222,40 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     } finally {
       setBusyItemId("");
     }
+  }
+
+  async function runEdit(item: KnowledgeItem) {
+    if (!project || busyItemId || !canEditSelected || !editReady) return;
+    setBusyItemId(item.id);
+    try {
+      const sapObjects = editSapObjects.split(/[\s,，;；]+/).map((value) => value.trim()).filter(Boolean);
+      const ok = await onEdit(project.id, {
+        itemId: item.id,
+        title: editTitle,
+        summary: editSummary,
+        content: editContent,
+        sapObjects,
+        effectiveFrom: editEffectiveFrom || null,
+        effectiveTo: editEffectiveTo || null,
+        note: editNote
+      });
+      if (ok) {
+        setSelectedStatus("pending");
+        setSelectedItemId(item.id);
+      }
+    } finally {
+      setBusyItemId("");
+    }
+  }
+
+  function restoreEditFields(item: KnowledgeItem) {
+    setEditTitle(item.title);
+    setEditSummary(item.summary);
+    setEditContent(item.content);
+    setEditSapObjects(item.sapObjects.join(" "));
+    setEditEffectiveFrom(item.effectiveFrom ?? "");
+    setEditEffectiveTo(item.effectiveTo ?? "");
+    setEditNote("");
   }
 
   async function runTextFileImport() {
@@ -397,7 +460,51 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
               <p>{selectedItem.content}</p>
             </section>
 
-            {selectedImportedCandidate ? (
+            {canEditSelected ? (
+              <section className="knowledge-edit-form">
+                <div className="knowledge-edit-heading">
+                  <h3>修改候选</h3>
+                  <span>保存后需要重新审核</span>
+                </div>
+                {selectedItem.status === "conflicted" ? <p className="knowledge-edit-warning">改完后会回到待确认，仍需重新审核后才能入库。</p> : null}
+                <label>
+                  <span>知识标题</span>
+                  <input value={editTitle} onChange={(event) => setEditTitle(event.target.value)} />
+                </label>
+                <label>
+                  <span>摘要</span>
+                  <textarea value={editSummary} onChange={(event) => setEditSummary(event.target.value)} />
+                </label>
+                <label>
+                  <span>正文</span>
+                  <textarea className="knowledge-edit-content" value={editContent} onChange={(event) => setEditContent(event.target.value)} />
+                </label>
+                <label>
+                  <span>SAP对象</span>
+                  <input value={editSapObjects} onChange={(event) => setEditSapObjects(event.target.value)} placeholder="用空格分隔" />
+                </label>
+                <div className="knowledge-edit-dates">
+                  <label>
+                    <span>生效时间</span>
+                    <input type="date" value={editEffectiveFrom} onChange={(event) => setEditEffectiveFrom(event.target.value)} />
+                  </label>
+                  <label>
+                    <span>失效时间</span>
+                    <input type="date" value={editEffectiveTo} onChange={(event) => setEditEffectiveTo(event.target.value)} />
+                  </label>
+                </div>
+                <label>
+                  <span>修改说明</span>
+                  <textarea value={editNote} onChange={(event) => setEditNote(event.target.value)} placeholder="说明改了什么，至少 6 个字" />
+                </label>
+                <div className="knowledge-edit-actions">
+                  <button disabled={!editReady || busyItemId === selectedItem.id} onClick={() => void runEdit(selectedItem)}><Save size={16} />保存为待确认</button>
+                  <button disabled={busyItemId === selectedItem.id} onClick={() => restoreEditFields(selectedItem)}><RefreshCcw size={16} />重置</button>
+                </div>
+              </section>
+            ) : null}
+
+            {selectedRequiresReviewGate ? (
               <section className="knowledge-review-gate">
                 <div className="knowledge-review-heading">
                   <h3>人工审核门</h3>
@@ -440,9 +547,9 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
             ) : null}
 
             <section className="knowledge-detail-actions">
-              <button disabled={publishDisabled} title={selectedImportedCandidate && !selectedHasReview ? "本地文本导入候选必须先记录人工审核" : selectedHasBlockingConflict ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
-              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
-              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
+              <button disabled={publishDisabled} title={selectedRequiresReviewGate && !selectedHasReview ? "该候选必须先记录人工审核" : selectedHasBlockingConflict ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
+              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
+              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
             </section>
 
             <section className="knowledge-timeline">

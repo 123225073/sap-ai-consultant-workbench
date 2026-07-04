@@ -2206,6 +2206,105 @@ button {
   font-size: 13px;
 }
 
+.knowledge-edit-form {
+  display: grid;
+  gap: 12px;
+}
+
+.knowledge-edit-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.knowledge-edit-heading span,
+.knowledge-edit-form label span {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.knowledge-edit-warning {
+  margin: 0;
+  border: 1px solid #fed7aa;
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: #9a3412;
+  background: #fff7ed;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.knowledge-edit-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.knowledge-edit-form input,
+.knowledge-edit-form textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #111827;
+  padding: 9px 10px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.knowledge-edit-form input {
+  height: 36px;
+}
+
+.knowledge-edit-form textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.knowledge-edit-form .knowledge-edit-content {
+  min-height: 150px;
+}
+
+.knowledge-edit-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.knowledge-edit-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.knowledge-edit-actions button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #111827;
+  font-size: 13px;
+}
+
+.knowledge-edit-actions button:first-child {
+  color: #ffffff;
+  border-color: #2563eb;
+  background: #2563eb;
+}
+
+.knowledge-edit-actions button:disabled {
+  color: #6b7280;
+  background: #f3f4f6;
+  cursor: not-allowed;
+}
+
 .knowledge-review-gate {
   display: grid;
   gap: 12px;
@@ -2348,6 +2447,11 @@ button {
   .config-actions button {
     flex: 1 1 180px;
     justify-content: center;
+  }
+
+  .knowledge-edit-dates,
+  .knowledge-edit-actions {
+    grid-template-columns: 1fr;
   }
 
   .model-row {

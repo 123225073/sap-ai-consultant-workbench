@@ -28,9 +28,11 @@ import {
   appendKnowledgeCandidatesFromCase,
   createImportedKnowledgeCandidate,
   createProjectKnowledge,
+  editKnowledgeCandidate,
   expireKnowledgeItem,
   markKnowledgeItemConflicted,
   normalizeProjectKnowledge,
+  parseKnowledgeEditInput,
   parseKnowledgeImportLocalTextInput,
   parseKnowledgeActionInput,
   parseKnowledgeReviewInput,
@@ -1428,6 +1430,26 @@ export class WorkspaceStore {
     }
 
     project.knowledge = reviewKnowledgeItemForPublish(project.knowledge, reviewInput);
+    project.updatedAt = nowIso();
+    await this.saveState(state);
+    await this.writeProjectKnowledge(project);
+    await this.writeProjectMetadata(project);
+    await this.ensureCaseFiles(state);
+    await this.refreshSearchIndex(state);
+    return this.withFiles(state);
+    });
+  }
+
+  async editKnowledgeCandidate(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+    const editInput = parseKnowledgeEditInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法编辑知识候选。");
+    }
+
+    project.knowledge = editKnowledgeCandidate(project.knowledge, editInput);
     project.updatedAt = nowIso();
     await this.saveState(state);
     await this.writeProjectKnowledge(project);

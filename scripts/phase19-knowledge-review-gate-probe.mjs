@@ -232,7 +232,7 @@ const reviewBlocks = [
   extractBlock("apps/desktop/src/main/workspaceStore.ts", "async reviewKnowledgeForPublish(projectId: string, input: unknown)", "async markKnowledgeConflicted"),
   extractBlock("apps/desktop/src/main/knowledgeService.ts", "export function parseKnowledgeReviewInput", "function assertStrictKnowledgeProjectId"),
   extractBlock("apps/desktop/src/main/knowledgeService.ts", "export function reviewKnowledgeItemForPublish", "export function publishKnowledgeItem"),
-  extractBlock("apps/desktop/src/renderer/KnowledgeCenter.tsx", "async function runReview", "async function submitImport")
+  extractBlock("apps/desktop/src/renderer/KnowledgeCenter.tsx", "async function runReview", "async function runEdit")
 ];
 for (const block of reviewBlocks) {
   for (const forbidden of ["showOpenDialog", "dialog.show", "openExternal", "loadURL", "feishu-sync", "readFile(", "fetch(", "execFile(", "spawn(", "exec(", "openPath(", "unlink", "rm("]) {

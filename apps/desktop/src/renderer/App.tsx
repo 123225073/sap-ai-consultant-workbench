@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -771,6 +771,22 @@ function App() {
     }
   }
 
+  async function editKnowledgeCandidate(projectId: string, input: KnowledgeEditInput): Promise<boolean> {
+    if (!bridge) {
+      setNotice("请在桌面应用中编辑知识候选。");
+      return false;
+    }
+    const response = await bridge.editKnowledgeCandidate(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("候选知识已保存为待确认；需要重新审核后才能入库。");
+      return true;
+    } else {
+      setNotice(response.error);
+      return false;
+    }
+  }
+
   async function markKnowledgeConflicted(projectId: string, input: KnowledgeItemActionInput) {
     if (!bridge) {
       setNotice("请在桌面应用中标记知识冲突。");
@@ -946,6 +962,7 @@ function App() {
             onImport={importKnowledgeLocalText}
             onImportTextFile={importKnowledgeTextFile}
             onReview={reviewKnowledgeForPublish}
+            onEdit={editKnowledgeCandidate}
             onPublish={publishKnowledge}
             onMarkConflict={markKnowledgeConflicted}
             onExpire={expireKnowledge}
