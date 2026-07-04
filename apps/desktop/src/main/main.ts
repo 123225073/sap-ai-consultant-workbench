@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import path from "node:path";
 import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput } from "./adtReadonlyConnector";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, type FeishuCliConnectorInput } from "./feishuCliConnector";
@@ -6,9 +6,15 @@ import { createModelProviderConnector, createModelProviderValidationFailureRepor
 import { SecureSecretStore } from "./secureSecretStore";
 import { WorkspaceStore } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
+import { readControlledKnowledgeTextFile } from "./controlledTextFileImportService";
+import {
+  createKnowledgeImportInputFromTextFile,
+  KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS,
+  parseKnowledgeImportTextFileInput
+} from "./knowledgeService";
 import { parseSapObjectEvidenceRequest } from "./sapObjectEvidenceService";
 import { assertTrustedRendererEvent, isTrustedRendererUrl } from "./trustedRenderer";
-import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationErrorCode, AdtVerificationResult, ApiProviderConfig, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -500,6 +506,44 @@ function validProjectId(projectId: unknown, action: string): string {
   return projectId;
 }
 
+async function importKnowledgeTextFile(event: IpcMainInvokeEvent, store: WorkspaceStore, input: unknown): Promise<KnowledgeImportTextFileResult> {
+  const request = parseKnowledgeImportTextFileInput(input);
+  const parentWindow = BrowserWindow.fromWebContents(event.sender);
+  const options: OpenDialogOptions = {
+    title: "导入 Markdown/TXT 知识候选",
+    properties: ["openFile"],
+    filters: [{ name: "Markdown/TXT", extensions: ["md", "markdown", "txt"] }]
+  };
+  const selection = parentWindow ? await dialog.showOpenDialog(parentWindow, options) : await dialog.showOpenDialog(options);
+  if (selection.canceled || selection.filePaths.length === 0) {
+    return { cancelled: true, message: "已取消文本文件导入。" };
+  }
+  if (selection.filePaths.length !== 1) {
+    throw new Error("一次只能导入一个 Markdown 或 TXT 文件。");
+  }
+
+  const selectedPath = selection.filePaths[0];
+  const sourceName = path.basename(selectedPath);
+  const lowerName = sourceName.toLowerCase();
+  if (!KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS.some((extension) => lowerName.endsWith(extension))) {
+    throw new Error("只支持导入 Markdown 或 TXT 文件。");
+  }
+
+  const textFile = await readControlledKnowledgeTextFile(selectedPath);
+  const { importInput, metadata } = createKnowledgeImportInputFromTextFile({
+    projectId: request.projectId,
+    fileName: textFile.sourceName,
+    sizeBytes: textFile.sizeBytes,
+    body: textFile.body
+  });
+  const result = await store.importKnowledgeLocalText(importInput);
+  return {
+    ...result,
+    cancelled: false,
+    file: metadata
+  };
+}
+
 function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore, appRoot: string): void {
   ipcMain.handle("workbench:get-state", (event) => trustedResponse(event, appRoot, () => store.getState()));
   ipcMain.handle("workbench:create-local-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalProject(input)));
@@ -523,6 +567,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:standards-save", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.saveProjectStandards(validProjectId(projectId, "保存项目规范"), input)));
   ipcMain.handle("workbench:get-project-knowledge", (event, projectId: unknown) => trustedResponse(event, appRoot, () => store.getProjectKnowledge(validProjectId(projectId, "读取项目知识库"))));
   ipcMain.handle("workbench:knowledge-import-local-text", (event, input: unknown) => trustedResponse(event, appRoot, () => store.importKnowledgeLocalText(input)));
+  ipcMain.handle("workbench:knowledge-import-text-file", (event, input: unknown) => trustedResponse(event, appRoot, () => importKnowledgeTextFile(event, store, input)));
   ipcMain.handle("workbench:knowledge-review-for-publish", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.reviewKnowledgeForPublish(validProjectId(projectId, "记录知识审核"), input)));
   ipcMain.handle("workbench:knowledge-publish", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.publishKnowledge(validProjectId(projectId, "确认知识入库"), input)));
   ipcMain.handle("workbench:knowledge-mark-conflict", (event, projectId: unknown, input: unknown) => trustedResponse(event, appRoot, () => store.markKnowledgeConflicted(validProjectId(projectId, "标记知识冲突"), input)));

@@ -137,6 +137,7 @@ $allowedIpc = @(
   "workbench:standards-save",
   "workbench:get-project-knowledge",
   "workbench:knowledge-import-local-text",
+  "workbench:knowledge-import-text-file",
   "workbench:knowledge-review-for-publish",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
@@ -408,8 +409,14 @@ if ($LASTEXITCODE -eq 0) {
 
 $desktopOpenHits = rg -n -- "shell\.openPath|shell\.openExternal|dialog\.showOpenDialog|showOpenDialog|openExternal|openPath" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
-  $desktopOpenHits | ForEach-Object { Write-Host $_ }
-  throw "Desktop app must not expose system file or URL openers in the current phase."
+  $unexpectedDesktopOpenHits = @($desktopOpenHits | Where-Object {
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts:.*dialog\.showOpenDialog"
+  })
+  if ($unexpectedDesktopOpenHits.Count -gt 0) {
+    $unexpectedDesktopOpenHits | ForEach-Object { Write-Host $_ }
+    throw "Desktop app must not expose system file or URL openers outside the controlled text-file import path."
+  }
+  $desktopOpenHits | ForEach-Object { Write-Host "OK controlled desktop opener: $_" }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Desktop opener scan failed."
 }
@@ -729,6 +736,73 @@ if ($LASTEXITCODE -eq 0) {
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Knowledge delete-history scan failed."
 }
+
+Write-Section "Phase 20 controlled text file import scan"
+$phase20TextFileImportMarkers = @(
+  @{ Pattern = "workbench:knowledge-import-text-file"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:knowledge-import-text-file"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "importKnowledgeTextFile"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "importKnowledgeTextFile"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "runTextFileImport"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "KnowledgeImportTextFileInput"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "KnowledgeImportTextFileResult"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "parseKnowledgeImportTextFileInput"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "createKnowledgeImportInputFromTextFile"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "decodeControlledKnowledgeTextFile"; Path = "apps/desktop/src/main/controlledTextFileImportService.ts" },
+  @{ Pattern = "readControlledKnowledgeTextFile"; Path = "apps/desktop/src/main/controlledTextFileImportService.ts" },
+  @{ Pattern = "phase20-controlled-text-file-import"; Path = "scripts/phase20-controlled-text-file-import-probe.mjs" }
+)
+foreach ($marker in $phase20TextFileImportMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase20 text file import marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 20 controlled text file import marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase20MainBlock = Get-SourceBlock -Path "apps/desktop/src/main/main.ts" -StartMarker "async function importKnowledgeTextFile" -EndMarker "function registerWorkbenchHandlers"
+foreach ($required in @("dialog.showOpenDialog", "readControlledKnowledgeTextFile", "createKnowledgeImportInputFromTextFile", "store.importKnowledgeLocalText")) {
+  if (-not $phase20MainBlock.Contains($required)) {
+    throw "Phase 20 main import block is missing required marker: $required"
+  }
+}
+foreach ($forbidden in @("sourceFilePath", "fetch(", "execFile(", "spawn(", "exec(", "openExternal", "openPath", "loadURL", "feishu-sync", "unlink", "rm(")) {
+  if ($phase20MainBlock.Contains($forbidden)) {
+    throw "Phase 20 main import block contains forbidden marker: $forbidden"
+  }
+}
+Write-Host "OK phase20 main import block capability scan."
+
+$phase20ReadBlock = Get-Content -Raw -Path "apps/desktop/src/main/controlledTextFileImportService.ts"
+foreach ($required in @("fs.stat", "fs.readFile", "fileBuffer.length > MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES", "decodeControlledKnowledgeTextFile")) {
+  if (-not $phase20ReadBlock.Contains($required)) {
+    throw "Phase 20 controlled read block is missing required marker: $required"
+  }
+}
+foreach ($forbidden in @("error.message", "selectedPath,", "sourceFilePath", "fetch(", "execFile(", "spawn(", "exec(", "openExternal", "openPath", "loadURL", "feishu-sync", "unlink", "rm(")) {
+  if ($phase20ReadBlock.Contains($forbidden)) {
+    throw "Phase 20 controlled read block contains forbidden marker: $forbidden"
+  }
+}
+Write-Host "OK phase20 controlled read block capability scan."
+
+$phase20RendererUnsafeHits = rg -n -- "knowledge-import-text-file|importKnowledgeTextFile|runTextFileImport|KnowledgeImportTextFile" apps/desktop/src/preload apps/desktop/src/renderer |
+  Select-String -Pattern "showOpenDialog|dialog\.show|readFile\(|node:fs|from ['""]fs['""]|fetch\(|execFile\(|spawn\(|exec\(|openExternal|openPath|loadURL|feishu-sync|unlink|rm\("
+if ($phase20RendererUnsafeHits) {
+  $phase20RendererUnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 20 renderer/preload text file import must not read files, open dialogs, call Feishu/network/commands, or delete."
+}
+
+$phase20ParserBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function parseKnowledgeImportTextFileInput" -EndMarker "function assertSafeKnowledgeImportText"
+foreach ($forbidden in @("showOpenDialog", "dialog.show", "readFile(", "fetch(", "execFile(", "spawn(", "exec(", "openExternal", "openPath", "loadURL", "feishu-sync", "unlink", "rm(")) {
+  if ($phase20ParserBlock.Contains($forbidden)) {
+    throw "Phase 20 parser/builder block contains forbidden marker: $forbidden"
+  }
+}
+Write-Host "OK phase20 parser/builder block capability scan."
 
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src

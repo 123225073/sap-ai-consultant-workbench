@@ -5,6 +5,8 @@ import type {
   KnowledgeDocumentJob,
   KnowledgeImportLocalTextInput,
   KnowledgeImportSourceKind,
+  KnowledgeImportTextFileInput,
+  KnowledgeImportTextFileMetadata,
   KnowledgeItem,
   KnowledgeItemActionInput,
   KnowledgeReviewChecklist,
@@ -23,11 +25,14 @@ const MAX_KNOWLEDGE_CONTENT_LENGTH = 12000;
 const MAX_KNOWLEDGE_ITEMS = 500;
 export const KNOWLEDGE_IMPORT_ALLOWED_KEYS = new Set(["projectId", "title", "sourceKind", "sourceName", "body", "sapObjects"]);
 export const MAX_KNOWLEDGE_IMPORT_BODY_LENGTH = 8000;
+export const MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES = 32 * 1024;
+export const KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS = [".md", ".markdown", ".txt"] as const;
 const MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH = 120;
 const MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH = 160;
 const MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS = 12;
 const KNOWLEDGE_IMPORT_ALLOWED_SOURCE_KINDS = new Set<KnowledgeImportSourceKind>(["local-text", "markdown-note", "qa-text"]);
 const KNOWLEDGE_REVIEW_ALLOWED_KEYS = new Set(["itemId", "note", "checklist"]);
+const KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_KEYS = new Set(["projectId"]);
 
 const KNOWLEDGE_STATUS_LABELS: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -403,6 +408,69 @@ function assertStrictKnowledgeProjectId(value: unknown): string {
     throw new Error("项目 ID 无效，无法导入知识候选。");
   }
   return value;
+}
+
+export function parseKnowledgeImportTextFileInput(input: unknown): KnowledgeImportTextFileInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("文本文件导入请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_KEYS.has(key))) {
+    throw new Error("文本文件导入请求包含不支持的字段。");
+  }
+  return {
+    projectId: assertStrictKnowledgeProjectId((input as Partial<KnowledgeImportTextFileInput>).projectId)
+  };
+}
+
+function normalizeKnowledgeImportTextFileExtension(fileName: string): KnowledgeImportTextFileMetadata["extension"] {
+  const lower = fileName.toLowerCase();
+  const extension = KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS.find((item) => lower.endsWith(item));
+  if (!extension) {
+    throw new Error("只支持导入 Markdown 或 TXT 文件。");
+  }
+  return extension;
+}
+
+function titleFromKnowledgeImportFileName(fileName: string, extension: KnowledgeImportTextFileMetadata["extension"]): string {
+  const withoutExtension = fileName.slice(0, fileName.length - extension.length).replace(/[_-]+/g, " ").trim();
+  return withoutExtension || "文本文件知识候选";
+}
+
+export function createKnowledgeImportInputFromTextFile(input: {
+  projectId: string;
+  fileName: string;
+  sizeBytes: number;
+  body: string;
+}): { importInput: KnowledgeImportLocalTextInput; metadata: KnowledgeImportTextFileMetadata } {
+  const projectId = assertStrictKnowledgeProjectId(input.projectId);
+  if (!Number.isInteger(input.sizeBytes) || input.sizeBytes <= 0) {
+    throw new Error("文件为空，无法生成知识候选。");
+  }
+  if (input.sizeBytes > MAX_KNOWLEDGE_IMPORT_TEXT_FILE_BYTES) {
+    throw new Error("文件太大，请拆成更小的已脱敏 Markdown 或 TXT 文本后再导入。");
+  }
+  const sourceName = assertSafeKnowledgeImportText("来源文件名", input.fileName, MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH);
+  const extension = normalizeKnowledgeImportTextFileExtension(sourceName);
+  const body = assertSafeKnowledgeImportBody(input.body);
+  const sourceKind: KnowledgeImportSourceKind = extension === ".txt" ? "local-text" : "markdown-note";
+  const title = assertSafeKnowledgeImportText("知识标题", titleFromKnowledgeImportFileName(sourceName, extension), MAX_KNOWLEDGE_IMPORT_TITLE_LENGTH);
+  return {
+    importInput: {
+      projectId,
+      title,
+      sourceKind,
+      sourceName,
+      body,
+      sapObjects: []
+    },
+    metadata: {
+      sourceName,
+      extension,
+      sizeBytes: input.sizeBytes,
+      characterCount: body.length
+    }
+  };
 }
 
 function assertSafeKnowledgeImportText(label: string, value: unknown, maxLength: number): string {

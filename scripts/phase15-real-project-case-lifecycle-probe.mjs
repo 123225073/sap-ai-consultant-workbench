@@ -191,7 +191,13 @@ const sourceFiles = [
   "apps/desktop/src/renderer/vite-env.d.ts",
   "apps/desktop/src/renderer/App.tsx"
 ];
-const appLifecycleSource = (await Promise.all(sourceFiles.map((file) => readFile(path.join(repoRoot, file), "utf8")))).join("\\n");
+const sourceByFile = Object.fromEntries(await Promise.all(sourceFiles.map(async (file) => [file, await readFile(path.join(repoRoot, file), "utf8")])));
+let appLifecycleSource = Object.values(sourceByFile).join("\\n");
+const phase20Start = sourceByFile["apps/desktop/src/main/main.ts"].indexOf("async function importKnowledgeTextFile");
+const phase20End = sourceByFile["apps/desktop/src/main/main.ts"].indexOf("function registerWorkbenchHandlers", phase20Start);
+if (phase20Start >= 0 && phase20End > phase20Start) {
+  appLifecycleSource = appLifecycleSource.replace(sourceByFile["apps/desktop/src/main/main.ts"].slice(phase20Start, phase20End), "");
+}
 for (const marker of ["workbench:create-local-project", "workbench:create-local-case", "workbench:switch-project", "workbench:switch-case"]) {
   assert(appLifecycleSource.includes(marker), "missing lifecycle IPC marker: " + marker);
 }

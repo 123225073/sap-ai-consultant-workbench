@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, CheckCircle2, FileText, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import type { KnowledgeDocumentJobStatus, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -90,13 +90,14 @@ interface KnowledgeCenterProps {
   notice: string;
   onBack: () => void;
   onImport: (input: KnowledgeImportLocalTextInput) => Promise<boolean>;
+  onImportTextFile: (projectId: string) => Promise<KnowledgeImportTextFileResult | null>;
   onReview: (projectId: string, input: KnowledgeReviewInput) => Promise<void>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onImport, onReview, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -108,6 +109,8 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onReview, onPublis
   const [importSapObjects, setImportSapObjects] = useState("");
   const [importBody, setImportBody] = useState("");
   const [importBusy, setImportBusy] = useState(false);
+  const [importFileBusy, setImportFileBusy] = useState(false);
+  const [importFileStatus, setImportFileStatus] = useState("");
   const [reviewNote, setReviewNote] = useState("");
   const [reviewChecklist, setReviewChecklist] = useState<KnowledgeReviewInput["checklist"]>(emptyReviewChecklist);
 
@@ -192,6 +195,26 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onReview, onPublis
     }
   }
 
+  async function runTextFileImport() {
+    if (!project || importFileBusy) return;
+    setImportFileBusy(true);
+    setImportFileStatus("正在检查文件内容是否安全。");
+    try {
+      const result = await onImportTextFile(project.id);
+      if (!result) {
+        setImportFileStatus("导入未完成。");
+      } else if (result.cancelled) {
+        setImportFileStatus(result.message);
+      } else {
+        setSelectedStatus("pending");
+        setSelectedItemId(result.knowledgeItemId);
+        setImportFileStatus(`${result.file.sourceName} 已生成待确认候选，${result.file.sizeBytes} 字节，${result.file.characterCount} 字。`);
+      }
+    } finally {
+      setImportFileBusy(false);
+    }
+  }
+
   async function submitImport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!project || importBusy) return;
@@ -269,15 +292,16 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onReview, onPublis
         </section>
 
         <section className="knowledge-actions">
-          <button disabled title="真实文件读取后续再启用"><FileText size={16} />文件读取关闭</button>
-          <button disabled title="当前只支持粘贴已脱敏 QA 文本，不读取表格文件"><Archive size={16} />QA 表读取关闭</button>
-          <button disabled title="当前不调用飞书"><FileText size={16} />飞书同步关闭</button>
+          <button disabled={importFileBusy} title="选择一个 Markdown 或 TXT 文件，检查后生成待确认知识候选" onClick={() => void runTextFileImport()}><FileText size={16} />导入 Markdown/TXT</button>
+          <button disabled title="当前不读取 QA 表格文件"><Archive size={16} />QA 表读取关闭</button>
+          <button disabled title="当前不调用飞书同步"><FileText size={16} />飞书同步关闭</button>
           <label>
             <Search size={16} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索问题、SAP对象、文档、逻辑图、QA" />
           </label>
         </section>
-        <p className="knowledge-action-note">当前阶段只粘贴已脱敏的本地文本：不会读取文件路径，不会连接飞书，不会自动正式入库。</p>
+        <p className="knowledge-action-note">当前只支持单个 Markdown/TXT 小文件或粘贴已脱敏文本；不会保存绝对路径，不会连接飞书，不会自动正式入库。</p>
+        {importFileStatus ? <p className="knowledge-file-import-status">{importFileStatus}</p> : null}
 
         <form className="knowledge-import-form" onSubmit={submitImport}>
           <div className="knowledge-import-fields">

@@ -467,6 +467,27 @@ export interface KnowledgeImportLocalTextResult {
   generatedFiles: string[];
 }
 
+export interface KnowledgeImportTextFileInput {
+  projectId: string;
+}
+
+export interface KnowledgeImportTextFileMetadata {
+  sourceName: string;
+  extension: ".md" | ".markdown" | ".txt";
+  sizeBytes: number;
+  characterCount: number;
+}
+
+export type KnowledgeImportTextFileResult =
+  | {
+      cancelled: true;
+      message: string;
+    }
+  | ({
+      cancelled: false;
+      file: KnowledgeImportTextFileMetadata;
+    } & KnowledgeImportLocalTextResult);
+
 export interface CreateLocalProjectInput {
   name: string;
   sapVersion: Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;

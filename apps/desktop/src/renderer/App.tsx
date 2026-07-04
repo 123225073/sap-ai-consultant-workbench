@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -738,6 +738,25 @@ function App() {
     }
   }
 
+  async function importKnowledgeTextFile(projectId: string): Promise<KnowledgeImportTextFileResult | null> {
+    if (!bridge) {
+      setNotice("请在桌面应用中导入 Markdown/TXT 文件。");
+      return null;
+    }
+    const response = await bridge.importKnowledgeTextFile({ projectId });
+    if (!response.ok) {
+      setNotice(response.error);
+      return null;
+    }
+    if (response.data.cancelled) {
+      setNotice(response.data.message);
+      return response.data;
+    }
+    setState(response.data.state);
+    setNotice(`已从 ${response.data.file.sourceName} 生成待确认知识候选；仍需人工审核后才能入库。`);
+    return response.data;
+  }
+
   async function reviewKnowledgeForPublish(projectId: string, input: KnowledgeReviewInput) {
     if (!bridge) {
       setNotice("请在桌面应用中记录知识审核。");
@@ -925,6 +944,7 @@ function App() {
             notice={notice}
             onBack={() => setActiveView("case")}
             onImport={importKnowledgeLocalText}
+            onImportTextFile={importKnowledgeTextFile}
             onReview={reviewKnowledgeForPublish}
             onPublish={publishKnowledge}
             onMarkConflict={markKnowledgeConflicted}
