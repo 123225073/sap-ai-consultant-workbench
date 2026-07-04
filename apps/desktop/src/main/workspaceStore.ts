@@ -26,12 +26,14 @@ import {
 } from "./standardsService";
 import {
   appendKnowledgeCandidatesFromCase,
+  createCaseKnowledgeReference,
   createImportedKnowledgeCandidate,
   createProjectKnowledge,
   editKnowledgeCandidate,
   expireKnowledgeItem,
   markKnowledgeItemConflicted,
   normalizeProjectKnowledge,
+  parseKnowledgeCaseReferenceInput,
   parseKnowledgeEditInput,
   parseKnowledgeImportLocalTextInput,
   parseKnowledgeActionInput,
@@ -45,7 +47,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -217,6 +219,7 @@ function demoCase(): CaseSummary {
     lastOpenedAt: nowIso(),
     folderName: "demo001",
     currentSummary: "演示BOM筛选口径与当前业务范围不一致，已生成本地样例输出。",
+    knowledgeReferences: [],
     messages: [
       {
         id: "seed-user-1",
@@ -498,6 +501,7 @@ function createLocalCaseRecord(projectId: string, title: string, existingCaseIds
     lastOpenedAt: createdAt,
     folderName: id,
     currentSummary: "New local case. No output has been generated yet.",
+    knowledgeReferences: [],
     messages: []
   };
 }
@@ -729,6 +733,38 @@ function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | nul
   };
 }
 
+function normalizeKnowledgeReferenceSourceType(value: unknown): CaseKnowledgeReference["sourceType"] {
+  if (value === "document-import" || value === "qa-import" || value === "manual") return value;
+  return "case-candidate";
+}
+
+function normalizeCaseKnowledgeReferences(value: unknown): CaseKnowledgeReference[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const references: CaseKnowledgeReference[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Partial<CaseKnowledgeReference>;
+    const itemId = safeId(candidate.itemId, "");
+    if (!itemId || seen.has(itemId)) continue;
+    seen.add(itemId);
+    references.push({
+      itemId,
+      title: text(candidate.title).slice(0, 120),
+      summary: text(candidate.summary).slice(0, 500),
+      sourceType: normalizeKnowledgeReferenceSourceType(candidate.sourceType),
+      sourceCaseId: typeof candidate.sourceCaseId === "string" ? safeId(candidate.sourceCaseId, "") || null : null,
+      sourceFilePath: null,
+      sapObjects: Array.isArray(candidate.sapObjects)
+        ? candidate.sapObjects.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean).slice(0, 20)
+        : [],
+      publishedAt: typeof candidate.publishedAt === "string" ? candidate.publishedAt : null,
+      attachedAt: text(candidate.attachedAt, nowIso())
+    });
+  }
+  return references;
+}
+
 function normalizeCaseSummary(value: unknown, projectId: string, fallback: CaseSummary): CaseSummary {
   const candidate = value && typeof value === "object" ? value as Partial<CaseSummary> : fallback;
   const id = safeId(candidate.id, fallback.id);
@@ -751,8 +787,46 @@ function normalizeCaseSummary(value: unknown, projectId: string, fallback: CaseS
     lastOpenedAt: text(candidate.lastOpenedAt, nowIso()),
     folderName,
     currentSummary: text(candidate.currentSummary, text(candidate.summary, fallback.currentSummary)),
+    knowledgeReferences: normalizeCaseKnowledgeReferences(candidate.knowledgeReferences),
     messages
   };
+}
+
+function reconcileCaseKnowledgeReferences(project: ProjectSummary): ProjectSummary {
+  const knowledgeById = new Map(project.knowledge.items.map((item) => [item.id, item]));
+  return {
+    ...project,
+    cases: project.cases.map((caseItem) => {
+      const seen = new Set<string>();
+      const knowledgeReferences: CaseKnowledgeReference[] = [];
+      for (const persistedReference of caseItem.knowledgeReferences) {
+        if (seen.has(persistedReference.itemId)) continue;
+        const item = knowledgeById.get(persistedReference.itemId);
+        if (!item || item.projectId !== project.id || item.status !== "published") continue;
+        try {
+          knowledgeReferences.push(createCaseKnowledgeReference(item, persistedReference.attachedAt));
+          seen.add(persistedReference.itemId);
+        } catch {
+          continue;
+        }
+      }
+      return {
+        ...caseItem,
+        knowledgeReferences
+      };
+    })
+  };
+}
+
+function caseReferenceFingerprint(state: StoredState): unknown {
+  const projects = Array.isArray(state.projects) ? state.projects : [];
+  return projects.map((project) => ({
+    id: project.id,
+    cases: Array.isArray(project.cases) ? project.cases.map((caseItem) => ({
+      id: caseItem.id,
+      knowledgeReferences: Array.isArray(caseItem.knowledgeReferences) ? caseItem.knowledgeReferences : []
+    })) : []
+  }));
 }
 
 export class WorkspaceStore {
@@ -1460,6 +1534,46 @@ export class WorkspaceStore {
     });
   }
 
+  async attachPublishedKnowledgeToCurrentCase(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+    const referenceInput = parseKnowledgeCaseReferenceInput(input);
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project || project.id !== state.activeProjectId) {
+      throw new Error("只能把当前项目的已发布知识加入当前案件上下文。");
+    }
+    const currentCase = this.getActiveCase(state);
+    if (currentCase.projectId !== project.id) {
+      throw new Error("当前案件不属于当前项目，无法引用知识。");
+    }
+    const knowledgeItem = project.knowledge.items.find((item) => item.id === referenceInput.itemId);
+    if (!knowledgeItem) {
+      throw new Error("未在当前项目中找到该知识项。");
+    }
+    if (knowledgeItem.projectId !== project.id) {
+      throw new Error("该知识项不属于当前项目，无法加入当前案件上下文。");
+    }
+    const attachedAt = nowIso();
+    const reference = createCaseKnowledgeReference(knowledgeItem, attachedAt);
+    const existingReference = currentCase.knowledgeReferences.find((item) => item.itemId === reference.itemId);
+    currentCase.knowledgeReferences = existingReference
+      ? currentCase.knowledgeReferences.map((item) => item.itemId === reference.itemId ? { ...item, attachedAt: reference.attachedAt } : item)
+      : [...currentCase.knowledgeReferences, reference];
+    if (!existingReference) {
+      currentCase.currentSummary = `${currentCase.currentSummary} 已引用已发布知识：${reference.title}。`.slice(0, 500);
+      currentCase.summary = currentCase.currentSummary;
+    }
+    currentCase.updatedAt = attachedAt;
+    currentCase.lastOpenedAt = attachedAt;
+    project.updatedAt = attachedAt;
+    await this.saveState(state);
+    await this.writeProjectMetadata(project);
+    await this.writeCaseMarkdown(state, currentCase, buildCaseMaintenanceArtifacts(project, currentCase));
+    await this.refreshSearchIndex(state);
+    return this.withFiles(state);
+    });
+  }
+
   async markKnowledgeConflicted(projectId: string, input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const actionInput = parseKnowledgeActionInput(input);
@@ -1693,6 +1807,7 @@ export class WorkspaceStore {
   private shouldPersistNormalizedState(parsed: StoredState, normalized: StoredState): boolean {
     if (parsed.schemaVersion !== normalized.schemaVersion) return true;
     if (parsed.activeProjectId !== normalized.activeProjectId || parsed.activeCaseId !== normalized.activeCaseId) return true;
+    if (JSON.stringify(caseReferenceFingerprint(parsed)) !== JSON.stringify(caseReferenceFingerprint(normalized))) return true;
     const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
     const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
     if (!parsedProject || !normalizedProject) return true;
@@ -1751,10 +1866,10 @@ export class WorkspaceStore {
         knowledge: normalizeProjectKnowledge(projectId, (project as Partial<ProjectSummary>).knowledge, projectId === DEMO_PROJECT_ID),
         cases
       };
-      return {
+      return reconcileCaseKnowledgeReferences({
         ...normalizedProject,
         config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config, { preserveVerification: true })
-      };
+      });
     });
     const requestedProjectId = safeId(state.activeProjectId, DEMO_PROJECT_ID);
     const activeProject = normalizedProjects.find((project) => project.id === requestedProjectId) ?? normalizedProjects[0] ?? demoProject();

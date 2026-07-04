@@ -1,5 +1,5 @@
 import { standardsSummaryForTask } from "./standardsService";
-import type { CaseGeneratedFile, CaseMessage, CaseSummary, CaseWorkflowInput, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
+import type { CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
 import { renderSafeModelDraftFiles, safeModelDraftBoundary, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 
 export const TASK_MODE_LABELS: Record<TaskMode, string> = {
@@ -375,14 +375,49 @@ function renderConversation(messages: CaseMessage[]): string {
     .join("\n");
 }
 
+const knowledgeReferenceSourceLabels: Record<CaseKnowledgeReference["sourceType"], string> = {
+  "case-candidate": "案件经验",
+  "document-import": "本地文档",
+  "qa-import": "QA文本",
+  manual: "手工录入"
+};
+
+function knowledgeReferenceLine(reference: CaseKnowledgeReference): string {
+  const sapObjects = reference.sapObjects.length > 0 ? reference.sapObjects.join(", ") : "未绑定";
+  return `- ${reference.title}：${reference.summary}（来源：${knowledgeReferenceSourceLabels[reference.sourceType]}；发布：${reference.publishedAt ?? "未知"}；引用：${reference.attachedAt}；SAP对象：${sapObjects}）`;
+}
+
+function renderKnowledgeReferenceSection(references: CaseKnowledgeReference[]): string[] {
+  if (references.length === 0) {
+    return ["- 当前案件尚未引用已发布知识。"];
+  }
+  return references.map(knowledgeReferenceLine);
+}
+
+function metadataKnowledgeReferences(references: CaseKnowledgeReference[]) {
+  return references.map((reference) => ({
+    itemId: reference.itemId,
+    title: reference.title,
+    summary: reference.summary,
+    sourceType: reference.sourceType,
+    sourceCaseId: reference.sourceCaseId,
+    sourceFilePath: reference.sourceFilePath,
+    sapObjects: reference.sapObjects,
+    publishedAt: reference.publishedAt,
+    attachedAt: reference.attachedAt
+  }));
+}
+
 function renderTimeline(caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): string {
   const messageEvents = caseItem.messages.map((message) => `- ${message.createdAt}：${message.role === "user" ? "用户补充案件信息" : `${CASE_OUTPUT_PHASE} 本地工作流生成回复`}（${TASK_MODE_LABELS[message.taskMode]}）。`);
   const fileEvents = generatedFiles.map((file) => `- ${nowIso()}：生成或刷新文件 ${file.relativePath}。`);
+  const knowledgeReferenceEvents = caseItem.knowledgeReferences.map((reference) => `- ${reference.attachedAt}：引用已发布知识 ${reference.title}。`);
   return [
     "# 时间线",
     "",
     `- ${caseItem.createdAt}：创建案件。`,
     ...messageEvents,
+    ...knowledgeReferenceEvents,
     ...fileEvents
   ].join("\n");
 }
@@ -422,6 +457,10 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "## SAP 对象",
     "",
     "- 尚未读取真实 SAP 对象。",
+    "",
+    "## 已引用知识",
+    "",
+    ...renderKnowledgeReferenceSection(caseItem.knowledgeReferences),
     "",
     "## 最近对话",
     "",
@@ -468,6 +507,10 @@ function renderReadme(project: ProjectSummary, caseItem: CaseSummary, generatedF
     "",
     ...generatedFiles.filter((file) => file.purpose === "candidate_knowledge").map((file) => `- ${file.relativePath}（待人工确认）`),
     "",
+    "## 已引用知识",
+    "",
+    ...renderKnowledgeReferenceSection(caseItem.knowledgeReferences),
+    "",
     "## 过程材料",
     "",
     ...generatedFiles.filter((file) => file.purpose !== "output" && file.purpose !== "candidate_knowledge").map((file) => `- ${file.relativePath}`)
@@ -499,6 +542,8 @@ export function buildCaseWorkflowArtifacts(project: ProjectSummary, caseItem: Ca
       title: enrichedCase.title,
       status: enrichedCase.status,
       updatedAt: enrichedCase.updatedAt,
+      knowledgeReferencePhase: "phase22-published-knowledge-case-context",
+      knowledgeReferences: metadataKnowledgeReferences(enrichedCase.knowledgeReferences),
       lastTaskMode: input.taskMode,
       lastModelId: modelDraft?.modelId ?? input.modelId,
       generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
@@ -545,6 +590,8 @@ export function buildCaseMaintenanceArtifacts(project: ProjectSummary, caseItem:
       title: caseItem.title,
       status: caseItem.status,
       updatedAt: caseItem.updatedAt,
+      knowledgeReferencePhase: "phase22-published-knowledge-case-context",
+      knowledgeReferences: metadataKnowledgeReferences(caseItem.knowledgeReferences),
       lastTaskMode: lastMessage?.taskMode ?? "problem-analysis",
       lastModelId: lastMessage?.modelId ?? "local-workflow",
       generatedFiles: [],

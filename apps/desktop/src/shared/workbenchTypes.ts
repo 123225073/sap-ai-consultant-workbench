@@ -405,6 +405,18 @@ export interface KnowledgeItem {
   timeline: KnowledgeTimelineEvent[];
 }
 
+export interface CaseKnowledgeReference {
+  itemId: string;
+  title: string;
+  summary: string;
+  sourceType: KnowledgeSourceType;
+  sourceCaseId: string | null;
+  sourceFilePath: string | null;
+  sapObjects: string[];
+  publishedAt: string | null;
+  attachedAt: string;
+}
+
 export interface KnowledgeDocumentJob {
   id: string;
   projectId: string;
@@ -460,6 +472,11 @@ export interface KnowledgeEditInput {
   effectiveFrom?: string | null;
   effectiveTo?: string | null;
   note: string;
+}
+
+export interface KnowledgeCaseReferenceInput {
+  itemId: string;
+  note?: string;
 }
 
 export interface KnowledgeImportLocalTextInput {
@@ -567,6 +584,7 @@ export interface CaseSummary {
   lastOpenedAt: string;
   folderName: string;
   currentSummary: string;
+  knowledgeReferences: CaseKnowledgeReference[];
   messages: CaseMessage[];
 }
 

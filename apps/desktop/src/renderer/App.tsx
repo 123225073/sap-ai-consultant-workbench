@@ -27,7 +27,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationReport, ApiProviderConfig, CaseFileNode, CaseFilePreview, CaseMessage, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
 
@@ -787,6 +787,20 @@ function App() {
     }
   }
 
+  async function attachKnowledgeToCurrentCase(projectId: string, input: KnowledgeCaseReferenceInput) {
+    if (!bridge) {
+      setNotice("请在桌面应用中把已发布知识加入当前案件上下文。");
+      return;
+    }
+    const response = await bridge.attachKnowledgeToCurrentCase(projectId, input);
+    if (response.ok) {
+      setState(response.data);
+      setNotice("已把这条已发布知识加入当前案件上下文；不会复制知识正文。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
   async function markKnowledgeConflicted(projectId: string, input: KnowledgeItemActionInput) {
     if (!bridge) {
       setNotice("请在桌面应用中标记知识冲突。");
@@ -963,6 +977,7 @@ function App() {
             onImportTextFile={importKnowledgeTextFile}
             onReview={reviewKnowledgeForPublish}
             onEdit={editKnowledgeCandidate}
+            onAttachToCurrentCase={attachKnowledgeToCurrentCase}
             onPublish={publishKnowledge}
             onMarkConflict={markKnowledgeConflicted}
             onExpire={expireKnowledge}

@@ -140,6 +140,7 @@ $allowedIpc = @(
   "workbench:knowledge-import-text-file",
   "workbench:knowledge-review-for-publish",
   "workbench:knowledge-edit-candidate",
+  "workbench:knowledge-attach-to-current-case",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
   "workbench:knowledge-expire"
@@ -914,6 +915,88 @@ if ($phase21PublishedRendererGuardCount -lt 2) {
   throw "Phase 21 renderer actions must disable both conflict and expire controls for published knowledge."
 }
 Write-Host "OK phase21 conflict and expire transitions keep published history read-only."
+
+Write-Section "Phase 22 published knowledge case context scan"
+$phase22KnowledgeContextMarkers = @(
+  @{ Pattern = "CaseKnowledgeReference"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "KnowledgeCaseReferenceInput"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "knowledgeReferences"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "parseKnowledgeCaseReferenceInput"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "hasReusableReviewRecord"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "createCaseKnowledgeReference"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "phase22-published-knowledge-case-context"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = "reconcileCaseKnowledgeReferences"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "caseReferenceFingerprint"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "attachPublishedKnowledgeToCurrentCase"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "workbench:knowledge-attach-to-current-case"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "attachKnowledgeToCurrentCase"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "attachKnowledgeToCurrentCase"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
+  @{ Pattern = "attachKnowledgeToCurrentCase"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "runAttachToCase"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = "metadataKnowledgeReferences"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "phase22-published-knowledge-case-context"; Path = "scripts/phase22-published-knowledge-case-context-probe.mjs" }
+)
+foreach ($marker in $phase22KnowledgeContextMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase22 knowledge context marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 22 knowledge context marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase22ForbiddenCapabilities = @(
+  "showOpenDialog",
+  "dialog.show",
+  "readFile(",
+  "fetch(",
+  "execFile(",
+  "spawn(",
+  "exec(",
+  "openExternal",
+  "openPath",
+  "loadURL",
+  "feishu-sync",
+  "unlink",
+  "rm(",
+  "publishKnowledgeItem",
+  "content:"
+)
+
+$phase22AttachBlocks = @(
+  @{ Name = "store attach method"; Path = "apps/desktop/src/main/workspaceStore.ts"; Start = "async attachPublishedKnowledgeToCurrentCase(projectId: string, input: unknown)"; End = "async markKnowledgeConflicted" },
+  @{ Name = "knowledge reference parser"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function parseKnowledgeCaseReferenceInput"; End = "export function parseKnowledgeReviewInput" },
+  @{ Name = "knowledge safe reference builder"; Path = "apps/desktop/src/main/knowledgeService.ts"; Start = "export function createCaseKnowledgeReference"; End = "export function knowledgeCounts" },
+  @{ Name = "renderer attach submit"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx"; Start = "async function runAttachToCase"; End = "async function runReview" }
+)
+foreach ($blockSpec in $phase22AttachBlocks) {
+  $block = Get-SourceBlock -Path $blockSpec.Path -StartMarker $blockSpec.Start -EndMarker $blockSpec.End
+  foreach ($forbidden in $phase22ForbiddenCapabilities) {
+    if ($block.Contains($forbidden)) {
+      throw "Phase 22 knowledge context $($blockSpec.Name) contains forbidden marker: $forbidden"
+    }
+  }
+  Write-Host "OK phase22 knowledge context block capability scan: $($blockSpec.Name)"
+}
+
+$phase22ReferenceBuilderBlock = Get-SourceBlock -Path "apps/desktop/src/main/knowledgeService.ts" -StartMarker "export function createCaseKnowledgeReference" -EndMarker "export function knowledgeCounts"
+foreach ($required in @('item.status !== "published"', "hasReusableReviewRecord(item)", "assertKnowledgePublishSafe(item)", "summary:", "sourceFilePath: null", "publishedAt:", "attachedAt")) {
+  if (-not $phase22ReferenceBuilderBlock.Contains($required)) {
+    throw "Phase 22 safe reference builder is missing required marker: $required"
+  }
+}
+if ($phase22ReferenceBuilderBlock.Contains("item.content")) {
+  throw "Phase 22 safe reference builder must not copy full knowledge content."
+}
+Write-Host "OK phase22 safe reference builder copies summary/source metadata only and requires review."
+
+foreach ($required in @("metadataKnowledgeReferences", "renderKnowledgeReferenceSection", "phase22-published-knowledge-case-context")) {
+  $caseWorkflowHit = Select-String -SimpleMatch -Pattern $required -Path "apps/desktop/src/main/caseWorkflowService.ts"
+  if (-not $caseWorkflowHit) {
+    throw "Phase 22 case artifact rendering marker is missing: $required"
+  }
+}
+Write-Host "OK phase22 case artifact rendering includes references and metadata marker."
 
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src

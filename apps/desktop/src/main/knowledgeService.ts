@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 import type {
+  CaseKnowledgeReference,
   CaseGeneratedFile,
   CaseSummary,
+  KnowledgeCaseReferenceInput,
   KnowledgeDocumentJob,
   KnowledgeEditInput,
   KnowledgeImportLocalTextInput,
@@ -25,6 +27,7 @@ import type {
 const MAX_KNOWLEDGE_CONTENT_LENGTH = 12000;
 const MAX_KNOWLEDGE_ITEMS = 500;
 const PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER = "phase21-knowledge-edit-conflict-resolution";
+export const PHASE22_PUBLISHED_KNOWLEDGE_CASE_CONTEXT_MARKER = "phase22-published-knowledge-case-context";
 export const KNOWLEDGE_IMPORT_ALLOWED_KEYS = new Set(["projectId", "title", "sourceKind", "sourceName", "body", "sapObjects"]);
 export const KNOWLEDGE_EDIT_ALLOWED_KEYS = new Set(["itemId", "title", "summary", "content", "sapObjects", "effectiveFrom", "effectiveTo", "note"]);
 export const MAX_KNOWLEDGE_IMPORT_BODY_LENGTH = 8000;
@@ -35,6 +38,7 @@ const MAX_KNOWLEDGE_IMPORT_SOURCE_NAME_LENGTH = 160;
 const MAX_KNOWLEDGE_IMPORT_SAP_OBJECTS = 12;
 const KNOWLEDGE_IMPORT_ALLOWED_SOURCE_KINDS = new Set<KnowledgeImportSourceKind>(["local-text", "markdown-note", "qa-text"]);
 const KNOWLEDGE_REVIEW_ALLOWED_KEYS = new Set(["itemId", "note", "checklist"]);
+export const KNOWLEDGE_CASE_REFERENCE_ALLOWED_KEYS = new Set(["itemId", "note"]);
 const KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_KEYS = new Set(["projectId"]);
 
 const KNOWLEDGE_STATUS_LABELS: Record<KnowledgeItemStatus, string> = {
@@ -374,6 +378,18 @@ export function parseKnowledgeActionInput(input: unknown): KnowledgeItemActionIn
   const note = typeof candidate.note === "string" ? candidate.note.trim().slice(0, 500) : "";
   if (note) assertNoSensitiveKnowledgeContent(note);
   return { itemId: candidate.itemId, note };
+}
+
+export function parseKnowledgeCaseReferenceInput(input: unknown): KnowledgeCaseReferenceInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("Knowledge reference request is invalid.");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !KNOWLEDGE_CASE_REFERENCE_ALLOWED_KEYS.has(key))) {
+    throw new Error("Knowledge reference request contains unsupported fields.");
+  }
+  const actionInput = parseKnowledgeActionInput(input);
+  return { itemId: actionInput.itemId, note: actionInput.note };
 }
 
 export function parseKnowledgeReviewInput(input: unknown): KnowledgeReviewInput {
@@ -1010,6 +1026,37 @@ export function expireKnowledgeItem(base: ProjectKnowledgeBase, input: Knowledge
       timeline: [...item.timeline, event("expired", input.note || "人工标记为已失效，保留历史记录。", updatedAt)]
     };
   });
+}
+
+function safeReferenceText(value: string, maxLength: number): string {
+  const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
+  assertNoSensitiveKnowledgeContent(cleaned);
+  return cleaned;
+}
+
+function hasReusableReviewRecord(item: KnowledgeItem): boolean {
+  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewChecklist && hasCompleteReviewChecklist(item.reviewChecklist));
+}
+
+export function createCaseKnowledgeReference(item: KnowledgeItem, attachedAt: string): CaseKnowledgeReference {
+  if (item.status !== "published") {
+    throw new Error("Only published knowledge can be referenced by a case.");
+  }
+  if (!hasReusableReviewRecord(item)) {
+    throw new Error("Published knowledge must have a human review record before it can be reused in a case context.");
+  }
+  assertKnowledgePublishSafe(item);
+  return {
+    itemId: item.id,
+    title: safeReferenceText(item.title, 120),
+    summary: safeReferenceText(item.summary, 500),
+    sourceType: item.sourceType,
+    sourceCaseId: item.sourceCaseId,
+    sourceFilePath: null,
+    sapObjects: item.sapObjects.map((objectName) => safeReferenceText(objectName, 80)).slice(0, 20),
+    publishedAt: item.publishedAt,
+    attachedAt
+  };
 }
 
 export function knowledgeCounts(items: KnowledgeItem[]): KnowledgeStatusCounts {

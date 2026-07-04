@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Archive, ArrowLeft, CheckCircle2, FileText, RefreshCcw, Save, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeDocumentJobStatus, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import type { KnowledgeCaseReferenceInput, KnowledgeDocumentJobStatus, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -81,6 +81,10 @@ function hasCompleteReview(item: KnowledgeItem): boolean {
   return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewedContentHash && item.reviewChecklist);
 }
 
+function hasReusableReviewRecord(item: KnowledgeItem): boolean {
+  return Boolean(item.reviewedAt && item.reviewer && item.reviewNote && item.reviewNote.trim().length >= 8 && item.reviewChecklist);
+}
+
 function reviewChecklistComplete(checklist: KnowledgeReviewInput["checklist"]): boolean {
   return reviewChecklistLabels.every((item) => checklist[item.id]);
 }
@@ -100,12 +104,13 @@ interface KnowledgeCenterProps {
   onImportTextFile: (projectId: string) => Promise<KnowledgeImportTextFileResult | null>;
   onReview: (projectId: string, input: KnowledgeReviewInput) => Promise<void>;
   onEdit: (projectId: string, input: KnowledgeEditInput) => Promise<boolean>;
+  onAttachToCurrentCase: (projectId: string, input: KnowledgeCaseReferenceInput) => Promise<void>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onEdit, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onEdit, onAttachToCurrentCase, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
@@ -179,6 +184,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   const selectedEditedCandidate = selectedItem ? isPhase21EditedCandidate(selectedItem) : false;
   const selectedRequiresReviewGate = selectedImportedCandidate || selectedEditedCandidate;
   const selectedHasReview = selectedItem ? hasCompleteReview(selectedItem) : false;
+  const selectedHasReusableReview = selectedItem ? hasReusableReviewRecord(selectedItem) : false;
   const selectedHasBlockingConflict = selectedItem ? selectedItem.status === "conflicted" || selectedItem.conflictWithIds.length > 0 : false;
   const canReviewSelected = Boolean(selectedItem && selectedRequiresReviewGate && selectedItem.status === "pending" && !selectedHasBlockingConflict && !busyItemId);
   const canEditSelected = Boolean(selectedItem && (selectedItem.status === "draft" || selectedItem.status === "pending" || selectedItem.status === "conflicted") && !busyItemId);
@@ -193,6 +199,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     selectedItem.conflictWithIds.length > 0 ||
     (selectedRequiresReviewGate && !selectedHasReview)
   );
+  const attachDisabled = Boolean(!selectedItem || selectedItem.status !== "published" || !selectedHasReusableReview || busyItemId === selectedItem.id);
 
   async function runAction(action: "publish" | "conflict" | "expire", item: KnowledgeItem) {
     if (!project || busyItemId) return;
@@ -205,6 +212,16 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
       } else {
         await onExpire(project.id, { itemId: item.id, note: "人工标记为已失效。" });
       }
+    } finally {
+      setBusyItemId("");
+    }
+  }
+
+  async function runAttachToCase(item: KnowledgeItem) {
+    if (!project || busyItemId || item.status !== "published") return;
+    setBusyItemId(item.id);
+    try {
+      await onAttachToCurrentCase(project.id, { itemId: item.id, note: "reference published knowledge in current case" });
     } finally {
       setBusyItemId("");
     }
@@ -547,6 +564,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
             ) : null}
 
             <section className="knowledge-detail-actions">
+              <button disabled={attachDisabled} title="只有已发布且已人工审核的知识才能加入当前案件上下文" onClick={() => void runAttachToCase(selectedItem)}><FileText size={16} />加入当前案件上下文</button>
               <button disabled={publishDisabled} title={selectedRequiresReviewGate && !selectedHasReview ? "该候选必须先记录人工审核" : selectedHasBlockingConflict ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
