@@ -18,7 +18,8 @@
     "package:dir": "npm run build && electron-builder --dir --win --publish never",
     "package:win:installer": "npm run build && electron-builder --win nsis --publish never",
     "package:win:portable": "npm run build && electron-builder --win portable --publish never",
-    "package:win": "npm run build && electron-builder --win nsis portable --publish never"
+    "package:win": "npm run build && electron-builder --win nsis portable --publish never",
+    "package:win:signed": "npm run build && electron-builder --win nsis portable --publish never --config.forceCodeSigning=true"
   },
   "dependencies": {
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1"
@@ -53,6 +54,12 @@
       "package.json"
     ],
     "win": {
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      },
       "target": [
         {
           "target": "nsis",

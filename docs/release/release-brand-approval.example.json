@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "mode": "independent",
+  "productName": "<经批准的独立产品名>",
+  "publisherLegalName": "<代码签名证书对应的法定主体>",
+  "appId": "<组织控制域名的反向域名标识>",
+  "artifactPrefix": "<不含空格的安装包前缀>",
+  "iconFile": "apps/desktop/build-resources/icon.ico",
+  "iconSha256": "<经批准 icon.ico 的 SHA-256>",
+  "sapAuthorizationReference": null
+}

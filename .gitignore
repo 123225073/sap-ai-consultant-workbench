@@ -68,7 +68,7 @@ out/
 .next/
 coverage/
 output/
-release/
+/release/
 *.tsbuildinfo
 
 # Package manager caches

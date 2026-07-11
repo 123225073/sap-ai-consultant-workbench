@@ -5,7 +5,7 @@ import path from "node:path";
 const scriptDir = path.resolve("scripts");
 const entries = await readdir(scriptDir);
 const probes = entries
-  .filter((name) => /^(?:phase(?:1[1-9]|2[0-9]|3[0-9]|4[0-2]).*-probe|external-connector-user-errors-probe)\.mjs$/.test(name))
+  .filter((name) => /^(?:phase(?:1[1-9]|2[0-9]|3[0-9]|4[0-3]).*-probe|external-connector-user-errors-probe)\.mjs$/.test(name))
   .sort();
 
 const failed = [];

@@ -11,11 +11,15 @@
     "build": "npm --workspace apps/desktop run build",
     "check": "npm --workspace apps/desktop run check",
     "probe:phase41": "node scripts/phase41-electron-lifecycle-probe.mjs && node scripts/phase41-electron-smoke-probe.mjs && node scripts/phase41-local-ai-capability-probe.mjs && node scripts/phase41-model-provider-protocol-probe.mjs && node scripts/phase41-multi-sap-connections-probe.mjs && node scripts/phase41-product-feedback-ui-probe.mjs",
+    "probe:phase43": "node scripts/phase43-desktop-release-uat-probe.mjs",
+    "probe:release-uat": "npm run build && node scripts/phase41-electron-lifecycle-probe.mjs && node scripts/phase41-electron-smoke-probe.mjs && node scripts/phase43-desktop-release-uat-probe.mjs",
     "probe:regression": "npm run build && node scripts/run-phase27-41-probes.mjs",
     "verify": "npm run check && npm run probe:regression && powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security-preflight.ps1 && git diff --check",
     "package:dir": "npm --workspace apps/desktop run package:dir",
     "package:win": "npm --workspace apps/desktop run package:win",
     "release:win:signed": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed-release.ps1",
+    "release:win:signed:preflight": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-signed-release.ps1 -PreflightOnly",
+    "release:win:signed:test": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-signing-self-test.ps1",
     "start": "npm --workspace apps/desktop run start"
   },
   "engines": {

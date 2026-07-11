@@ -48,6 +48,8 @@ MVP 只做个人本地版：
 - [功能对抗式审计模板](docs/architecture/FEATURE_ADVERSARIAL_REVIEW_TEMPLATE.md)
 - [0.1.0 发布就绪审查](docs/release/2026-07-11-release-readiness.md)
 - [Phase 42 正式发布加固审查](docs/architecture/reviews/2026-07-11-phase-42-production-hardening-review.md)
+- [Phase 43 桌面正式 UAT](docs/release/PHASE43_DESKTOP_RELEASE_UAT.md)
+- [Windows 正式签名与发布证据链](docs/release/WINDOWS_SIGNING_AND_RELEASE_EVIDENCE.md)
 - [内部试用操作手册](docs/release/INTERNAL_PILOT_RUNBOOK.md)
 - [已知限制](docs/release/KNOWN_LIMITATIONS.md)
 
@@ -71,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/security-preflight.p
 git diff --check
 ```
 
-也可以运行 `npm run verify`，一次完成类型检查、正式构建、Phase 11-42 全量探针、真实 Electron 启动/单实例检查、安全预检和 diff 检查。组织代码签名证书配置完成后，使用 `npm run release:win:signed` 生成并强制验签正式 Windows 包。
+也可以运行 `npm run verify`，一次完成类型检查、正式构建、Phase 11-43 全量探针、真实 Electron 启动/单实例检查、桌面图形 UAT、安全预检和 diff 检查。组织代码签名证书与品牌批准清单配置完成后，使用 `npm run release:win:signed` 生成并强制验签正式 Windows 包。
 
 各阶段真实工作流还配有 `scripts/phase*-probe.mjs` 探针，重点覆盖持久化、IPC 边界、SAP 只读、模型渠道、规范和知识生命周期。
 
