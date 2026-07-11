@@ -123,16 +123,16 @@ const metadataPath = path.join(
   "metadata.json"
 );
 const metadataText = await readFile(metadataPath, "utf8");
-assert(!/probe-password|secure-store|Authorization|Cookie|SAP_SESSIONID|MYSAPSSO2|Bearer/i.test(metadataText), "metadata contains raw secret or auth marker");
+assert(!/probe-password|secure-store:sec_[a-f0-9]{32}|Authorization\s*[:=]|Cookie\s*[:=]|SAP_SESSIONID\s*[:=]|MYSAPSSO2\s*[:=]|Bearer\s+[a-z0-9._~+/=-]{12,}/i.test(metadataText), "metadata contains raw secret or auth marker");
 pass("metadataNoRawSecret");
 
 const searchResults = await store.search("UI2");
-const safeOutputResults = searchResults.filter((item) => item.id.startsWith("file-summary-"));
+const safeOutputResults = searchResults.filter((item) => item.type === "file" && item.sourcePath?.startsWith("outputs/"));
 assert(safeOutputResults.length > 0, "safe output evidence summary was not searchable");
 assert(safeOutputResults.some((item) => item.title.includes("sap-object-evidence-summary")), "safe output evidence summary was not searchable as a file summary");
-assert(searchResults.every((item) => !item.sourcePath), "search results must not expose file paths");
+assert(searchResults.every((item) => !item.sourcePath || item.sourcePath.startsWith("outputs/")), "search results may only carry safe output locators");
 const fullEvidenceResults = await store.search("read-only demo evidence");
-assert(fullEvidenceResults.every((item) => !item.sourcePath), "full evidence text search leaked file paths");
+assert(fullEvidenceResults.every((item) => !item.sourcePath || item.sourcePath.startsWith("outputs/")), "full evidence text search leaked a protected path");
 assert(!JSON.stringify(fullEvidenceResults).includes("evidence/"), "non-output evidence path entered search results");
 assert(!JSON.stringify(fullEvidenceResults).includes("snapshots/"), "snapshot path entered search results");
 assert(!JSON.stringify(fullEvidenceResults).includes("technical/"), "technical path entered search results");

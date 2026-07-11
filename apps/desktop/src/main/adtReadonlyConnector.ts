@@ -1,5 +1,6 @@
 import http from "node:http";
 import https from "node:https";
+import { externalConnectorThrownError, externalConnectorUserError } from "./externalConnectorUserError";
 import type { AdtConfig, AdtRedactedSystemInfo, AdtT000ProbeResult, AdtVerificationError, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationStep } from "../shared/workbenchTypes";
 import type { SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import type { SapObjectEvidenceRequest } from "../shared/workbenchTypes";
@@ -71,6 +72,127 @@ function error(code: AdtVerificationError["code"], message: string, suggestion: 
   return { code, message, suggestion };
 }
 
+type AdtRequestFailureKind = "http" | "content" | "timeout" | "response-too-large";
+
+class AdtRequestFailure extends Error {
+  constructor(
+    readonly kind: AdtRequestFailureKind,
+    message: string,
+    readonly statusCode: number | null = null
+  ) {
+    super(message);
+    this.name = "AdtRequestFailure";
+  }
+}
+
+interface AdtFailureDescription {
+  detail: string;
+  message: string;
+  suggestion: string;
+}
+
+function nodeErrorCode(errorValue: unknown): string {
+  if (!errorValue || typeof errorValue !== "object" || !("code" in errorValue)) return "";
+  const code = (errorValue as { code?: unknown }).code;
+  return typeof code === "string" || typeof code === "number" ? String(code).toUpperCase() : "";
+}
+
+function describeAdtFailure(errorValue: unknown): AdtFailureDescription {
+  if (errorValue instanceof AdtRequestFailure && errorValue.kind === "http") {
+    const statusCode = errorValue.statusCode ?? 0;
+    if (statusCode === 401) {
+      const copy = externalConnectorUserError("ADT Service", "authentication");
+      return {
+        detail: "HTTP 401：SAP 未接受当前账号或密码。",
+        message: copy.reason,
+        suggestion: `HTTP 401：${copy.suggestion}`
+      };
+    }
+    if (statusCode === 403) {
+      const copy = externalConnectorUserError("ADT Service", "permission");
+      return {
+        detail: "HTTP 403：当前账号无权读取该 ADT 路径。",
+        message: copy.reason,
+        suggestion: `HTTP 403：${copy.suggestion}`
+      };
+    }
+    if (statusCode === 404) {
+      return {
+        detail: "HTTP 404：固定 ADT 路径不存在。",
+        message: "SAP ADT 服务路径不可用。",
+        suggestion: "HTTP 404：请确认地址指向正确 SAP 系统，并让 Basis 检查 /sap/bc/adt 及 DDIC ADT 服务。"
+      };
+    }
+    if (statusCode >= 500 && statusCode <= 599) {
+      return {
+        detail: `HTTP ${statusCode}：SAP ADT 服务端返回异常。`,
+        message: "SAP ADT 服务暂时不可用。",
+        suggestion: `HTTP ${statusCode}：请稍后重试；若持续出现，请让 Basis 检查 SAP ADT/SICF 服务和系统日志。`
+      };
+    }
+    if (statusCode >= 300 && statusCode <= 399) {
+      return {
+        detail: `HTTP ${statusCode}：请求被重定向，可能指向登录页或代理页。`,
+        message: "SAP ADT 请求被重定向。",
+        suggestion: `HTTP ${statusCode}：请检查 SAP 地址、反向代理和登录方式；工作台不会跟随到网页登录页。`
+      };
+    }
+    return {
+      detail: `HTTP ${statusCode || "未知"}：SAP 未返回成功响应。`,
+      message: "SAP ADT 请求未成功。",
+      suggestion: "请检查 SAP 地址、Client、账号、网络和 ADT 服务状态后重试。"
+    };
+  }
+
+  if (errorValue instanceof AdtRequestFailure && errorValue.kind === "content") {
+    const copy = externalConnectorUserError("ADT Service", "invalid-response");
+    return {
+      detail: errorValue.message,
+      message: copy.reason,
+      suggestion: copy.suggestion
+    };
+  }
+
+  if (errorValue instanceof AdtRequestFailure && errorValue.kind === "response-too-large") {
+    return {
+      detail: "ADT 响应超过本地只读大小限制。",
+      message: "SAP ADT 响应过大，已停止读取。",
+      suggestion: "请让 Basis 检查该固定 ADT 路径是否返回了异常页面或过大的代理响应。"
+    };
+  }
+
+  if (errorValue instanceof AdtRequestFailure && errorValue.kind === "timeout") {
+    const copy = externalConnectorUserError("ADT Service", "timeout");
+    return {
+      detail: "ADT 请求在 30 秒内没有完成。",
+      message: copy.reason,
+      suggestion: copy.suggestion
+    };
+  }
+
+  const code = nodeErrorCode(errorValue);
+  if (/CERT|TLS|SSL|SELF_SIGNED|UNABLE_TO_VERIFY/.test(code)) {
+    return {
+      detail: `TLS/证书检查失败${code ? `（${code}）` : ""}。`,
+      message: "SAP HTTPS 证书校验失败。",
+      suggestion: "请优先让管理员修复证书链；仅在确认是可信内网自签证书时，才使用项目级“跳过证书校验”。"
+    };
+  }
+  if (["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ECONNRESET", "EHOSTUNREACH", "ENETUNREACH", "ETIMEDOUT"].includes(code)) {
+    const copy = externalConnectorUserError("ADT Service", "network");
+    return {
+      detail: `网络连接失败${code ? `（${code}）` : ""}。`,
+      message: copy.reason,
+      suggestion: `${copy.suggestion} 工作台没有发送任何写入请求。`
+    };
+  }
+  return {
+    detail: `ADT 请求未完成${code ? `（${code}）` : ""}。`,
+    message: "SAP ADT 检查发生未预期错误。",
+    suggestion: "请确认 SAP 地址和网络后重试；若持续失败，请让管理员检查 ADT 服务。"
+  };
+}
+
 function triggerText(input: AdtConnectorInput): string {
   return `${input.alias} ${input.url} ${input.username}`.toLowerCase();
 }
@@ -111,7 +233,7 @@ export function adtReadonlyObjectEvidencePath(request: SapObjectEvidenceRequest)
       return `/sap/bc/adt/programs/includes/${encodeSapName(request.objectName)}/source/main`;
     case "function":
       if (!request.functionGroup) {
-        throw new Error("Function module evidence requires a function group.");
+        throw new Error("读取 Function module 证据前，请先填写 Function group。");
       }
       return `/sap/bc/adt/functions/groups/${encodeSapName(request.functionGroup)}/fmodules/${encodeSapName(request.objectName)}/source/main`;
     case "table":
@@ -120,7 +242,7 @@ export function adtReadonlyObjectEvidencePath(request: SapObjectEvidenceRequest)
       return `/sap/bc/adt/ddic/structures/${encodeSapName(request.objectName)}/source/main`;
     default: {
       const neverType: never = request.objectType;
-      throw new Error(`Unsupported SAP object evidence type: ${neverType}`);
+      throw new Error(`不支持的 SAP 对象证据类型：${neverType}`);
     }
   }
 }
@@ -133,6 +255,74 @@ function adtT000MinimalPath(): string {
   return "/sap/bc/adt/ddic/tables/T000/source/main";
 }
 
+function normalizedContentType(value: string | string[] | undefined): string {
+  const raw = Array.isArray(value) ? value[0] : value ?? "";
+  return raw.split(";", 1)[0].trim().toLowerCase();
+}
+
+function safeContentTypeLabel(contentType: string): string {
+  const safe = contentType.replace(/[^a-z0-9.+\-/]/gi, "").slice(0, 80);
+  return safe || "缺失";
+}
+
+function isAdtXmlContentType(contentType: string): boolean {
+  return contentType === "application/xml"
+    || contentType === "text/xml"
+    || contentType === "application/atom+xml"
+    || contentType === "application/atomsvc+xml"
+    || (contentType.startsWith("application/") && contentType.endsWith("+xml"))
+    || contentType.startsWith("application/vnd.sap.adt");
+}
+
+function isAdtSourceContentType(contentType: string): boolean {
+  return contentType === "text/plain" || isAdtXmlContentType(contentType);
+}
+
+function looksLikeXml(text: string): boolean {
+  return /^\s*(?:<\?xml\s[^>]*>\s*)?<[a-z_][\w:.-]*(?:\s|>|\/)/i.test(text);
+}
+
+function looksLikeHtmlOrLoginPage(text: string): boolean {
+  const prefix = text.trimStart().slice(0, 12000).toLowerCase();
+  if (/^(?:<!doctype\s+html|<html\b|<head\b|<body\b)/i.test(prefix)) return true;
+  if (!prefix.startsWith("<")) return false;
+  const hasPageMarkup = /<(?:form|input|script|meta)\b/i.test(prefix);
+  const hasLoginMarker = /(?:sap-system-login|sap-user|sap-password|j_security_check|\blogon\b|\blogin\b|single sign-on|sso)/i.test(prefix);
+  return hasPageMarkup && hasLoginMarker;
+}
+
+function validateAdtResponse(fixedPath: string, contentType: string, text: string): void {
+  const trimmed = text.trim();
+  const contentTypeLabel = safeContentTypeLabel(contentType);
+  if (!trimmed) {
+    throw new AdtRequestFailure("content", "SAP 返回空响应，未取得 ADT 内容。");
+  }
+  if (contentType === "text/html" || contentType === "application/xhtml+xml" || looksLikeHtmlOrLoginPage(trimmed)) {
+    throw new AdtRequestFailure("content", "SAP 返回 HTML 或登录页面，不是 ADT 数据。");
+  }
+
+  if (fixedPath === adtStatusPath()) {
+    if (!isAdtXmlContentType(contentType) || !looksLikeXml(trimmed)) {
+      throw new AdtRequestFailure("content", `ADT 服务入口返回了不符合预期的内容类型或正文（Content-Type: ${contentTypeLabel}）。`);
+    }
+    return;
+  }
+
+  if (!isAdtSourceContentType(contentType)) {
+    throw new AdtRequestFailure("content", `固定 ADT 读取返回了不支持的内容类型（Content-Type: ${contentTypeLabel}）。`);
+  }
+
+  if (fixedPath === adtT000MinimalPath()) {
+    const hasT000Marker = /\bT000\b/i.test(trimmed);
+    const hasDdIcShape = looksLikeXml(trimmed)
+      ? /<(?:[\w.-]+:)?(?:ddic|table|entry|object|source)\b/i.test(trimmed)
+      : /(?:\bdefine\s+table\s+t000\b|\btable\s+t000\b|@abapcatalog\b)/i.test(trimmed);
+    if (!hasT000Marker || !hasDdIcShape) {
+      throw new AdtRequestFailure("content", `T000 路径没有返回可识别的 T000 ADT/DDIC 内容（Content-Type: ${contentTypeLabel}）。`);
+    }
+  }
+}
+
 function buildAdtUrl(input: AdtConnectorInput, fixedPath: string): URL {
   const parsed = new URL(input.url);
   return new URL(fixedPath, `${parsed.protocol}//${parsed.host}`);
@@ -142,13 +332,14 @@ interface AdtGetResult {
   fixedPath: string;
   text: string;
   statusCode: number;
+  contentType: string;
 }
 
 function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResult> {
   const target = buildAdtUrl(input, fixedPath);
   const isHttps = target.protocol === "https:";
   const headers = {
-    Accept: "text/plain, application/xml, application/atom+xml, */*",
+    Accept: "text/plain, application/xml, text/xml, application/atom+xml, application/atomsvc+xml, application/vnd.sap.adt.ddic.table.v2+xml",
     Authorization: `Basic ${Buffer.from(`${input.username}:${input.password}`, "utf8").toString("base64")}`,
     "X-SAP-Client": input.client,
     "Accept-Language": input.language
@@ -170,7 +361,7 @@ function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResu
       incoming.on("data", (chunk: Buffer) => {
         totalBytes += chunk.length;
         if (totalBytes > MAX_ADT_RESPONSE_CHARS * 4) {
-          request.destroy(new Error(`ADT GET response exceeded the read-only evidence size limit at ${fixedPath}.`));
+          request.destroy(new AdtRequestFailure("response-too-large", "ADT 响应超过本地只读大小限制。"));
           return;
         }
         chunks.push(chunk);
@@ -179,19 +370,28 @@ function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResu
       incoming.on("end", () => {
         const statusCode = incoming.statusCode ?? 0;
         if (statusCode < 200 || statusCode >= 300) {
-          reject(new Error(`ADT GET failed with HTTP ${statusCode} at ${fixedPath}.`));
+          reject(new AdtRequestFailure("http", `ADT GET 返回 HTTP ${statusCode}。`, statusCode));
+          return;
+        }
+        const contentType = normalizedContentType(incoming.headers["content-type"]);
+        const text = Buffer.concat(chunks).toString("utf8");
+        try {
+          validateAdtResponse(fixedPath, contentType, text);
+        } catch (validationError) {
+          reject(validationError);
           return;
         }
         resolve({
           fixedPath,
           statusCode,
-          text: Buffer.concat(chunks).toString("utf8")
+          contentType,
+          text
         });
       });
     });
 
     request.on("timeout", () => {
-      request.destroy(new Error(`ADT GET timed out at ${fixedPath}.`));
+      request.destroy(new AdtRequestFailure("timeout", "ADT 请求在 30 秒内没有完成。"));
     });
     request.on("error", (requestError) => {
       reject(requestError);
@@ -205,49 +405,83 @@ export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
     const checkedAt = nowIso();
     const system = redactedSystem(input);
     const steps: AdtVerificationStep[] = [
-      step("config", "Configuration check", "passed", "ADT configuration is complete and read-only mode is locked.", checkedAt)
+      step("config", "配置检查", "passed", "ADT 配置完整，且只读模式已锁定。", checkedAt)
     ];
     const errors: AdtVerificationError[] = [];
 
     if (input.readOnly !== true) {
-      errors.push(error("readonly-disabled", "ADT read-only mode is not locked.", "Keep the project ADT mode read-only before verification."));
-      steps.push(step("status", "ADT service", "skipped", "Read-only mode is not locked.", checkedAt));
-      steps.push(step("t000", "T000 metadata read", "skipped", "Read-only mode is not locked.", checkedAt));
+      errors.push(error("readonly-disabled", "ADT Service 只读模式未锁定。", "请保持当前项目 ADT 模式为只读，再重新验证。"));
+      steps.push(step("status", "ADT Service", "skipped", "只读模式未锁定，未检查 ADT Service。", checkedAt));
+      steps.push(step("t000", "T000 元数据读取", "skipped", "只读模式未锁定，未读取 T000 元数据。", checkedAt));
       return this.report(false, checkedAt, system, steps, realT000(false, false, null), errors);
     }
 
+    let statusOk = false;
+    let statusFailure: AdtFailureDescription | null = null;
     try {
       await adtGet(input, adtStatusPath());
-      steps.push(step("status", "ADT service", "passed", "Fixed GET /sap/bc/adt/ returned successfully.", checkedAt));
-    } catch {
-      errors.push(error("status-failed", "ADT service check failed.", "Check SAP URL, VPN/proxy, client, account, password, certificate mode, and ADT service activation."));
-      steps.push(step("status", "ADT service", "failed", "Fixed GET /sap/bc/adt/ did not return successfully.", checkedAt));
-      steps.push(step("t000", "T000 metadata read", "skipped", "ADT service check failed.", checkedAt));
-      return this.report(false, checkedAt, system, steps, realT000(false, false, null), errors);
+      statusOk = true;
+    } catch (statusError) {
+      statusFailure = describeAdtFailure(statusError);
     }
 
     try {
       await adtGet(input, adtT000MinimalPath());
       const t000 = realT000(true, true, input.client);
-      steps.push(step("t000", "T000 metadata read", "passed", "Fixed GET for T000 DDIC metadata returned successfully; no table rows were read.", checkedAt));
+      steps.push(step(
+        "status",
+        "ADT service",
+        "passed",
+        statusOk
+          ? "固定 GET /sap/bc/adt/ 返回了符合预期的 ADT/XML 服务内容。"
+          : `ADT Service 入口检查未通过（${statusFailure?.detail ?? "原因未分类"}），但关键的 T000 元数据读取已通过。`,
+        checkedAt
+      ));
+      steps.push(step("t000", "T000 元数据读取", "passed", "固定 T000 DDIC 元数据 GET 返回了合理内容；未读取任何业务表行。", checkedAt));
       return this.report(true, checkedAt, system, steps, t000, errors);
-    } catch {
+    } catch (t000Error) {
       const t000 = realT000(true, false, null);
-      errors.push(error("minimal-read-failed", "T000 metadata read failed.", "The ADT account or services can reach ADT, but the fixed DDIC metadata read did not pass."));
-      steps.push(step("t000", "T000 metadata read", "failed", "Fixed GET for T000 DDIC metadata failed.", checkedAt));
+      const t000Failure = describeAdtFailure(t000Error);
+      errors.push(error("minimal-read-failed", `T000 元数据读取失败：${t000Failure.message}`, t000Failure.suggestion));
+      if (!statusOk) {
+        const failure = statusFailure ?? describeAdtFailure(t000Error);
+        errors.push(error(
+          "status-failed",
+          failure.message,
+          failure.suggestion
+        ));
+      }
+      steps.push(step(
+        "status",
+        "ADT service",
+        statusOk ? "passed" : "failed",
+        statusOk ? "固定 GET /sap/bc/adt/ 返回了符合预期的 ADT/XML 服务内容。" : statusFailure?.detail ?? "ADT 服务入口检查失败。",
+        checkedAt
+      ));
+      steps.push(step("t000", "T000 元数据读取", "failed", t000Failure.detail, checkedAt));
       return this.report(false, checkedAt, system, steps, t000, errors);
     }
   }
 
   async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest): Promise<SapObjectEvidenceConnectorResult> {
     if (input.readOnly !== true) {
-      throw new Error("SAP object evidence is blocked because ADT read-only mode is not locked.");
+      const copy = externalConnectorUserError("ADT Service", "configuration");
+      throw externalConnectorThrownError({
+        reason: "ADT Service 只读模式未锁定，已阻止读取 SAP object evidence。",
+        suggestion: copy.suggestion
+      });
     }
     const fixedPath = adtReadonlyObjectEvidencePath(request);
     const readAt = nowIso();
-    const result = await adtGet(input, fixedPath);
+    let result: AdtGetResult;
+    try {
+      result = await adtGet(input, fixedPath);
+    } catch (readError) {
+      const failure = describeAdtFailure(readError);
+      throw externalConnectorThrownError({ reason: failure.message, suggestion: failure.suggestion });
+    }
     if (!result.text.trim()) {
-      throw new Error(`ADT GET returned empty object evidence at ${fixedPath}.`);
+      throw externalConnectorThrownError(externalConnectorUserError("ADT Service", "invalid-response"));
     }
     return {
       objectType: request.objectType,
@@ -268,7 +502,7 @@ export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
       mode: "adt",
       system,
       steps,
-      connectionStatus: steps.some((item) => item.id === "status" && item.status === "passed") ? "verified" : "failed",
+      connectionStatus: t000.ok || steps.some((item) => item.id === "status" && item.status === "passed") ? "verified" : "failed",
       minimalReadStatus: t000.ok ? "verified" : t000.attempted ? "failed" : "pending-verification",
       t000,
       errors
@@ -325,10 +559,10 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
 
   async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { allowFakeEvidence?: boolean } = {}): Promise<SapObjectEvidenceConnectorResult> {
     if (options.allowFakeEvidence !== true) {
-      throw new Error("SAP object evidence requires a real read-only ADT connector. Fake evidence is limited to local probes.");
+      throw new Error("原因：SAP object evidence 需要真实的只读 ADT Service。建议：fake evidence 仅用于本地 probe，请先完成真实 ADT 连接验证。");
     }
     if (input.readOnly !== true) {
-      throw new Error("SAP object evidence is blocked because ADT read-only mode is not locked.");
+      throw new Error("原因：ADT Service 只读模式未锁定，已阻止读取 SAP object evidence。建议：请保持当前项目 ADT 模式为只读后重试。");
     }
     const readAt = nowIso();
     const objectLabel = `${request.objectType.toUpperCase()} ${request.objectName}`;
@@ -340,14 +574,14 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
       sourceMode: "fake",
       readAt,
       content: [
-        `Fake SAP read-only evidence for ${objectLabel}`,
-        `System alias: ${input.alias}`,
+        `${objectLabel} 的本地模拟 SAP 只读证据`,
+        `系统别名：${input.alias}`,
         `Client: ${input.client}`,
-        `Language: ${input.language}`,
-        `Read at: ${readAt}`,
-        "Scope: single explicit object only",
-        "Mode: read-only demo evidence",
-        "No SAP write, activation, transport, table rows, password, token, cookie, or session value is included."
+        `语言：${input.language}`,
+        `读取时间：${readAt}`,
+        "范围：仅单个明确指定对象",
+        "模式：本地模拟只读证据",
+        "不包含 SAP 写入、激活、传输、表数据行、密码、Token、Cookie 或 Session 内容。"
       ].join("\n")
     };
   }

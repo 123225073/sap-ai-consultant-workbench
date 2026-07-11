@@ -120,7 +120,7 @@ for (const relativePath of result.generatedFiles) {
 }
 const combined = generatedText.join("\\n---FILE---\\n");
 assert(combined.includes("not-published"), "not-published marker missing from files");
-assert(combined.includes("local draft"), "local draft marker missing from files");
+assert(combined.includes("本地草稿"), "local draft marker missing from files");
 assert(combined.includes(FEISHU_HANDOFF_LOCAL_ONLY_MARKER), "local-only marker missing from files");
 assert(!/tenant_access_token|user_access_token|Authorization|Cookie|secure-store:sec_|SAP_SESSIONID|MYSAPSSO2|document_id/i.test(combined), "sensitive or cloud id marker leaked into handoff files");
 assert(!/Feishu Doc URL|published successfully|cloud document was created/i.test(combined), "handoff file claims cloud publication");

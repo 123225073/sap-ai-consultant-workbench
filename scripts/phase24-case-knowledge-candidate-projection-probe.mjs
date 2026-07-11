@@ -59,7 +59,9 @@ assert(project && caseItem, "project or case missing");
 const firstState = await store.appendMessage({
   content: "请沉淀本案件的处理经验：先本地保存结论和证据，再人工确认是否入库。",
   taskMode: "problem-analysis",
-  modelId: "local-workflow"
+  modelId: "local-workflow",
+  actionId: "candidate-knowledge",
+  permissionMode: "request_approval"
 });
 const firstProject = activeProject(firstState);
 const firstCase = activeCase(firstState);
@@ -71,7 +73,7 @@ assert(firstCandidate.sourceType === "case-candidate", "candidate source type mi
 assert(firstCandidate.sourceFilePath === CANDIDATE_PATH, "candidate source file mismatch");
 assert(firstCandidate.content.includes("## 来源摘要"), "candidate content should include source summary");
 assert(firstCandidate.content.includes("任务模式：问题分析"), "candidate content should include task mode");
-assert(firstCandidate.content.includes("## 候选内容"), "candidate content should include candidate review section");
+assert(firstCandidate.content.includes("## 可复用经验草稿"), "candidate content should include candidate review section");
 assert(firstCandidate.content.includes("入库前必须确认"), "candidate content should include review checklist");
 assert(!firstCandidate.content.includes("Authorization:"), "candidate content leaked unsafe text");
 assert(firstCandidate.reviewedContentHash === null, "case candidates must not start reviewed");
@@ -92,7 +94,9 @@ pass("searchFindsProjectedCandidateContent");
 const secondState = await store.appendMessage({
   content: "继续补充：候选知识仍然只能待确认，不能自动变成正式知识。",
   taskMode: "problem-analysis",
-  modelId: "local-workflow"
+  modelId: "local-workflow",
+  actionId: "candidate-knowledge",
+  permissionMode: "request_approval"
 });
 const secondProject = activeProject(secondState);
 const secondCase = activeCase(secondState);
@@ -104,8 +108,33 @@ assert(refreshedCandidate.status === "pending", "refreshed candidate must remain
 assert(refreshedCandidate.publishedAt === null, "refreshed candidate must not be published");
 assert(refreshedCandidate.reviewedContentHash === null, "refreshed candidate must clear review hash");
 assert(refreshedCandidate.timeline.some((event) => event.action === "edited" && event.note.includes(PHASE24_MARKER)), "refresh timeline missing phase24 marker");
-assert(refreshedCandidate.content.includes("候选内容"), "refreshed content lost reviewable candidate text");
+assert(refreshedCandidate.content.includes("可复用经验草稿"), "refreshed content lost reviewable candidate text");
 pass("refreshUpdatesSinglePendingCandidate");
+
+const manuallyEditedContent = "## Manual review note\\nKeep this reviewer-authored content and require human approval before reuse.";
+await store.editKnowledgeCandidate(secondProject.id, {
+  itemId: refreshedCandidate.id,
+  note: "Reviewer updated the candidate before another generation run.",
+  title: "Reviewed case knowledge",
+  summary: "Reviewer-authored reusable guidance.",
+  content: manuallyEditedContent,
+  sapObjects: refreshedCandidate.sapObjects,
+  effectiveFrom: refreshedCandidate.effectiveFrom,
+  effectiveTo: refreshedCandidate.effectiveTo
+});
+const thirdState = await store.appendMessage({
+  content: "Generate the case knowledge candidate again without replacing reviewer edits.",
+  taskMode: "problem-analysis",
+  modelId: "local-workflow",
+  actionId: "candidate-knowledge",
+  permissionMode: "request_approval"
+});
+const thirdProject = activeProject(thirdState);
+const thirdCase = activeCase(thirdState);
+const thirdKnowledge = await store.getProjectKnowledge(thirdProject.id);
+const preservedCandidate = findCaseCandidate(thirdKnowledge.items, thirdCase);
+assert(preservedCandidate.content === manuallyEditedContent, "regeneration overwrote reviewer-authored candidate content");
+pass("manualCandidateEditSurvivesRegeneration");
 
 async function assertRejects(name, promiseFactory) {
   let rejected = false;
@@ -126,21 +155,21 @@ const checklist = {
 };
 
 await assertRejects("publishCaseCandidateWithoutReviewBlocked", () =>
-  store.publishKnowledge(secondProject.id, { itemId: refreshedCandidate.id, note: "try direct publish" })
+  store.publishKnowledge(thirdProject.id, { itemId: preservedCandidate.id, note: "try direct publish" })
 );
-await store.reviewKnowledgeForPublish(secondProject.id, {
-  itemId: refreshedCandidate.id,
+await store.reviewKnowledgeForPublish(thirdProject.id, {
+  itemId: preservedCandidate.id,
   note: "已确认案件候选的来源、范围和脱敏状态，可以进入正式知识库。",
   checklist
 });
-const publishedState = await store.publishKnowledge(secondProject.id, {
-  itemId: refreshedCandidate.id,
+const publishedState = await store.publishKnowledge(thirdProject.id, {
+  itemId: preservedCandidate.id,
   note: "案件候选经人工审核后确认入库。"
 });
 const publishedProject = activeProject(publishedState);
 const publishedCase = activeCase(publishedState);
 const publishedKnowledge = await store.getProjectKnowledge(publishedProject.id);
-const publishedCandidate = publishedKnowledge.items.find((item) => item.id === refreshedCandidate.id);
+const publishedCandidate = publishedKnowledge.items.find((item) => item.id === preservedCandidate.id);
 assert(publishedCandidate.status === "published", "reviewed case candidate did not publish");
 assert(publishedCandidate.reviewedContentHash, "published case candidate must keep review hash for reuse");
 const attachedState = await store.attachPublishedKnowledgeToCurrentCase(publishedProject.id, {

@@ -160,14 +160,14 @@ const invalidModelRequest = await store.prepareSafeModelDraftRequest({
 assert(invalidModelRequest === null, "cross-provider model should not prepare model draft");
 pass("crossProviderModelRejected");
 
-const unverifiedModelRequest = await store.prepareSafeModelDraftRequest({
+const fetchedModelRequest = await store.prepareSafeModelDraftRequest({
   content: "请生成一份安全本地草稿。",
   taskMode: "problem-analysis",
   providerId: "provider-a",
   modelId: "unique-a"
 }, { allowFakeModelExecution: true });
-assert(unverifiedModelRequest === null, "model without its own minimal chat verification should not prepare model draft");
-pass("unverifiedModelRejected");
+assert(fetchedModelRequest === null, "an untested model from the fetched catalog should not prepare a model draft");
+pass("untestedFetchedModelRejected");
 
 const disabledProviderRequest = await store.prepareSafeModelDraftRequest({
   content: "请生成一份安全本地草稿。",

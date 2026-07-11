@@ -100,7 +100,7 @@ if ($hits.Count -gt 0) {
 
 Write-Section "Runtime local data secret scan"
 if (Test-Path "local-data") {
-  $runtimePatterns = "secure-store:sec_|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|tenant_access_token|user_access_token|Authorization\s*[:=]|Cookie\s*[:=]|SAP_SESSIONID\s*[:=]|MYSAPSSO2\s*[:=]|password\s*[:=]|api[_-]?key\s*[:=]|token\s*[:=]"
+  $runtimePatterns = "secure-store:sec_|sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|tenant_access_token|user_access_token|Authorization\s*[:=]|Cookie\s*[:=]|SAP_SESSIONID\s*[:=]|MYSAPSSO2\s*[:=]|password\s*[:=]|api[_-]?key\s*[:=]|app[_-]?secret\s*[:=]|client[_-]?secret\s*[:=]|token\s*[:=]"
   $runtimeHits = rg -n --no-ignore --hidden --glob "*.{md,json}" --glob "!**/secure-store/**" -- $runtimePatterns local-data
   if ($LASTEXITCODE -eq 0) {
     $runtimeHits | ForEach-Object { Write-Host $_ }
@@ -116,10 +116,16 @@ if (Test-Path "local-data") {
 Write-Section "IPC whitelist"
 $allowedIpc = @(
   "workbench:get-state",
+  "workbench:create-workspace-backup",
+  "workbench:import-workspace",
   "workbench:create-local-project",
   "workbench:create-local-case",
+  "workbench:create-daily-chat-thread",
+  "workbench:switch-daily-chat-thread",
+  "workbench:append-daily-chat-message",
   "workbench:switch-project",
   "workbench:hide-project-from-sidebar",
+  "workbench:restore-project-to-sidebar",
   "workbench:switch-case",
   "workbench:append-message",
   "workbench:get-case-files",
@@ -127,11 +133,18 @@ $allowedIpc = @(
   "workbench:search",
   "workbench:read-sap-object-evidence",
   "workbench:prepare-feishu-handoff",
+  "workbench:feishu-discover-cli",
+  "workbench:feishu-install-cli",
+  "workbench:feishu-save-profile",
+  "workbench:open-feishu-developer-console",
   "workbench:save-project-config",
   "workbench:save-project-secret",
   "workbench:adt-verify-readonly",
   "workbench:feishu-verify-cli",
   "workbench:model-provider-verify",
+  "workbench:codex-verify-cli",
+  "local-ai-scan",
+  "local-ai-install",
   "workbench:get-project-standards",
   "workbench:standards-copy-template",
   "workbench:standards-copy-project",
@@ -142,6 +155,7 @@ $allowedIpc = @(
   "workbench:knowledge-review-for-publish",
   "workbench:knowledge-edit-candidate",
   "workbench:knowledge-attach-to-current-case",
+  "workbench:knowledge-detach-from-current-case",
   "workbench:knowledge-publish",
   "workbench:knowledge-mark-conflict",
   "workbench:knowledge-expire"
@@ -181,14 +195,14 @@ foreach ($marker in $trustedRendererMarkers) {
   }
 }
 
-$workbenchIpcLines = Select-String -Path "apps/desktop/src/main/main.ts" -Pattern 'ipcMain\.handle\("workbench:'
-if (-not $workbenchIpcLines) {
-  throw "No workbench IPC handlers found for trust-boundary scan."
+$allIpcLines = Select-String -Path "apps/desktop/src/main/main.ts" -Pattern 'ipcMain\.handle\('
+if (-not $allIpcLines) {
+  throw "No IPC handlers found for trust-boundary scan."
 }
-foreach ($line in $workbenchIpcLines) {
+foreach ($line in $allIpcLines) {
   if ($line.Line -notmatch "trustedResponse") {
     Write-Host "$($line.Path):$($line.LineNumber):$($line.Line)"
-    throw "Workbench IPC handler is missing trustedResponse wrapper."
+    throw "IPC handler is missing trustedResponse wrapper."
   }
   Write-Host "OK trusted IPC wrapper: $($line.LineNumber)"
 }
@@ -212,7 +226,7 @@ $phase18Markers = @(
   @{ Pattern = "lastVerifiedModelId"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "safeDraftModelOptions"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = 'item.credential.state === "set-in-secure-store"'; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "lastVerifiedModelId"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "verifiedModelIds"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/styles.css" },
   @{ Pattern = "phase18-composer-model-selector-probe"; Path = "scripts/phase18-composer-model-selector-probe.mjs" }
@@ -413,7 +427,9 @@ if ($LASTEXITCODE -eq 0) {
 $desktopOpenHits = rg -n -- "shell\.openPath|shell\.openExternal|dialog\.showOpenDialog|showOpenDialog|openExternal|openPath" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   $unexpectedDesktopOpenHits = @($desktopOpenHits | Where-Object {
-    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts:.*dialog\.showOpenDialog"
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts:.*dialog\.showOpenDialog" -and
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts:.*shell\.openExternal\(FEISHU_DEVELOPER_CONSOLE_URL\)" -and
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts:.*shell\.openExternal\(safeUrl\)"
   })
   if ($unexpectedDesktopOpenHits.Count -gt 0) {
     $unexpectedDesktopOpenHits | ForEach-Object { Write-Host $_ }
@@ -427,7 +443,7 @@ if ($LASTEXITCODE -eq 0) {
 $previewUnsafePathHits = rg -n -- "SAP ABAP|SAPUILandscape|saplogon\.ini|\.sap-adt-cli|\.sap-abap-cli" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $previewUnsafePathHits) {
-    if ($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\](workspaceStore|searchService|knowledgeService)\.ts") {
+    if ($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\](workspaceStore|searchService|knowledgeService|adtEndpointResolver)\.ts") {
       Write-Host "OK desktop safety code blocks old SAP workspace marker: $line"
     } else {
       $line | ForEach-Object { Write-Host $_ }
@@ -446,7 +462,7 @@ $safeIndexMarkers = @(
   @{ Pattern = "redactIndexableText"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "readSafeOutputSummaries"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "hasUnsafeIndexableContent"; Path = "apps/desktop/src/main/workspaceStore.ts" },
-  @{ Pattern = "file-summary-"; Path = "apps/desktop/src/main/searchService.ts" },
+  @{ Pattern = "sourcePath: summary.relativePath"; Path = "apps/desktop/src/main/searchService.ts" },
   @{ Pattern = "searchResultLabel"; Path = "apps/desktop/src/renderer/App.tsx" }
 )
 foreach ($marker in $safeIndexMarkers) {
@@ -1059,10 +1075,10 @@ $phase24ProjectionRequiredMarkers = @(
   @{ Pattern = "reviewChecklist: null"; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = 'status: "pending"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = "sourceFilePath: file.relativePath"; Path = "apps/desktop/src/main/knowledgeService.ts" },
-  @{ Pattern = "isCaseGeneratedKnowledgeCandidate(item)"; Path = "apps/desktop/src/main/knowledgeService.ts" },
+  @{ Pattern = 'item.status !== "published" && item.status !== "expired"'; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = "confidence: null"; Path = "apps/desktop/src/main/knowledgeService.ts" },
   @{ Pattern = "selectedCaseGeneratedCandidate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
-  @{ Pattern = "selectedImportedCandidate || selectedCaseGeneratedCandidate || selectedEditedCandidate"; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
+  @{ Pattern = 'selectedItem.status !== "published" && selectedItem.status !== "expired"'; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" },
   @{ Pattern = 'item.status === "pending"'; Path = "apps/desktop/src/renderer/KnowledgeCenter.tsx" }
 )
 foreach ($marker in $phase24ProjectionRequiredMarkers) {
@@ -1136,9 +1152,7 @@ foreach ($forbiddenVisiblePath in @(
   '来源文件 ${item.sourceFilePath}',
   "location: node.relativePath",
   "node.relativePath.toLowerCase()",
-  "sourcePath: node.relativePath",
-  "sourcePath: summary.relativePath",
-  "result.sourcePath",
+  "{result.sourcePath}",
   "response.data.generatedFiles.join"
 )) {
   if (
@@ -1154,7 +1168,7 @@ foreach ($requiredBoundary in @(
   "INTERNAL_CASE_TREE_PATH_NAMES",
   "if (isInternalCaseTreeEntry(relativePath, kind)) continue",
   "safeFilePurposeLabel(node.purpose)",
-  "safeSearchId(node.caseId, node.relativePath)",
+  "safeSearchId(projectId, node.caseId, node.relativePath)",
   "sourcePath: null"
 )) {
   if (-not ($phase25WorkspaceSource.Contains($requiredBoundary) -or $phase25SearchSource.Contains($requiredBoundary))) {
@@ -1173,7 +1187,7 @@ $phase26ProjectVisibilityMarkers = @(
   @{ Pattern = "workbench:hide-project-from-sidebar"; Path = "apps/desktop/src/preload/preload.ts" },
   @{ Pattern = "hideProjectFromSidebar"; Path = "apps/desktop/src/renderer/vite-env.d.ts" },
   @{ Pattern = "visibleProjects"; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "Project hidden from the sidebar only"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "hiddenProjectsVisible"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "project-actions"; Path = "apps/desktop/src/renderer/styles.css" },
   @{ Pattern = "phase26-project-visible-list-removal-probe"; Path = "scripts/phase26-project-visible-list-removal-probe.mjs" }
 )
@@ -1216,11 +1230,325 @@ if ($LASTEXITCODE -eq 0) {
 }
 Write-Host "OK phase26 hides projects from the sidebar without delete or external capabilities."
 
+Write-Section "Phase 27 config wizard safety scan"
+$phase27ConfigWizardMarkers = @(
+  @{ Pattern = "phase27-core-config-wizard"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "phase27-compact-status-summary"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "phase27-advanced-details"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "phase27-folded-verification"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "phase27-secret-eye-toggle"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "hasUnsavedConfig"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "onSaveSecret"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "onVerifyAdt"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "onVerifyFeishu"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "onVerifyModelProvider"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "saveAdtSettings"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "saveModelSettings"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "setup-card"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "secret-toggle-button"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "setup-summary-strip"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "phase27-core-config-wizard-probe"; Path = "scripts/phase27-core-config-wizard-probe.mjs" }
+)
+foreach ($marker in $phase27ConfigWizardMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase27 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 27 config wizard marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase27RendererSources = @(
+  "apps/desktop/src/renderer/ConfigCenter.tsx",
+  "apps/desktop/src/renderer/styles.css"
+)
+$phase27UnsafeHits = rg -n -- "window\.workbench|ipcRenderer\.invoke|ipcMain\.handle|workbench:phase27|workbench:config-wizard|get-secret|read-secret|resolve-secret|get-api-key|read-api-key|secretRef|Authorization|Bearer |run-sql|execute-sql|x-csrf-token|activateObject|createTransport|releaseTransport|transportRequest|docs\s+\+create|docs\s+\+update|docs\s+\+publish|auth\s+login|auth\s+authorize|device_code|verification_uri|tenant_access_token|user_access_token|chat-completions|list-models|fetch\(|showOpenDialog|openExternal|openPath|execFile\(|spawn\(|readFile\(" $phase27RendererSources
+if ($LASTEXITCODE -eq 0) {
+  $phase27UnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 27 config wizard must remain renderer-only and must not add unsafe IPC, secret, SAP, Feishu, model, file, network, or command capability."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 27 config wizard unsafe capability scan failed."
+}
+
+$phase27ConfusingCopyHits = rg -n -- "更换密码|更换 API Key|保存密码|保存 API Key|已安全保存；如需更换，请重新输入|先保存再测试" "apps/desktop/src/renderer/ConfigCenter.tsx"
+if ($LASTEXITCODE -eq 0) {
+  $phase27ConfusingCopyHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 27 config wizard must use unified save/test actions and must not show confusing replace-secret copy."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 27 confusing copy scan failed."
+}
+
+$phase27IpcSources = @(
+  "apps/desktop/src/main/main.ts",
+  "apps/desktop/src/preload/preload.ts",
+  "apps/desktop/src/renderer/vite-env.d.ts"
+)
+$phase27IpcHits = rg -n -- "workbench:phase27|workbench:config-wizard|workbench:get-secret|workbench:read-secret|workbench:chat-completions|workbench:list-models" $phase27IpcSources
+if ($LASTEXITCODE -eq 0) {
+  $phase27IpcHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 27 config wizard must not add new wizard, secret, or generic model IPC."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 27 config wizard IPC scan failed."
+}
+Write-Host "OK phase27 config wizard keeps existing IPC and safety boundaries."
+
+Write-Section "Phase 28 basic new case flow safety scan"
+$phase28NewCaseMarkers = @(
+  @{ Pattern = "creatingCase"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "newCaseInputRef"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "focusNewCaseInput"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "phase28-new-case-flow"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "bridge.createLocalCase"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "case-create button:not(:disabled)"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "workbench:create-local-case"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "createLocalCase"; Path = "apps/desktop/src/preload/preload.ts" },
+  @{ Pattern = "phase28-basic-new-case-flow-probe"; Path = "scripts/phase28-basic-new-case-flow-probe.mjs" }
+)
+foreach ($marker in $phase28NewCaseMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase28 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 28 basic new case marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase28PrototypeCopyHits = rg -n -- "New case title|Create case|Case title is required\.|Create a case folder in the active project|Local case created\.|输入案件名称|创建案件" "apps/desktop/src/renderer/App.tsx"
+if ($LASTEXITCODE -eq 0) {
+  $phase28PrototypeCopyHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 28 new case flow must not show prototype English copy."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 28 prototype copy scan failed."
+}
+
+$phase28RendererHits = rg -n -- "workbench:create-demo-case|createDemoCase|showOpenDialog|openExternal|openPath|execFile\(|spawn\(|fetch\(|readFile\(|unlink|(^|[^A-Za-z0-9_])rm\(" "apps/desktop/src/renderer/App.tsx" "apps/desktop/src/preload/preload.ts"
+if ($LASTEXITCODE -eq 0) {
+  $phase28RendererHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 28 new case flow must not add demo, external, command, file-read, network, or delete capability."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 28 renderer safety scan failed."
+}
+Write-Host "OK phase28 basic new case flow keeps local lifecycle boundaries."
+
+Write-Section "Phase 30 secret clearing eye toggle scan"
+$phase30SecretRetentionMarkers = @(
+  @{ Pattern = "adtSecretDirty"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "apiSecretDirty"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "previousProjectIdRef"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "setAdtSecretDirty(false)"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "setApiSecretDirtyByProvider"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "setApiEntries((current)"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "phase30-secret-retention-eye-toggle-probe"; Path = "scripts/phase30-secret-retention-eye-toggle-probe.mjs" }
+)
+foreach ($marker in $phase30SecretRetentionMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase30 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 30 secret retention marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase30UnsafeHits = rg -n -- "workbench:get-secret|workbench:read-secret|get-secret|read-secret|resolve-secret|get-api-key|read-api-key|secretRef|secure-store:sec_" "apps/desktop/src/renderer/ConfigCenter.tsx" "apps/desktop/src/preload/preload.ts"
+if ($LASTEXITCODE -eq 0) {
+  $phase30UnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 30 must not add renderer/preload access to saved secret values."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 30 secret retention unsafe scan failed."
+}
+Write-Host "OK phase30 keeps secret refs and generic secret-read APIs out of renderer/preload."
+
+Write-Section "Phase 35 config persistence, secret non-reveal, and conversation UX scan"
+$phase35Markers = @(
+  @{ Pattern = "DailyChatThread"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "activeChatThreadId"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = 'ipcMain.handle("workbench:create-daily-chat-thread"'; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = 'ipcMain.handle("workbench:append-daily-chat-message"'; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "parseAppendDailyChatMessageInput(input)"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "prepareDailyChatAssistantReply"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "isProviderReadyForDailyChat"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "generateDailyChat"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "preserveMainOwnedVerification(previousConfig, nextConfig)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "resetChangedVerification(previousConfig, nextConfig)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "resetSecretTargetVerification(project.config, target)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "appendDailyChatMessage"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "groupDailyChatThreads"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = 'activeView === "chat"'; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "project-case-label"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "new-case-project-picker"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "conversation-sidebar-section"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "phase35-config-reveal-conversation-probe"; Path = "scripts/phase35-config-reveal-conversation-probe.mjs" }
+)
+foreach ($marker in $phase35Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase35 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 35 marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase35WrongConversationHits = rg -n -- "groupConversationThreads|flatMap\(\(item\) => item\.cases\.map\(\(caseItem\) => \(\{ project: item, caseItem \}\)\)" apps/desktop/src/renderer/App.tsx
+if ($LASTEXITCODE -eq 0) {
+  $phase35WrongConversationHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 35 daily conversation must not be derived from project cases."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 35 conversation derivation scan failed."
+}
+Write-Host "OK phase35 keeps daily conversation independent from project cases."
+
+$phase35DailyChatUnsafeHits = rg -n -- "readSapObjectEvidence|prepareFeishuHandoff|writeCaseMarkdown|writeCaseGeneratedFiles|ensureCaseFiles|refreshSearchIndex" apps/desktop/src/main/workspaceStore.ts
+if ($LASTEXITCODE -eq 0) {
+  foreach ($line in $phase35DailyChatUnsafeHits) {
+    if ($line -match "appendDailyChatMessage|createDailyChatThread|switchDailyChatThread") {
+      Write-Host $line
+      throw "Phase 35 daily chat methods must not call SAP, Feishu, case file writes, or case indexing."
+    }
+  }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 35 daily chat safety scan failed."
+}
+Write-Host "OK phase35 daily chat path has no SAP/Feishu/case-file side effects."
+
+$savedSecretRevealHits = rg -n -- "reveal-project-secret|revealProjectSecret|ProjectSecretReveal(Input|Result)" apps/desktop/src
+if ($LASTEXITCODE -eq 0) {
+  $savedSecretRevealHits | ForEach-Object { Write-Host $_ }
+  throw "Saved secret reveal must not be exposed to preload or renderer."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Saved secret non-reveal scan failed."
+}
+Write-Host "OK saved secrets cannot be revealed to renderer."
+
+Write-Section "Phase 36 Work/Chat project-folder layout scan"
+$phase36Markers = @(
+  @{ Pattern = "workspace-switch"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "phase40-files-only-context"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "focusNewCaseInput"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = 'navigateView("config")'; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "phase36-work-chat-project-folder-layout"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = ".workspace-switch"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = ".files-panel"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = ".other-work-boundary"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = 'sapVersion: ProjectSummary["sapVersion"]'; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = 'value === "S4" || value === "ECC" || value === "UNKNOWN"'; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "phase36-work-chat-project-folder-layout-probe"; Path = "scripts/phase36-work-chat-project-folder-layout-probe.mjs" }
+)
+foreach ($marker in $phase36Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase36 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 36 Work/Chat layout marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase36ChatProvenance = Select-String -SimpleMatch -Pattern 'projectId: selectedSafeDraftModel ? project?.id : undefined' -Path "apps/desktop/src/renderer/App.tsx"
+if (-not $phase36ChatProvenance) {
+  throw "Phase 36 Chat must explicitly record the selected Project-owned model channel provenance."
+}
+Write-Host "OK phase36 keeps case folders separate while recording Chat model-channel provenance."
+
+Write-Section "Phase 37 case actions and permission UI scan"
+$phase37Markers = @(
+  @{ Pattern = "CaseActionId"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "ActionPermissionMode"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "caseActions"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "permissionModes"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "runCaseAction"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "case-action-control"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "case-action-run-button"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "permission-mode-control"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "action-confirmation-preview"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = ".case-action-control"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = ".case-action-run-button"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = ".permission-mode-control"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = ".action-confirmation-preview"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "phase37-case-actions-permission-ui"; Path = "scripts/security-preflight.ps1" },
+  @{ Pattern = "phase37-case-actions-permission-ui-probe"; Path = "scripts/phase37-case-actions-permission-ui-probe.mjs" }
+)
+foreach ($marker in $phase37Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase37 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 37 case action UI marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase37OldModeHits = Select-String -SimpleMatch -Pattern "mode-tabs", "selectedTaskMode", "setSelectedTaskMode", "modePlaceholder", 'aria-label="任务模式"' -Path "apps/desktop/src/renderer/App.tsx", "apps/desktop/src/renderer/styles.css"
+if ($phase37OldModeHits) {
+  $phase37OldModeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 37 Work composer must not reintroduce old task mode tabs."
+}
+Write-Host "OK phase37 keeps Work composer on free conversation plus on-demand case actions."
+
+Write-Section "Phase 38 case action workflow scan"
+$phase38Markers = @(
+  @{ Pattern = "CaseActionId"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "ActionPermissionMode"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "actionId?: CaseActionId | null"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "permissionMode: ActionPermissionMode"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "CASE_ACTION_LABELS"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "ACTION_PERMISSION_LABELS"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "normalizeCaseActionId"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "normalizeActionPermissionMode"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "renderCaseActionFiles"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "phase38-case-action-workflow"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "permissionModeUsed"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "actionId: selectedCaseAction.id"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "permissionMode: actionPermissionMode"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "phase38-case-action-workflow-probe"; Path = "scripts/phase38-case-action-workflow-probe.mjs" },
+  @{ Pattern = "phase38-case-action-workflow"; Path = "scripts/security-preflight.ps1" }
+)
+foreach ($marker in $phase38Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase38 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 38 case action workflow marker is missing: $($marker.Pattern)"
+  }
+}
+Write-Host "OK phase38 persists case action and execution-preference audit context through normal case workflow."
+
+Write-Section "Phase 31 ADT compatible verification scan"
+$phase31AdtMarkers = @(
+  @{ Pattern = "describeAdtFailure"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "validateAdtResponse"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "realT000(true, true, input.client)"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "verifyAdtCandidate"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = 'return connector.verify({ ...adtInputWithoutPassword(config, candidate.url), password });'; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = 'report.ok && report.system.sslMode === "skip-certificate"'; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "phase31-adt-compatible-verification-probe"; Path = "scripts/phase31-adt-compatible-verification-probe.mjs" }
+)
+foreach ($marker in $phase31AdtMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase31 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 31 ADT compatible verification marker is missing: $($marker.Pattern)"
+  }
+}
+
+$phase31UnsafeHits = rg -n -- "method\s*:\s*['""](POST|PUT|PATCH|DELETE)['""]|activateObject|releaseTransport|createTransport|transportRequest|x-csrf-token|csrf" "apps/desktop/src/main/adtReadonlyConnector.ts"
+if ($LASTEXITCODE -eq 0) {
+  $phase31UnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Phase 31 ADT compatibility must remain fixed GET and read-only."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 31 ADT compatibility safety scan failed."
+}
+Write-Host "OK phase31 keeps ADT verification read-only and compatible with object-read success."
+
 Write-Section "Feishu auth artifact scan"
 $feishuAuthHits = rg -n -- "device_code|verification_uri|tenant_access_token|user_access_token|authUrl|deviceCode|verificationUri|tenantAccessToken|userAccessToken" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $feishuAuthHits) {
-    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts") {
+    $isMainRedaction = $line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\]main\.ts"
+    $isConnectorDeviceFlowParser = $line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\]feishuCliConnector\.ts" -and $line -match "device_code|verification_uri|deviceCode|verificationUri"
+    if ($line -match "tenant_access_token|user_access_token|tenantAccessToken|userAccessToken") {
+      $line | ForEach-Object { Write-Host $_ }
+      throw "Feishu access-token artifact pattern is not allowed in source."
+    }
+    if (-not $isMainRedaction -and -not $isConnectorDeviceFlowParser) {
       $line | ForEach-Object { Write-Host $_ }
       throw "Feishu auth artifact pattern outside main-process error redaction."
     }
@@ -1234,14 +1562,93 @@ Write-Section "Child process boundary scan"
 $childProcessHits = rg -n -- "node:child_process|from ['""]child_process['""]|require\(['""]child_process['""]\)|execFile\(|spawn\(" apps/desktop/src/main
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $childProcessHits) {
-    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]feishuCliConnector\.ts") {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](feishuCliConnector|codexCliConnector|localAiCapabilityService)\.ts") {
       $line | ForEach-Object { Write-Host $_ }
-      throw "Child process execution outside approved Feishu connector."
+      throw "Child process execution outside approved Feishu/Codex/local AI connectors."
     }
     Write-Host "OK child process boundary: $line"
   }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Child process boundary scan failed."
+}
+
+Write-Section "Codex fixed CLI command scan"
+$codexMarkers = @(
+  "READONLY_PROBE_MARKER",
+  "resolveExecutable",
+  "localCodexCandidates",
+  "codexCommandFromName",
+  "runCaseAssist",
+  "sanitizeCodexAssistOutput",
+  "--ephemeral",
+  "read-only",
+  "sap-ai-codex-probe-",
+  "sap-ai-codex-case-assist-",
+  "CODEX_PROBE_OK"
+)
+foreach ($marker in $codexMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker -Path "apps/desktop/src/main/codexCliConnector.ts"
+  if ($markerHit) {
+    Write-Host "OK Codex marker: $marker"
+  } else {
+    throw "Codex connector safety marker is missing: $marker"
+  }
+}
+
+$codexDangerHits = rg -n -- "danger-full-access|workspace-write|dangerously-bypass|resume|fork|archive|delete|cloud|app-server|remote-control|mcp-server|\\.codex[/\\]sessions|history|readFile\(" apps/desktop/src/main/codexCliConnector.ts apps/desktop/src/preload apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0) {
+  $codexDangerHits | ForEach-Object { Write-Host $_ }
+  throw "Codex connector or renderer contains forbidden command/history markers."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Codex dangerous marker scan failed."
+}
+
+$codexGenericIpcHits = rg -n -- "codex.*run-command|codex.*shell|codex.*read-file|codex.*history|codex.*session|workbench:codex-(exec|shell|read|history|session)" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0) {
+  $codexGenericIpcHits | ForEach-Object { Write-Host $_ }
+  throw "Codex must not expose generic command, file, history, or session IPC."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Codex generic IPC scan failed."
+}
+
+Write-Section "Codex case assist safety scan"
+$codexCaseAssistMarkers = @(
+  @{ Pattern = "codexAssistEnabled?: boolean"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "CodexCaseAssistRun"; Path = "apps/desktop/src/shared/workbenchTypes.ts" },
+  @{ Pattern = "prepareCodexCaseAssistRequest"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "codexConfig.cliStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "codexConfig.loginStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "codexConfig.readonlyTaskStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "runCaseAssist"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "wantsCodexCaseAssist"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "CODEX_ASSIST_BOUNDARY"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "renderCodexCaseAssistFiles"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
+  @{ Pattern = "codex-assist-toggle"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "codex-assist-toggle"; Path = "apps/desktop/src/renderer/styles.css" },
+  @{ Pattern = "phase34-codex-case-assist-probe"; Path = "scripts/phase34-codex-case-assist-probe.mjs" }
+)
+foreach ($marker in $codexCaseAssistMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK Codex case assist marker: $($marker.Pattern)"
+  } else {
+    throw "Codex case assist marker is missing: $($marker.Pattern)"
+  }
+}
+
+$codexCaseAssistUnsafeHits = rg -n -g "!localAiCapabilityService.ts" -- "workbench:codex-(case|assist|exec|run)|codex.*session|\\.codex[/\\]sessions|result\.stderr|result\.output|workspace-write|danger-full-access|dangerously-bypass|mcp-server" apps/desktop/src/main apps/desktop/src/preload apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0) {
+  $codexCaseAssistUnsafeHits | ForEach-Object { Write-Host $_ }
+  throw "Codex case assist contains forbidden IPC, history, raw-output, or unsafe command markers."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Codex case assist unsafe marker scan failed."
+}
+
+$codexCaseAssistStdoutMarker = Select-String -SimpleMatch -Pattern "sanitizeCodexAssistOutput(result.stdout)" -Path "apps/desktop/src/main/codexCliConnector.ts"
+if ($codexCaseAssistStdoutMarker) {
+  Write-Host "OK Codex case assist persists sanitized stdout only."
+} else {
+  throw "Codex case assist must persist sanitized stdout only."
 }
 
 Write-Section "SQLite FTS safety scan"
@@ -1272,7 +1679,7 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Feishu fixed CLI command scan"
-$fixedCliMarkers = rg -n -- "REAL_FEISHU_CLI_COMMANDS|toFixedCliCommand|execFile\(cliCommand" apps/desktop/src/main/feishuCliConnector.ts
+$fixedCliMarkers = rg -n -- "REAL_FEISHU_CLI_COMMANDS|resolveExecutableForInput|executableInvocation|runCliExecutable|app-secret-stdin" apps/desktop/src/main/feishuCliConnector.ts
 if ($LASTEXITCODE -eq 0 -and $fixedCliMarkers.Count -ge 3) {
   Write-Host "OK Feishu connector uses fixed CLI command markers."
 } elseif ($LASTEXITCODE -eq 1) {
@@ -1287,6 +1694,34 @@ if ($LASTEXITCODE -eq 0) {
   throw "Feishu CLI execution must not use configured paths or basename-only allowlists."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Feishu unsafe CLI execution scan failed."
+}
+
+$feishuProfileSwitchHits = rg -n -- 'profile["'']?\s*,\s*["'']use|profile\s+use' apps/desktop/src/main/feishuCliConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $feishuProfileSwitchHits | ForEach-Object { Write-Host $_ }
+  throw "Feishu connector must not switch the global lark-cli profile."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Feishu profile switch scan failed."
+}
+
+$feishuSecretArgHits = rg -n -- "--app-secret|app[_-]?secret\s*[:=]" apps/desktop/src/main/feishuCliConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $unexpectedFeishuSecretArgHits = @($feishuSecretArgHits | Where-Object { $_ -notmatch "--app-secret-stdin" })
+  if ($unexpectedFeishuSecretArgHits.Count -gt 0) {
+    $unexpectedFeishuSecretArgHits | ForEach-Object { Write-Host $_ }
+    throw "Feishu App Secret must only be passed with --app-secret-stdin."
+  }
+  $feishuSecretArgHits | ForEach-Object { Write-Host "OK Feishu App Secret stdin marker: $_" }
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Feishu App Secret command scan failed."
+}
+
+$feishuAuthStatusProfileMarker = Select-String -SimpleMatch -Pattern '"auth", "status", "--verify", "--profile"' -Path "apps/desktop/src/main/feishuCliConnector.ts"
+$feishuAuthCheckProfileMarker = Select-String -SimpleMatch -Pattern '"auth", "check", "--scope", REQUIRED_DOC_SCOPES, "--profile"' -Path "apps/desktop/src/main/feishuCliConnector.ts"
+if ($feishuAuthStatusProfileMarker -and $feishuAuthCheckProfileMarker) {
+  Write-Host "OK Feishu auth checks carry explicit profile markers."
+} else {
+  throw "Feishu auth/profile explicit markers are missing."
 }
 
 Write-Section "Feishu safe handoff scan"
@@ -1386,6 +1821,9 @@ if ($LASTEXITCODE -eq 0) {
 
 $messageHits = rg -n -- "messages:" apps/desktop/src/main/modelProviderConnector.ts
 if ($LASTEXITCODE -eq 0) {
+  $dailyChatSystemMarker = @(Select-String -SimpleMatch -Pattern "你是一个中文日常 AI 助手" -Path "apps/desktop/src/main/modelProviderConnector.ts")
+  $dailyChatUserMarker = @(Select-String -SimpleMatch -Pattern '{ role: "user", content: input.content }' -Path "apps/desktop/src/main/modelProviderConnector.ts")
+  $hasDailyChatMarkers = ($dailyChatSystemMarker.Count -gt 0) -and ($dailyChatUserMarker.Count -gt 0)
   foreach ($line in $messageHits) {
     if ($line -match 'messages:\s*\[\{\s*role:\s*"user",\s*content:\s*"ping"\s*\}\]') {
       Write-Host "OK fixed model chat test: $line"
@@ -1395,9 +1833,17 @@ if ($LASTEXITCODE -eq 0) {
       Write-Host "OK safe model draft messages: $line"
       continue
     }
+    if ($line -match 'messages:\s*dailyChatMessages\(input\)') {
+      Write-Host "OK bounded daily chat history messages: $line"
+      continue
+    }
+    if (($line -match 'messages:\s*\[') -and $hasDailyChatMarkers) {
+      Write-Host "OK daily chat messages: $line"
+      continue
+    }
     else {
       $line | ForEach-Object { Write-Host $_ }
-      throw "Model provider connector may only send the fixed ping chat test or prebuilt safe model draft context."
+      throw "Model provider connector may only send the fixed ping chat test, prebuilt safe model draft context, or bounded daily chat prompt."
     }
   }
 } elseif ($LASTEXITCODE -gt 1) {
@@ -1406,6 +1852,10 @@ if ($LASTEXITCODE -eq 0) {
 
 Write-Section "SAP object evidence safety scan"
 $sapEvidenceMarkers = @(
+  @{ Pattern = "resolveAdtEndpointCandidates"; Path = "apps/desktop/src/main/adtEndpointResolver.ts" },
+  @{ Pattern = "SAPUILandscape.xml"; Path = "apps/desktop/src/main/adtEndpointResolver.ts" },
+  @{ Pattern = "saplogon.ini"; Path = "apps/desktop/src/main/adtEndpointResolver.ts" },
+  @{ Pattern = "phase29-adt-gui-address-resolution-probe"; Path = "scripts/phase29-adt-gui-address-resolution-probe.mjs" },
   @{ Pattern = "SAP_OBJECT_EVIDENCE_ALLOWED_TYPES"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
   @{ Pattern = "parseSapObjectEvidenceRequest"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
   @{ Pattern = "assertSafeSapObjectEvidenceText"; Path = "apps/desktop/src/main/sapObjectEvidenceService.ts" },
@@ -1467,13 +1917,52 @@ if ($LASTEXITCODE -eq 0) {
 }
 
 Write-Section "Desktop delete-operation scan"
-$deleteHits = rg -n --glob "!dist/**" --glob "!node_modules/**" -- "rm\(|unlink|trashItem|shell\.trashItem|delete.*file|remove.*file" apps/desktop/src
+$deleteHits = rg -n --glob "!dist/**" --glob "!node_modules/**" -- "\brm\(|unlink|trashItem|shell\.trashItem|delete.*file|remove.*file" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
-  $deleteHits | ForEach-Object { Write-Host $_ }
-  throw "Desktop code contains file delete operation patterns. The desktop app must not expose delete."
+  $unexpectedDeleteHits = @($deleteHits | Where-Object {
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]secureSecretStore\.ts:\d+:\s+await fs\.unlink\(blobPath\);"
+  })
+  if ($unexpectedDeleteHits.Count -gt 0) {
+    $unexpectedDeleteHits | ForEach-Object { Write-Host $_ }
+    throw "Desktop code contains an unapproved file delete operation."
+  }
+  $deleteHits | ForEach-Object { Write-Host "OK narrow encrypted-secret cleanup: $_" }
+  $secureCleanupSource = Get-Content -Raw "apps/desktop/src/main/secureSecretStore.ts"
+  foreach ($marker in @("removeProjectTarget", "assertInsideSecureRoot", "blob.projectId === normalizedProjectId", "blob.targetId === targetId")) {
+    if (-not $secureCleanupSource.Contains($marker)) {
+      throw "Encrypted-secret cleanup boundary is missing marker: $marker"
+    }
+  }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Delete-operation scan failed."
 }
+
+Write-Section "Phase 39 product realignment and model channel safety scan"
+$phase39Markers = @(
+  @{ Pattern = "phase39-multi-provider-registry"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "provider.verifiedModelIds.flatMap"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "preserveMainOwnedVerification(previousConfig, nextConfig)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "parseAppendDailyChatMessageInput(input)"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "autoHideMenuBar: true"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "phase39-product-realignment"; Path = "scripts/phase39-product-realignment-probe.mjs" }
+)
+foreach ($marker in $phase39Markers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK phase39 marker: $($marker.Pattern)"
+  } else {
+    throw "Phase 39 product realignment marker is missing: $($marker.Pattern)"
+  }
+}
+
+$rendererVerificationWriteHits = rg -n -- "\.(models|modelSyncStatus|chatTestStatus|lastVerificationMode|lastVerifiedModelId)\s*=\s*[^=]" apps/desktop/src/renderer
+if ($LASTEXITCODE -eq 0) {
+  $rendererVerificationWriteHits | ForEach-Object { Write-Host $_ }
+  throw "Renderer must not imperatively own model verification state."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "Phase 39 renderer verification ownership scan failed."
+}
+Write-Host "OK phase39 keeps verification ownership in the main process."
 
 Write-Section "Result"
 Write-Host "Security preflight passed."

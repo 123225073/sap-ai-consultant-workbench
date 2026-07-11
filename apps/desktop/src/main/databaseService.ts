@@ -78,7 +78,7 @@ export class DatabaseService {
       databasePath: this.databasePath,
       fts5Available: false,
       runtime: "sqlite-wasm",
-      error: "Database has not been initialized.",
+      error: "数据库尚未初始化。",
       warnings: []
     };
   }
@@ -195,7 +195,7 @@ export class DatabaseService {
         try {
           this.db.exec("ROLLBACK");
         } catch (rollbackError) {
-          warnings.push(`SQLite rollback failed: ${this.safeError(rollbackError)}`);
+          warnings.push(`SQLite 回滚失败：${this.safeError(rollbackError)}`);
         }
       }
       this.health = {
@@ -339,7 +339,7 @@ export class DatabaseService {
     });
     db.exec("DROP TABLE fts5_probe;");
     if (rows.length < 1) {
-      throw new Error("SQLite FTS5 probe returned no rows.");
+      throw new Error("SQLite FTS5 检查没有返回结果。");
     }
   }
 
@@ -350,7 +350,7 @@ export class DatabaseService {
   }
 
   private assertOpen(): Database {
-    if (!this.db) throw new Error("SQLite database is not open.");
+    if (!this.db) throw new Error("SQLite 数据库尚未打开。");
     return this.db;
   }
 
@@ -377,7 +377,7 @@ export class DatabaseService {
   }
 
   private safeError(error: unknown): string {
-    const raw = error instanceof Error ? error.message : "SQLite database operation failed.";
+    const raw = error instanceof Error ? error.message : "SQLite 数据库操作失败。";
     return raw
       .replace(/secure-store:sec_[a-f0-9]{32}/gi, "[secure-store-ref]")
       .replace(/bearer\s+[a-z0-9._~+/=-]+/gi, "[authorization]")

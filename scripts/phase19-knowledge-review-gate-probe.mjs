@@ -82,13 +82,14 @@ async function mutateKnowledgeItem(projectId, itemId, mutator) {
 }
 
 async function importCandidate(store, projectId, title) {
+  const objectSuffix = [...title].reduce((total, character) => (total + character.codePointAt(0)) % 100000, 0);
   const result = await store.importKnowledgeLocalText({
     projectId,
     title,
     sourceKind: "local-text",
     sourceName: "本地粘贴文本",
     body: title + "以当前项目确认的业务范围为准，历史口径仅作为参考，审核后才能成为正式知识。",
-    sapObjects: ["ZMM_REVIEW"]
+    sapObjects: ["ZMM_REVIEW_" + objectSuffix]
   });
   return result.knowledgeItemId;
 }
@@ -140,7 +141,7 @@ const publishedProject = activeProject(publishedState);
 const publishedItem = publishedProject.knowledge.items.find((item) => item.id === itemId);
 assert(publishedItem.status === "published", "reviewed imported item was not published");
 assert(publishedItem.publishedAt, "publishedAt missing");
-assert(publishedItem.reviewer === "演示用户", "reviewer should be preserved");
+assert(publishedItem.reviewer === "本机用户", "local reviewer identity should be preserved");
 pass("publishReviewedImportedCandidateSucceeds");
 
 await assertRejects("publishAlreadyPublishedBlocked", () => store.publishKnowledge(project.id, { itemId, note: "publish again" }));
@@ -197,7 +198,7 @@ const sensitiveItemId = await importCandidate(store, project.id, "发布时敏�
 await mutateKnowledgeItem(project.id, sensitiveItemId, (item) => {
   item.content = "Authorization: Bearer abcdefghijklmnopqrstuvwxyz";
   item.reviewedAt = new Date().toISOString();
-  item.reviewer = "演示用户";
+  item.reviewer = "本机用户";
   item.reviewNote = "恶意构造的审核记录应该仍被发布时重扫拦截。";
   item.reviewChecklist = checklist;
   item.reviewedContentHash = reviewHash(item);

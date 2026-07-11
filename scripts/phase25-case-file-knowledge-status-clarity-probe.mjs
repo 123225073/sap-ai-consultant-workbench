@@ -44,10 +44,10 @@ for (const [name, marker, source] of [
   ["pending knowledge label", "待确认知识", sources.app],
   ["technical evidence label", "技术证据/过程材料", sources.app],
   ["safe preview subtitle", "filePreviewSubtitle", sources.app],
-  ["local feishu draft label", "生成飞书本地草稿", sources.app],
+  ["local feishu draft label", "飞书本地草稿", sources.app],
   ["knowledge source helper", "knowledgeSourceLabel", sources.knowledge],
   ["knowledge reuse helper", "knowledgeReuseLabel", sources.knowledge],
-  ["candidate source label", "候选来源", sources.knowledge],
+  ["candidate source label", "案件生成${sourceState}", sources.knowledge],
   ["formal knowledge label", "正式知识", sources.knowledge],
   ["reusable after publish label", "发布后可复用", sources.knowledge],
   ["internal case tree filter", "isInternalCaseTreeEntry", sources.workspaceStore],
@@ -93,14 +93,15 @@ assert(!sources.app.includes("filePreview?.relativePath"), "file preview must no
 assert(!sources.app.includes("title={node.relativePath}"), "file rows must not expose internal relative paths in title text");
 assert(!sources.app.includes("node.relativePath.toLowerCase()"), "file panel search must not match hidden relative paths");
 assert(!sources.app.includes("response.data.generatedFiles.join"), "renderer notices must not display generated relative paths");
-assert(!sources.app.includes("result.sourcePath"), "renderer search results must not consume hidden source paths");
+assert(sources.app.includes("node.relativePath === result.sourcePath"), "renderer search results must open the exact safe current-case file path");
+assert(!sources.app.includes("{result.sourcePath}"), "renderer must not display the internal relative path");
 assert(!sources.knowledge.includes("selectedItem.sourceFilePath ?? sourceTypeLabels"), "knowledge detail must not display sourceFilePath directly");
 assert(!sources.knowledge.includes('item.sourceFilePath ?? "",'), "knowledge search must not match hidden sourceFilePath");
 assert(!sources.search.includes("来源文件 ${item.sourceFilePath}"), "search location must not display knowledge sourceFilePath");
 assert(!sources.search.includes("location: node.relativePath"), "search location must not display file relativePath");
 assert(!sources.search.includes("node.relativePath.toLowerCase()"), "search must not match hidden file relative paths");
-assert(!sources.search.includes("sourcePath: node.relativePath"), "search results must not return file relative paths");
-assert(!sources.search.includes("sourcePath: summary.relativePath"), "safe summary search results must not return file relative paths");
+assert(sources.search.includes("sourcePath: node.relativePath"), "file search results must carry an exact safe current-case locator");
+assert(sources.search.includes("sourcePath: summary.relativePath"), "safe summary search results must use the same canonical file locator");
 assert(sources.workspaceStore.includes('INTERNAL_CASE_TREE_FILENAMES = new Set(["messages.json", "metadata.json", "project.json", "app-state.json"])'), "internal case tree file set is missing");
 assert(sources.workspaceStore.includes("INTERNAL_CASE_TREE_PATH_NAMES"), "internal case tree path set is missing");
 pass("phase25HidesInternalPathsAndStateFiles");

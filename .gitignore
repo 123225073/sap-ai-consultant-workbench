@@ -67,6 +67,8 @@ out/
 .turbo/
 .next/
 coverage/
+output/
+release/
 *.tsbuildinfo
 
 # Package manager caches
@@ -75,12 +77,17 @@ coverage/
 .yarn/
 
 # Worktrees and editor files
+.claude/
+.codex/
 .worktrees/
 worktrees/
 .vscode/
 .idea/
 *.swp
 *.swo
+
+# Unused legacy visual draft; the product docs reference the reviewed PNG.
+docs/product-prototype/images/01-main-workbench-actions-permissions.svg
 
 # OS files
 Thumbs.db

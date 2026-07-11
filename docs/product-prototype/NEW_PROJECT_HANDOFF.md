@@ -54,7 +54,8 @@ docs/product-prototype/
 | `PRODUCT_DEVELOPMENT_SPEC.md` | 产品开发说明书 / PRD。 |
 | `TECHNICAL_IMPLEMENTATION.md` | 技术实现文档。 |
 | `NEW_PROJECT_HANDOFF.md` | 当前交接说明。 |
-| `images/01-main-workbench.png` | 主工作台原型图。 |
+| `images/01-main-workbench-actions-permissions.png` | 当前主工作台原型图：自由对话、固定案件动作、项目 / 案件权限模式。 |
+| `images/01-main-workbench.png` | 主工作台历史原型图，仅保留作对照。 |
 | `images/02-config-center.png` | 配置中心原型图。 |
 | `images/03-standards-center.png` | 规范中心原型图。 |
 | `images/04-knowledge-center.png` | 知识库原型图。 |
@@ -122,7 +123,7 @@ Codex SDK 或 CLI 只是后台执行能力之一。
 - 左侧：统一侧栏，入口、项目、案件和个人信息。
 - 中间：连续对话流。
 - 右侧：可折叠当前案件文件。
-- 底部：输入框、任务模式、模型选择。
+- 底部：输入框、固定案件动作、项目 / 案件权限模式、模型选择。
 
 不要做成一堆卡片和图表的后台系统。
 
@@ -199,11 +200,13 @@ ABAP 规范、注释规范、流程图规范、文档模板不能只有一套全
 6. 配置中心。
 7. 规范中心。
 8. 知识库中心。
-9. 任务模式。
-10. 模型 API 渠道配置和模型选择。
-11. ADT 只读连接和验证。
-12. 飞书 CLI 验证和文档发布入口。
-13. 文件保存和搜索。
+9. 固定案件动作，用于把当前对话沉淀成笔记、开发说明书、流程图、候选知识或交付物。
+10. 项目 / 案件权限模式：请求批准、替我批准、完全访问。
+11. 动作与 Skill 管理：内置 Skill、导入 Skill、动作绑定。
+12. 模型 API 渠道配置和模型选择。
+13. ADT 只读连接和验证。
+14. 飞书 CLI 验证和文档发布入口。
+15. 文件保存和搜索。
 
 ### 4.2 MVP 不做
 

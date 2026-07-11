@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
-import { Archive, ArrowLeft, CheckCircle2, FileText, RefreshCcw, Save, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
-import type { KnowledgeCaseReferenceInput, KnowledgeDocumentJobStatus, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
+import { ArrowLeft, CheckCircle2, FileText, RefreshCcw, Save, Search, ShieldAlert, ShieldCheck, XCircle } from "lucide-react";
+import type { KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItem, KnowledgeItemActionInput, KnowledgeItemStatus, KnowledgeReviewInput, ProjectKnowledgeView, ProjectSummary } from "../shared/workbenchTypes";
 
 const statusLabels: Record<KnowledgeItemStatus, string> = {
   draft: "草稿",
@@ -19,17 +19,10 @@ const statusTone: Record<KnowledgeItemStatus, "neutral" | "green" | "orange" | "
 };
 const PHASE21_KNOWLEDGE_EDIT_REVIEW_MARKER = "phase21-knowledge-edit-conflict-resolution";
 
-const jobLabels: Record<KnowledgeDocumentJobStatus, string> = {
-  queued: "排队中",
-  parsed: "已整理，待复核",
-  "needs-review": "需人工确认",
-  blocked: "暂不可处理"
-};
-
 const sourceKindLabels: Record<KnowledgeImportLocalTextInput["sourceKind"], string> = {
   "local-text": "本地文本",
   "markdown-note": "Markdown 笔记",
-  "qa-text": "QA 文本"
+  "qa-text": "QA 粘贴文本"
 };
 
 const typeLabels: Record<KnowledgeItem["type"], string> = {
@@ -92,6 +85,7 @@ function knowledgeSourceLabel(item: KnowledgeItem): string {
 }
 
 function knowledgeReuseLabel(item: KnowledgeItem, hasReusableReview: boolean): string {
+  if (item.status === "published" && hasKnowledgeEffectivePeriodEnded(item)) return "适用期已结束，不可复用";
   if (item.status === "published" && hasReusableReview) return "发布后可复用";
   if (item.status === "pending") return "审核后才可入库";
   if (item.status === "conflicted") return "需先处理冲突";
@@ -122,24 +116,64 @@ function formatTime(value: string | null): string {
   return date.toLocaleString("zh-CN", { hour12: false });
 }
 
+function knowledgeDateKey(value: string | null): string | null {
+  if (!value) return null;
+  const match = value.trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  if (!match) return null;
+  const date = new Date(`${match[1]}T00:00:00.000Z`);
+  return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === match[1] ? match[1] : null;
+}
+
+function localDateKey(value = new Date()): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function hasKnowledgeEffectivePeriodEnded(item: Pick<KnowledgeItem, "effectiveTo">, at?: string): boolean {
+  const effectiveTo = knowledgeDateKey(item.effectiveTo);
+  const referenceDate = at ? knowledgeDateKey(at) : localDateKey();
+  return Boolean(effectiveTo && referenceDate && effectiveTo < referenceDate);
+}
+
+function effectivePeriodsOverlap(left: KnowledgeItem, right: KnowledgeItem): boolean {
+  const leftFrom = knowledgeDateKey(left.effectiveFrom) ?? "0000-01-01";
+  const leftTo = knowledgeDateKey(left.effectiveTo) ?? "9999-12-31";
+  const rightFrom = knowledgeDateKey(right.effectiveFrom) ?? "0000-01-01";
+  const rightTo = knowledgeDateKey(right.effectiveTo) ?? "9999-12-31";
+  return leftFrom <= rightTo && rightFrom <= leftTo;
+}
+
+function sharedSapObjects(left: KnowledgeItem, right: KnowledgeItem): string[] {
+  const rightObjects = new Set(right.sapObjects.map((value) => value.trim().toLocaleUpperCase("en-US")));
+  return [...new Set(left.sapObjects.filter((value) => rightObjects.has(value.trim().toLocaleUpperCase("en-US"))))];
+}
+
 interface KnowledgeCenterProps {
   project?: ProjectSummary;
+  initialItemId?: string;
+  currentCaseId?: string;
+  currentCaseKnowledgeReferenceIds: string[];
   notice: string;
   onBack: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
   onImport: (input: KnowledgeImportLocalTextInput) => Promise<boolean>;
   onImportTextFile: (projectId: string) => Promise<KnowledgeImportTextFileResult | null>;
   onReview: (projectId: string, input: KnowledgeReviewInput) => Promise<void>;
   onEdit: (projectId: string, input: KnowledgeEditInput) => Promise<boolean>;
   onAttachToCurrentCase: (projectId: string, input: KnowledgeCaseReferenceInput) => Promise<void>;
+  onDetachFromCurrentCase: (projectId: string, input: KnowledgeCaseReferenceInput) => Promise<void>;
   onPublish: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onMarkConflict: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
   onExpire: (projectId: string, input: KnowledgeItemActionInput) => Promise<void>;
 }
 
-function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, onReview, onEdit, onAttachToCurrentCase, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
+function KnowledgeCenter({ project, initialItemId, currentCaseId, currentCaseKnowledgeReferenceIds, notice, onBack, onDirtyChange, onImport, onImportTextFile, onReview, onEdit, onAttachToCurrentCase, onDetachFromCurrentCase, onPublish, onMarkConflict, onExpire }: KnowledgeCenterProps) {
   const [view, setView] = useState<ProjectKnowledgeView | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<KnowledgeItemStatus | "all">("pending");
   const [selectedItemId, setSelectedItemId] = useState("");
+  const [detailOpen, setDetailOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [busyItemId, setBusyItemId] = useState("");
   const [importTitle, setImportTitle] = useState("");
@@ -171,14 +205,17 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
       if (ignore) return;
       if (response.ok) {
         setView(response.data);
-        setSelectedItemId(response.data.items[0]?.id ?? "");
+        const focusedItem = initialItemId ? response.data.items.find((item) => item.id === initialItemId) : undefined;
+        if (focusedItem) setSelectedStatus("all");
+        setSelectedItemId(focusedItem?.id ?? response.data.items[0]?.id ?? "");
+        setDetailOpen(Boolean(focusedItem));
       }
     });
 
     return () => {
       ignore = true;
     };
-  }, [project?.id, project?.knowledge.updatedAt]);
+  }, [project?.id, project?.knowledge.updatedAt, initialItemId]);
 
   const filteredItems = useMemo(() => {
     const normalized = query.trim().toLowerCase();
@@ -198,6 +235,15 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   }, [view, selectedStatus, query]);
 
   const selectedItem = filteredItems.find((item) => item.id === selectedItemId) ?? filteredItems[0] ?? null;
+  const selectedAttachedToCurrentCase = Boolean(selectedItem && currentCaseKnowledgeReferenceIds.includes(selectedItem.id));
+  const potentialConflicts = useMemo(() => {
+    if (!selectedItem || !view || selectedItem.sapObjects.length === 0) return [];
+    return view.items.flatMap((item) => {
+      if (item.id === selectedItem.id || item.status !== "published" || !effectivePeriodsOverlap(selectedItem, item)) return [];
+      const sharedObjects = sharedSapObjects(selectedItem, item);
+      return sharedObjects.length > 0 ? [{ item, sharedObjects }] : [];
+    });
+  }, [selectedItem, view]);
 
   useEffect(() => {
     setReviewNote(selectedItem?.reviewNote ?? "");
@@ -217,10 +263,29 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   const selectedImportedCandidate = selectedItem ? isPhase16LocalTextImportCandidate(selectedItem) : false;
   const selectedCaseGeneratedCandidate = selectedItem ? isCaseGeneratedKnowledgeCandidate(selectedItem) : false;
   const selectedEditedCandidate = selectedItem ? isPhase21EditedCandidate(selectedItem) : false;
-  const selectedRequiresReviewGate = selectedImportedCandidate || selectedCaseGeneratedCandidate || selectedEditedCandidate;
+  const selectedRequiresReviewGate = Boolean(selectedItem && selectedItem.status !== "published" && selectedItem.status !== "expired");
   const selectedHasReview = selectedItem ? hasCompleteReview(selectedItem) : false;
   const selectedHasReusableReview = selectedItem ? hasReusableReviewRecord(selectedItem) : false;
+  const selectedEffectivePeriodEnded = selectedItem ? hasKnowledgeEffectivePeriodEnded(selectedItem) : false;
   const selectedHasBlockingConflict = selectedItem ? selectedItem.status === "conflicted" || selectedItem.conflictWithIds.length > 0 : false;
+  const knowledgeDraftDirty = Boolean(
+    importTitle.trim() || importBody.trim() || importSapObjects.trim() ||
+    (selectedItem && (
+      editTitle !== selectedItem.title ||
+      editSummary !== selectedItem.summary ||
+      editContent !== selectedItem.content ||
+      editSapObjects !== selectedItem.sapObjects.join(" ") ||
+      editEffectiveFrom !== (selectedItem.effectiveFrom ?? "") ||
+      editEffectiveTo !== (selectedItem.effectiveTo ?? "") ||
+      editNote.trim() ||
+      reviewNote !== (selectedItem.reviewNote ?? "") ||
+      JSON.stringify(reviewChecklist) !== JSON.stringify(selectedItem.reviewChecklist ?? emptyReviewChecklist)
+    ))
+  );
+  useEffect(() => {
+    onDirtyChange?.(knowledgeDraftDirty);
+    return () => onDirtyChange?.(false);
+  }, [knowledgeDraftDirty, onDirtyChange]);
   const canReviewSelected = Boolean(selectedItem && selectedRequiresReviewGate && selectedItem.status === "pending" && !selectedHasBlockingConflict && !busyItemId);
   const canEditSelected = Boolean(selectedItem && (selectedItem.status === "draft" || selectedItem.status === "pending" || selectedItem.status === "conflicted") && !busyItemId);
   const reviewReady = reviewNote.trim().length >= 8 && reviewChecklistComplete(reviewChecklist);
@@ -234,7 +299,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
     selectedItem.conflictWithIds.length > 0 ||
     (selectedRequiresReviewGate && !selectedHasReview)
   );
-  const attachDisabled = Boolean(!selectedItem || selectedItem.status !== "published" || !selectedHasReusableReview || busyItemId === selectedItem.id);
+  const attachDisabled = Boolean(!selectedItem || selectedItem.status !== "published" || selectedEffectivePeriodEnded || !selectedHasReusableReview || busyItemId === selectedItem.id);
 
   async function runAction(action: "publish" | "conflict" | "expire", item: KnowledgeItem) {
     if (!project || busyItemId) return;
@@ -253,10 +318,20 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
   }
 
   async function runAttachToCase(item: KnowledgeItem) {
-    if (!project || busyItemId || item.status !== "published") return;
+    if (!project || busyItemId || item.status !== "published" || hasKnowledgeEffectivePeriodEnded(item)) return;
     setBusyItemId(item.id);
     try {
-      await onAttachToCurrentCase(project.id, { itemId: item.id, note: "reference published knowledge in current case" });
+      await onAttachToCurrentCase(project.id, { itemId: item.id, note: "将已发布知识加入当前工作文件夹上下文。" });
+    } finally {
+      setBusyItemId("");
+    }
+  }
+
+  async function runDetachFromCase(item: KnowledgeItem) {
+    if (!project || !currentCaseId || busyItemId) return;
+    setBusyItemId(item.id);
+    try {
+      await onDetachFromCurrentCase(project.id, { itemId: item.id, note: "从当前工作文件夹上下文解除知识引用。" });
     } finally {
       setBusyItemId("");
     }
@@ -408,46 +483,47 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
 
         <section className="knowledge-actions">
           <button disabled={importFileBusy} title="选择一个 Markdown 或 TXT 文件，检查后生成待确认知识候选" onClick={() => void runTextFileImport()}><FileText size={16} />导入 Markdown/TXT</button>
-          <button disabled title="当前不读取 QA 表格文件"><Archive size={16} />QA 表读取关闭</button>
-          <button disabled title="当前不调用飞书同步"><FileText size={16} />飞书同步关闭</button>
           <label>
             <Search size={16} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索问题、SAP对象、文档、逻辑图、QA" />
           </label>
         </section>
-        <p className="knowledge-action-note">当前只支持单个 Markdown/TXT 小文件或粘贴已脱敏文本；不会保存绝对路径，不会连接飞书，不会自动正式入库。</p>
+        <p className="knowledge-action-note">当前只支持单个 Markdown/TXT 小文件或粘贴已脱敏文本；Word、PDF、Excel 当前不支持导入或解析。不会保存绝对路径，不会连接飞书，也不会自动正式入库。</p>
         {importFileStatus ? <p className="knowledge-file-import-status">{importFileStatus}</p> : null}
 
-        <form className="knowledge-import-form" onSubmit={submitImport}>
-          <div className="knowledge-import-fields">
-            <label>
-              <span>知识标题</span>
-              <input value={importTitle} onChange={(event) => setImportTitle(event.target.value)} placeholder="例如：采购订单审批口径" />
+        <details className="knowledge-import-details">
+          <summary>粘贴文本生成候选</summary>
+          <form className="knowledge-import-form" onSubmit={submitImport}>
+            <div className="knowledge-import-fields">
+              <label>
+                <span>知识标题</span>
+                <input value={importTitle} onChange={(event) => setImportTitle(event.target.value)} placeholder="例如：采购订单审批口径" />
+              </label>
+              <label>
+                <span>来源类型</span>
+                <select value={importSourceKind} onChange={(event) => setImportSourceKind(event.target.value as KnowledgeImportLocalTextInput["sourceKind"])}>
+                  {Object.entries(sourceKindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
+                </select>
+              </label>
+              <label>
+                <span>来源名称</span>
+                <input value={importSourceName} onChange={(event) => setImportSourceName(event.target.value)} placeholder="例如：会议纪要摘录" />
+              </label>
+              <label>
+                <span>SAP 对象</span>
+                <input value={importSapObjects} onChange={(event) => setImportSapObjects(event.target.value)} placeholder="可选，用空格分隔" />
+              </label>
+            </div>
+            <label className="knowledge-import-body">
+              <span>待确认文本</span>
+              <textarea value={importBody} onChange={(event) => setImportBody(event.target.value)} placeholder="粘贴已脱敏的业务结论、QA 文本或 Markdown 摘录" />
             </label>
-            <label>
-              <span>来源类型</span>
-              <select value={importSourceKind} onChange={(event) => setImportSourceKind(event.target.value as KnowledgeImportLocalTextInput["sourceKind"])}>
-                {Object.entries(sourceKindLabels).map(([value, label]) => <option value={value} key={value}>{label}</option>)}
-              </select>
-            </label>
-            <label>
-              <span>来源名称</span>
-              <input value={importSourceName} onChange={(event) => setImportSourceName(event.target.value)} placeholder="例如：会议纪要摘录" />
-            </label>
-            <label>
-              <span>SAP 对象</span>
-              <input value={importSapObjects} onChange={(event) => setImportSapObjects(event.target.value)} placeholder="可选，用空格分隔" />
-            </label>
-          </div>
-          <label className="knowledge-import-body">
-            <span>待确认文本</span>
-            <textarea value={importBody} onChange={(event) => setImportBody(event.target.value)} placeholder="粘贴已脱敏的业务结论、QA 文本或 Markdown 摘录" />
-          </label>
-          <div className="knowledge-import-footer">
-            <span>当前只生成待确认候选，不会直接进入正式知识库。</span>
-            <button disabled={importBusy || !importTitle.trim() || !importSourceName.trim() || !importBody.trim()} type="submit"><ShieldCheck size={16} />生成候选</button>
-          </div>
-        </form>
+            <div className="knowledge-import-footer">
+              <span>当前只生成待确认候选，不会直接进入正式知识库。</span>
+              <button disabled={importBusy || !importTitle.trim() || !importSourceName.trim() || !importBody.trim()} type="submit"><ShieldCheck size={16} />生成候选</button>
+            </div>
+          </form>
+        </details>
 
         <section className="knowledge-grid">
           <aside className="knowledge-status-list">
@@ -461,7 +537,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
 
           <div className="knowledge-list">
             {filteredItems.length > 0 ? filteredItems.map((item) => (
-              <button className={selectedItem?.id === item.id ? "active" : ""} key={item.id} onClick={() => setSelectedItemId(item.id)}>
+              <button className={selectedItem?.id === item.id ? "active" : ""} key={item.id} onClick={() => { setSelectedItemId(item.id); setDetailOpen(true); }}>
                 <div>
                   <strong>{item.title}</strong>
                   {statusPill(item.status)}
@@ -473,22 +549,10 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
           </div>
         </section>
 
-        <section className="knowledge-parser-queue">
-          <h2>候选处理队列</h2>
-          <p>这里只显示本地待确认候选，不代表已经读取真实文件或连接飞书。</p>
-          <div>
-            {view.documentJobs.map((job) => (
-              <article key={job.id}>
-                <strong>{job.title}</strong>
-                <span>{jobLabels[job.status]}</span>
-                <small>{job.detail}</small>
-              </article>
-            ))}
-          </div>
-        </section>
       </div>
 
-      <aside className="knowledge-detail">
+      <aside className={`knowledge-detail${detailOpen ? " open" : ""}`}>
+        <button type="button" className="knowledge-detail-close" onClick={() => setDetailOpen(false)}><ArrowLeft size={16} />返回知识列表</button>
         {selectedItem ? (
           <>
             <section>
@@ -502,6 +566,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
                 <div><dt>来源</dt><dd>{knowledgeSourceLabel(selectedItem)}</dd></div>
                 <div><dt>SAP对象</dt><dd>{selectedItem.sapObjects.length ? selectedItem.sapObjects.join("、") : "未绑定"}</dd></div>
                 <div><dt>生效时间</dt><dd>{selectedItem.effectiveFrom ?? "待确认"}</dd></div>
+                <div><dt>失效时间</dt><dd>{selectedItem.effectiveTo ?? "未设置"}</dd></div>
                 <div><dt>更新时间</dt><dd>{formatTime(selectedItem.updatedAt)}</dd></div>
                 <div><dt>审核状态</dt><dd>{selectedHasReview ? `${selectedItem.reviewer} · ${formatTime(selectedItem.reviewedAt)}` : "未审核"}</dd></div>
                 <div><dt>复用状态</dt><dd>{knowledgeReuseLabel(selectedItem, selectedHasReusableReview)}</dd></div>
@@ -511,7 +576,14 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
             {selectedCaseGeneratedCandidate ? (
               <section className="knowledge-source-note">
                 <ShieldAlert size={16} />
-                <span>候选来源：当前案件的待确认知识文件。必须先人工审核，确认无敏感信息和适用范围后，才能发布为正式知识。</span>
+                <span>案件文件仅作为只读来源快照。这里的编辑会形成新的知识记录版本，不会改写来源文件；发布前仍须人工确认敏感信息和适用范围。</span>
+              </section>
+            ) : null}
+
+            {selectedEffectivePeriodEnded && selectedItem.status === "published" ? (
+              <section className="knowledge-warning">
+                <XCircle size={16} />
+                <span>该知识的适用期已经结束，不能加入案件上下文。请使用“标记失效”追加生命周期审计记录。</span>
               </section>
             ) : null}
 
@@ -570,6 +642,7 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
                   <h3>人工审核门</h3>
                   {selectedHasReview ? <span><ShieldCheck size={14} />已审核</span> : <span><ShieldAlert size={14} />待审核</span>}
                 </div>
+                <p className="knowledge-action-note">审核身份记录为“本机用户”，只表示当前设备上的人工操作，不代表登录账号。</p>
                 <div className="knowledge-review-checks">
                   {reviewChecklistLabels.map((check) => (
                     <label key={check.id}>
@@ -606,11 +679,35 @@ function KnowledgeCenter({ project, notice, onBack, onImport, onImportTextFile, 
               </section>
             ) : null}
 
+            <section className="knowledge-potential-conflicts knowledge-review-gate">
+              <h3>潜在冲突提示</h3>
+              <p>这里只按 SAP 对象相同且适用期重叠筛选已发布知识，不判断正文结论；是否冲突必须由本机用户人工确认。</p>
+              {selectedItem.sapObjects.length === 0 ? (
+                <p>当前知识未绑定 SAP 对象，无法按对象与适用期生成提示。</p>
+              ) : potentialConflicts.length > 0 ? (
+                <>
+                  {potentialConflicts.slice(0, 5).map(({ item, sharedObjects }) => (
+                    <div className="knowledge-warning" key={item.id}>
+                      <ShieldAlert size={16} />
+                      <span>{item.title} · 共同对象：{sharedObjects.join("、")} · {item.effectiveFrom ?? "未设起始日"} 至 {item.effectiveTo ?? "长期有效"}</span>
+                    </div>
+                  ))}
+                  {potentialConflicts.length > 5 ? <p>另有 {potentialConflicts.length - 5} 条相同对象且适用期重叠的已发布知识，请通过搜索继续核对。</p> : null}
+                </>
+              ) : (
+                <p>当前未找到相同 SAP 对象且适用期重叠的已发布知识；这不代表不存在业务结论冲突。</p>
+              )}
+            </section>
+
             <section className="knowledge-detail-actions">
-              <button disabled={attachDisabled} title="只有已发布且已人工审核的知识才能加入当前案件上下文" onClick={() => void runAttachToCase(selectedItem)}><FileText size={16} />加入当前案件上下文</button>
+              {selectedAttachedToCurrentCase ? (
+                <button disabled={busyItemId === selectedItem.id || !currentCaseId} title="解除当前工作文件夹的引用，不删除正式知识" onClick={() => void runDetachFromCase(selectedItem)}><FileText size={16} />解除当前案件引用</button>
+              ) : (
+                <button disabled={attachDisabled || !currentCaseId} title={selectedEffectivePeriodEnded ? "该知识适用期已经结束，不能加入案件" : "只有已发布且已人工审核的知识才能加入当前案件上下文"} onClick={() => void runAttachToCase(selectedItem)}><FileText size={16} />加入当前案件上下文</button>
+              )}
               <button disabled={publishDisabled} title={selectedRequiresReviewGate && !selectedHasReview ? "该候选必须先记录人工审核" : selectedHasBlockingConflict ? "冲突知识不能直接确认入库" : "人工确认后才会发布"} onClick={() => void runAction("publish", selectedItem)}><CheckCircle2 size={16} />确认入库</button>
               <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "conflicted" || selectedItem.status === "expired"} onClick={() => void runAction("conflict", selectedItem)}><ShieldAlert size={16} />标记冲突</button>
-              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "published" || selectedItem.status === "expired"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
+              <button disabled={busyItemId === selectedItem.id || selectedItem.status === "expired"} title={selectedItem.status === "published" ? "保留正式知识内容和审核记录，并追加失效审计事件" : "保留历史记录并标记失效"} onClick={() => void runAction("expire", selectedItem)}><XCircle size={16} />标记失效</button>
             </section>
 
             <section className="knowledge-timeline">

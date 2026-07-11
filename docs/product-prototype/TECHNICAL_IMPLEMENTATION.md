@@ -10,10 +10,11 @@ MVP 的技术目标是实现一个本地优先的桌面工作台，能稳定完�
 
 1. 管理多个 SAP 项目。
 2. 配置和验证 ADT、飞书 CLI、API 模型、Codex 能力。
-3. 通过自然语言处理 SAP 问题、ABAP 开发、文档生成、流程图生成。
+3. 通过自由对话处理 SAP 问题、ABAP 开发、文档生成、流程图生成，并通过案件动作沉淀正式产物。
 4. 将所有过程文件和交付物保存到案件目录。
 5. 将知识候选进入待确认区，人工确认后入库。
-6. 支持全局搜索和案件上下文恢复。
+6. 支持案件动作与执行偏好审计；真实 Skill 执行权限门禁尚未完成前，不把偏好字段当作授权。
+7. 支持全局搜索和案件上下文恢复。
 
 ## 2. 推荐技术路线
 
@@ -25,7 +26,7 @@ MVP 的技术目标是实现一个本地优先的桌面工作台，能稳定完�
 
 - Windows 本地桌面集成成熟。
 - 调用本地 CLI、文件系统和子进程方便。
-- 适合集成现有 Python ADT CLI、lark-cli、Codex SDK 或 CLI。
+- 适合集成现有 Python ADT CLI、lark-cli、模型 HTTP API 和可选 Codex CLI。
 - 前端生态适合实现 Codex 风格界面。
 
 备选方案是 Tauri，但 MVP 阶段不推荐作为首选，因为 Rust 命令层和 Node/Python 工具链整合成本更高。
@@ -77,7 +78,7 @@ flowchart TD
   C --> H["Knowledge Service"]
   C --> I["Search Service"]
   F --> J["Secret Store"]
-  G --> K["Codex SDK or CLI"]
+  G --> K["Optional Codex CLI"]
   G --> L["Model Gateway"]
   G --> M["SAP ADT Connector"]
   G --> N["Feishu CLI Connector"]
@@ -94,7 +95,8 @@ flowchart TD
 | Project Service | 项目增删改查、可见项目、项目配置引用 | 不执行模型任务 |
 | Case Service | 案件创建、文件夹管理、对话记录、文件索引 | 不解析业务结论 |
 | Config Service | 配置校验、状态管理、密钥引用 | 不明文返回密钥 |
-| Agent Service | 任务模式编排、上下文组装、调用模型和工具 | 不直接操作 UI |
+| Action Service | 案件动作定义、Skill 绑定、执行确认、权限模式判断 | 不直接读写 SAP 或绕过连接器 |
+| Agent Service | 自由对话、案件动作执行、上下文组装、调用模型和工具 | 不直接操作 UI |
 | SAP ADT Connector | 只读读取 SAP、状态验证、T000 验证 | MVP 不写 SAP |
 | Feishu Connector | 验证登录、发布文档、白板更新 | 不保存飞书密码 |
 | Knowledge Service | 文档解析、候选知识、冲突检测、入库 | 不把未确认内容当正式知识 |
@@ -146,6 +148,23 @@ SAPAIWorkbench/
 
 ## 6. 数据模型
 
+### 6.0 产品概念到当前实现的映射
+
+当前阶段不新增一套平行数据结构，避免破坏已经完成的本地文件闭环。页面上的中文概念和底层实现按下表映射：
+
+| 用户看到的概念 | 当前实现 | 说明 |
+|---|---|---|
+| SAP 项目 | `Project`，且 `sapVersion` 为 `S4` 或 `ECC` | 管理 SAP 连接、Client、规范、知识和工作文件夹。 |
+| 其他工作 | `Project`，且 `sapVersion` 为 `UNKNOWN` | 用于非 SAP 或暂不绑定 SAP 配置的本地工作；不触发 ADT 读取。 |
+| 工作文件夹 | `Case` + `case_folder` | 一个正式任务对应一个真实本地文件夹。UI 用“工作文件夹”，代码可继续使用 `Case`。 |
+| Chat | `DailyChatThread` | 独立日常对话，不保存到 Project/Case 文件夹，不读取 SAP。 |
+| 案件动作 | `CaseAction` + 绑定的 `SkillPackage` | 固定按钮，用来把当前对话和文件沉淀成笔记、文档、图、候选知识或交付物。 |
+| 权限模式 | `ActionPermissionMode` | 按项目 / 案件生效，不按单个 Skill 生效。 |
+| 右侧文件页签 | `activeCaseFiles` + `CaseFileNode` | 默认读取当前工作文件夹的真实本地文件树。 |
+| 右侧项目配置页签 | `ProjectConfig` 摘要 | 只做紧凑摘要和入口，完整编辑仍进入配置中心。 |
+
+这个映射是本阶段的 module/interface 取舍：UI 的 interface 面向用户使用“工作文件夹”，implementation 继续复用已有 Case 文件保存、预览、检索和安全校验能力。
+
 ### 6.1 Project
 
 ```text
@@ -153,6 +172,7 @@ Project
   id
   name
   sap_version: S4 | ECC | UNKNOWN
+  permission_mode: request_approval | approve_for_me | full_access
   visible_order
   is_visible
   default_system_id
@@ -221,6 +241,7 @@ Case
   title
   status: active | solved | archived
   case_folder
+  permission_mode_override: request_approval | approve_for_me | full_access | null
   current_summary
   current_context_pack_path
   created_at
@@ -237,11 +258,81 @@ CaseMessage
   role: user | assistant | system
   content
   model_id
-  task_mode
+  action_id: optional
+  legacy_task_mode: optional
   created_at
 ```
 
-### 6.7 CaseFile
+`legacy_task_mode` 仅用于兼容早期本地数据和历史 probe。新 UI 不再要求用户在发消息前选择任务模式。
+
+### 6.7 CaseAction
+
+```text
+CaseAction
+  id
+  label
+  description
+  enabled
+  sort_order
+  skill_package_id
+  context_policy: json
+  output_policy: json
+  confirmation_template
+  created_at
+  updated_at
+```
+
+默认内置动作：
+
+| id | 按钮名称 | 默认输出 |
+|---|---|---|
+| read-materials | 梳理资料 | `evidence/资料梳理与缺口清单.md` |
+| capture-notes | 沉淀笔记 | `outputs/案件沉淀笔记.md` |
+| generate-dev-doc | 生成开发说明书 | `outputs/开发说明书.md` |
+| draw-flow | 画流程图 | `outputs/逻辑说明图.mmd` |
+| extract-knowledge | 整理候选知识 | `knowledge_candidates/问题处理经验候选.md` |
+| export-deliverables | 整理交付物 | `outputs/交付物清单与交接说明.md` |
+
+### 6.8 SkillPackage
+
+```text
+SkillPackage
+  id
+  name
+  description
+  source: builtin | imported
+  package_path
+  skill_md_path
+  has_scripts
+  has_assets
+  validation_status: valid | warning | invalid
+  validation_message
+  imported_at
+  updated_at
+```
+
+导入 Skill 只要求能找到并解析 `SKILL.md`。MVP 不提供 Skill 创建器，不负责用户如何创建自定义 Skill。
+
+### 6.9 ActionRun
+
+```text
+ActionRun
+  id
+  case_id
+  action_id
+  skill_package_id
+  permission_mode_used
+  status: pending_confirmation | running | succeeded | failed | cancelled
+  context_pack_path
+  output_files: json
+  log_path
+  started_at
+  completed_at
+```
+
+执行过程详细日志写入 `technical/`，对话区默认只展示折叠摘要和最终产物。
+
+### 6.10 CaseFile
 
 ```text
 CaseFile
@@ -258,7 +349,7 @@ CaseFile
   indexed_at
 ```
 
-### 6.8 KnowledgeItem
+### 6.11 KnowledgeItem
 
 ```text
 KnowledgeItem
@@ -277,7 +368,7 @@ KnowledgeItem
   updated_at
 ```
 
-### 6.9 StandardsProfile
+### 6.12 StandardsProfile
 
 ```text
 StandardsProfile
@@ -411,7 +502,7 @@ MVP 默认只实现只读方法。即使底层 CLI 支持写入、激活、传�
 
 ### 7.2.4 源码读取和落盘策略
 
-ADT 读取结果不等于必须保存文件。产品层需要根据任务模式决定是否落盘：
+ADT 读取结果不等于必须保存文件。产品层需要根据自由对话或案件动作决定是否落盘：
 
 | 场景 | 是否读取 SAP | 是否保存本地 |
 |---|---:|---:|
@@ -445,7 +536,7 @@ ADT 读取结果不等于必须保存文件。产品层需要根据任务模式�
 | 更新文档 | `lark-cli docs +update --api-version v2` | 目标文档被成功覆盖或更新 |
 | 更新白板 | `lark-cli docs +whiteboard-update` | Mermaid 内容写入白板块 |
 
-文档生成模式的默认产物：
+「生成开发说明书」案件动作的默认产物：
 
 ```text
 outputs/
@@ -513,71 +604,147 @@ publish status
 
 ### 7.4 API 模型获取流程
 
-对 OpenAI 兼容渠道：
+每个模型渠道独立保存协议类型、Base URL、API Key 引用、模型目录策略、手工模型 ID 和测试模型 ID。
 
-1. 读取 Base URL。
-2. 使用 API Key 请求 models endpoint。
-3. 保存模型列表。
-4. 对选定模型做最小 chat 测试。
-5. 将模型能力写入 Model.capabilities。
+1. OpenAI Compatible 使用 Bearer Token、`/models` 和 `/chat/completions`。
+2. Anthropic Compatible 使用 `x-api-key`、`anthropic-version`、`/models` 和 `/messages`。
+3. 模型目录可选择远程读取、仅手工维护、远程失败后回退手工列表。
+4. 最小对话优先使用用户指定的测试模型，不假定远程列表第一个模型可用。
+5. 只有模型目录和最小对话都满足所选策略时，渠道才可作为候选模型使用。
+6. 每次真实调用前解析模型域名；解析到本机、内网或云元数据地址时阻止请求，并禁止自动跟随 HTTP 重定向。
 
-DeepSeek 作为独立 Provider，但接口按 OpenAI 兼容形式适配。
+DeepSeek 作为独立 Provider 类型，但接口按 OpenAI Compatible 形式适配。
 
-## 8. Agent 和任务模式
+### 7.5 Codex 可选增强边界
 
-### 8.1 任务模式定义
+- 核心 Work/Chat 回复直接使用已验证模型渠道，不经过 Codex CLI。
+- Codex CLI 只承担用户主动启用的只读工程辅助，不读取 Codex App 历史聊天。
+- 本机扫描只检查固定命令和固定安装目录，不扫描任意文件。
+- 缺少 Codex CLI 时，安装必须经过原生确认框，并执行固定官方包安装命令。
+- 用户拒绝安装或验证失败时，不得阻塞 Work、Chat、规范、知识和本地文件功能。
+
+### 7.6 多 SAP 连接
+
+- `ProjectConfig.adtConnections` 保存最多 6 套独立只读连接，`activeAdtConnectionId` 指向当前 Work 使用的连接。
+- `ProjectConfig.adt` 是当前连接的兼容视图，供既有只读取证链路使用；保存和验证后必须同步回连接数组。
+- SAP 密码安全存储目标由 `Project + connectionId` 唯一确定，不同连接不得共用或误取密码。
+- 自动解析 SAP GUI 主机、实例号或端口时只派生 HTTPS ADT 地址；显式 HTTP 地址不作为自动回退候选。
+
+## 8. Agent、案件动作和权限模式
+
+### 8.1 自由对话
+
+自由对话是案件中的默认工作方式。用户可以持续补充需求、讨论逻辑、要求读取证据或追问结论，不需要先选择任务模式。
+
+默认行为：
+
+- 读取当前案件摘要和必要文件。
+- 根据用户问题判断是否需要调用模型、读取文件或请求 SAP 只读证据。
+- 不默认生成正式交付物。
+- 需要保存的中间材料进入当前案件目录。
+- 对话记录和关键结论持续更新 `conversation.md`、`timeline.md` 和 `context_pack.md`。
+
+### 8.2 案件动作定义
 
 ```text
-TaskMode
+CaseAction
   id
-  name
-  required_tools
-  allowed_tools
-  default_model_policy
-  required_standards
+  label
+  skill_package_id
+  context_policy
   output_policy
-  snapshot_policy
-  knowledge_candidate_policy
+  confirmation_template
+  permission_gate
 ```
 
-### 8.2 问题分析模式
+案件动作是一键沉淀入口，不是对话模式切换。它负责把当前对话、文件、项目规范和证据整理成正式产物。
 
-默认行为：
+### 8.3 内置案件动作
 
-- 分析用户问题。
-- 判断是否需要读取 SAP。
-- 尽量实时读取，不默认保存源码。
-- 输出结论和必要文件。
-- 生成候选知识，但不自动入库。
+| 动作 | 默认行为 |
+|---|---|
+| 梳理资料 | 梳理当前对话、工作文件夹、项目规范和已保存只读证据，并把资料缺口记录到 `evidence/资料梳理与缺口清单.md`。 |
+| 沉淀笔记 | 整理当前对话，生成便于后续重新打开学习的案件笔记。 |
+| 生成开发说明书 | 读取当前案件 `context_pack`、相关输出文件、证据和项目文档模板，输出开发说明书。 |
+| 画流程图 | 从案件上下文提取业务流程，优先生成 Mermaid，可进一步生成图片或飞书画布素材。 |
+| 整理候选知识 | 从案件中提炼可复用经验，进入 `knowledge_candidates/`，不自动入库。 |
+| 整理交付物 | 汇总当前案件已有产物，生成 `outputs/交付物清单与交接说明.md`。 |
 
-### 8.3 ABAP 开发模式
+### 8.4 动作执行流程
 
-默认行为：
+```mermaid
+flowchart TD
+  A["用户点击案件动作"] --> B["Action Service 读取动作配置"]
+  B --> C["构建受限 context_pack"]
+  C --> D["生成轻量确认面板"]
+  D --> E{"当前权限是否允许自动执行"}
+  E -->|需要确认| F["等待用户开始生成"]
+  E -->|可自动执行| G["调用绑定 Skill"]
+  F --> G
+  G --> H["Agent Service 流式执行"]
+  H --> I["写入 outputs / evidence / knowledge_candidates / technical"]
+  I --> J["对话区显示折叠过程和最终结果"]
+```
 
-- 判断是新开发还是修改已有对象。
-- 修改已有对象时读取 SAP 最新源码。
-- 需要修改时建立源码快照。
-- 套用当前项目 ABAP 规范。
-- 输出代码、说明、请求描述。
-- MVP 不自动写入 SAP。
+### 8.5 权限模式判断
 
-### 8.4 文档生成模式
+实际执行权限按以下顺序确定：
 
-默认行为：
+```text
+案件临时权限
+  -> 项目默认权限
+  -> 全局默认：请求批准
+```
 
-- 读取当前案件 context_pack。
-- 读取相关输出文件。
-- 套用文档模板。
-- 输出 Markdown、Word 或飞书文档。
+MVP 只支持三种权限模式：
 
-### 8.5 画流程图模式
+| 模式 | 技术行为 |
+|---|---|
+| `request_approval` | 编辑文件、执行脚本、联网、访问工作文件夹外路径前都需要确认。 |
+| `approve_for_me` | 当前案件目录内的文件生成、脚本执行和上下文整理可自动执行；跨目录、联网、删除等需要确认。 |
+| `full_access` | 当前项目 / 当前案件范围内尽量自动执行，但不能绕过硬性高风险确认。 |
 
-默认行为：
+以下操作必须进入硬性确认，不受 `full_access` 影响：
 
-- 从案件上下文提取业务流程。
-- 优先生成 Mermaid。
-- 可进一步生成图片或飞书画布素材。
-- 图示规范来自当前项目规范中心。
+- SAP 写入、激活、过账、传输、批量修改。
+- 批量删除文件或目录。
+- 发布到 Feishu/Lark、GitHub、CSDN 等外部平台。
+- 读取或导出密码、Token、API Key。
+- 修改系统级安全配置或生产环境不可逆操作。
+
+### 8.6 Skill 导入和绑定
+
+Skill 分为内置和导入两类：
+
+| 类型 | 存储 | 说明 |
+|---|---|---|
+| builtin | 应用随附目录 | 随系统提供，版本随应用升级。 |
+| imported | 用户本地 Skill 库 | 用户选择文件夹或 zip 导入，系统只负责校验和绑定。 |
+
+导入校验至少包括：
+
+- 是否包含 `SKILL.md`。
+- 能否读取名称和描述。
+- 是否包含 `scripts/`。
+- 是否包含 `assets/` 或模板。
+- 是否存在明显不可读取路径。
+
+Skill 执行时，Action Service 负责把当前案件上下文整理成固定输入。Skill 不直接获得任意全盘访问权，实际文件、脚本、联网能力必须由 main process 的能力门禁、目录边界和连接器边界控制；当前“执行偏好”只作审计记录。
+
+### 8.7 与早期 TaskMode 的兼容
+
+早期实现中的 `TaskMode` 可作为历史兼容字段保留，但新 UI 不再要求用户在发消息前选择。
+
+兼容映射：
+
+| 旧 TaskMode | 新设计中的处理 |
+|---|---|
+| `problem-analysis` | 自由对话 + 必要时点击「梳理资料」或「整理候选知识」。 |
+| `abap-development` | 自由对话 + 必要时点击「梳理资料」「生成开发说明书」。 |
+| `document-generation` | 点击「生成开发说明书」或后续扩展的文档动作。 |
+| `flow-diagram` | 点击「画流程图」。 |
+
+旧数据中的 `task_mode` 读取到前端时可以展示为历史标签，但不要作为新案件的主操作入口。
 
 ## 9. SAP 源码和快照策略
 
@@ -672,6 +839,31 @@ MVP 搜索采用混合检索：
 
 ## 12. UI 状态和布局实现
 
+### 12.0 Work / Chat 布局状态
+
+主工作台必须使用显式的 Work / Chat 状态，不能只把两种内容混在同一个项目列表里。
+
+```text
+activeView
+  chat       -> 独立日常对话
+  case       -> Work 下的当前工作文件夹
+  config     -> 当前 SAP 项目配置中心
+  standards  -> 当前 SAP 项目规范中心
+  knowledge  -> 当前 SAP 项目知识库
+
+rightPanelTab
+  files       -> 当前工作文件夹文件
+  config      -> 当前项目配置摘要
+```
+
+规则：
+
+1. `activeView === "chat"` 时，左侧不显示项目选择、工作文件夹创建和文件夹列表；右侧文件面板折叠。
+2. `activeView !== "chat"` 时，左侧显示 SAP 项目树和其他工作区；工作文件夹必须归属到一个 Project。
+3. SAP 项目下的 `+ 文件夹` 只创建该项目下的 Case，不允许静默落到当前激活项目。
+4. `sapVersion === "UNKNOWN"` 的项目作为“其他工作”，不显示 ADT 只读取证入口，不执行 SAP 读取。
+5. 右侧默认停留在 `files`；只有用户点击 `项目配置` 或项目 `配置` 动作才展示配置摘要/配置中心。
+
 ### 12.1 可拖拽布局
 
 需要实现：
@@ -702,7 +894,7 @@ MVP 搜索采用混合检索：
 
 ### 12.3 右侧文件面板
 
-文件面板从 CaseFile 表和案件目录读取。
+文件面板从 CaseFile 表和案件目录读取。UI 文案展示为“当前工作文件夹文件”，但底层仍复用当前 Case 文件树。
 
 必须支持：
 
@@ -717,6 +909,18 @@ MVP 搜索采用混合检索：
 - 文件预览大面板。
 - 技术证据 Dashboard。
 - 多余视图切换按钮。
+
+### 12.4 右侧项目配置摘要
+
+右侧项目配置摘要用于回答“我现在看到的配置从哪里来、什么时候出现、怎样切换回文件”。
+
+必须遵守：
+
+1. 默认不显示项目配置，避免覆盖当前工作文件夹文件。
+2. 项目配置摘要只展示状态、系统别名、Client、Feishu、API 渠道、Codex、本地存储等关键项。
+3. 每组配置使用折叠项展示；完整编辑、密钥保存和验证动作进入配置中心。
+4. 项目配置摘要不显示 SAP 密码、API Key、Token 或任何密钥明文。
+5. 从项目配置摘要切回「文件」后，右侧继续显示当前工作文件夹文件树和只读预览。
 
 ## 13. 错误处理
 
@@ -791,7 +995,9 @@ MVP 搜索采用混合检索：
 - 项目添加和移除。
 - 多项目可见列表。
 - 右侧文件面板折叠。
-- 输入框任务模式切换。
+- 底部固定案件动作选择器与生成按钮。
+- 案件动作轻量确认面板。
+- 成果动作内的执行偏好下拉，文案明确不替代安全门禁。
 - 模型选择器按渠道分组。
 - 小屏窗口下布局不重叠。
 
@@ -801,6 +1007,8 @@ MVP 搜索采用混合检索：
 - 密码不显示在界面。
 - 默认写入模式禁用。
 - 生产系统不允许无确认操作。
+- 任何执行偏好都不能绕过 SAP 写入、批量删除、外部发布和密钥导出确认。
+- 导入 Skill 的脚本执行必须受 main process 真实能力门禁限制；门禁未实现前不开放通用脚本执行。
 
 ## 16. MVP 开发顺序
 
@@ -823,17 +1031,27 @@ MVP 搜索采用混合检索：
 ### 阶段 3：案件工作流
 
 - 新建案件。
-- 任务模式。
+- 自由对话。
+- 固定案件动作。
+- 项目 / 案件权限模式。
 - 对话记录。
 - 文件生成和保存。
 - context_pack 生成。
+
+### 阶段 3.5：动作与 Skill 管理
+
+- 内置 Skill 注册。
+- 本地 Skill 文件夹或 zip 导入。
+- `SKILL.md` 校验。
+- 案件动作绑定 Skill。
+- 动作执行确认和运行记录。
 
 ### 阶段 4：规范中心
 
 - 模板复制。
 - 项目规范副本。
 - 差异查看。
-- ABAP 规范应用到任务模式。
+- ABAP、文档和流程图规范应用到案件动作。
 
 ### 阶段 5：知识库
 

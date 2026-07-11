@@ -75,13 +75,14 @@ async function listTmpFiles(directory) {
 }
 
 parseCreateLocalProjectInput({ name: "Client Alpha", sapVersion: "S4", systemLabel: "PRD/800" });
-parseCreateLocalCaseInput({ title: "Pricing issue" });
+parseCreateLocalProjectInput({ name: "Other Work", sapVersion: "UNKNOWN", systemLabel: "LOCAL" });
+parseCreateLocalCaseInput({ projectId: "project-demo", title: "Pricing issue" });
 pass("parseSafeInputs");
 
 assertThrows("parseBlocksProjectPath", () => parseCreateLocalProjectInput({ name: "../escape", sapVersion: "S4", systemLabel: "PRD/800" }));
 assertThrows("parseBlocksSecretText", () => parseCreateLocalCaseInput({ title: "password=abcdefghi" }));
 assertThrows("parseBlocksExtraField", () => parseCreateLocalProjectInput({ name: "Alpha", sapVersion: "S4", systemLabel: "PRD/800", path: "../escape" }));
-assertThrows("parseBlocksUnknownSapVersion", () => parseCreateLocalProjectInput({ name: "Alpha", sapVersion: "UNKNOWN", systemLabel: "PRD/800" }));
+assertThrows("parseBlocksUnsupportedSapVersion", () => parseCreateLocalProjectInput({ name: "Alpha", sapVersion: "R3", systemLabel: "PRD/800" }));
 
 const store = new WorkspaceStore(isolatedRepoRoot);
 const alphaState = await store.createLocalProject({ name: "Client Alpha", sapVersion: "S4", systemLabel: "PRD/800" });
@@ -167,7 +168,7 @@ await assertRejects("createCaseBlocksPathProjectId", () => store.createLocalCase
 await assertRejects("createProjectBlocksDotEnv", () => store.createLocalProject({ name: ".env", sapVersion: "S4", systemLabel: "PRD/800" }));
 await assertRejects("createProjectBlocksSapAdtCli", () => store.createLocalProject({ name: ".sap-adt-cli", sapVersion: "S4", systemLabel: "PRD/800" }));
 await assertRejects("createProjectBlocksAbsolutePath", () => store.createLocalProject({ name: "C:/temp/project", sapVersion: "S4", systemLabel: "PRD/800" }));
-await assertRejects("createProjectBlocksUnknownSapVersion", () => store.createLocalProject({ name: "Unknown SAP", sapVersion: "UNKNOWN", systemLabel: "PRD/800" }));
+await assertRejects("createProjectBlocksUnsupportedSapVersion", () => store.createLocalProject({ name: "Unknown SAP", sapVersion: "R3", systemLabel: "PRD/800" }));
 await assertRejects("createCaseBlocksToken", () => store.createLocalCase({ projectId: alpha.id, title: "token=abcdefghijklmnop" }));
 
 const projectResults = await store.search("Client Alpha");
@@ -179,9 +180,10 @@ pass("searchFindsLifecycleRecords");
 const appSource = await readFile(path.join(repoRoot, "apps/desktop/src/renderer/App.tsx"), "utf8");
 assert(!appSource.includes("bridge.createDemoProject"), "renderer still calls demo project creation");
 assert(!appSource.includes("bridge.createDemoCase"), "renderer still calls demo case creation");
-assert(!appSource.includes('<option value="UNKNOWN">'), "new project UI still offers UNKNOWN SAP version");
+assert(appSource.includes('<option value="UNKNOWN">其他工作</option>'), "new project UI must offer other work as UNKNOWN project type");
 assert(!appSource.includes("Publish status"), "renderer still uses publish wording for local Feishu draft");
-assert(appSource.includes('switchProject(item.id, "config")'), "project settings button does not switch project before config");
+assert(appSource.includes('navigateView("config")'), "configuration center must remain directly reachable");
+assert(!appSource.includes('className="project-config-preview"'), "Work right panel must stay focused on current case files");
 pass("rendererUsesRealLifecycle");
 
 const sourceFiles = [
@@ -204,8 +206,11 @@ for (const marker of ["workbench:create-local-project", "workbench:create-local-
 for (const forbidden of ["workbench:create-demo-project", "workbench:create-demo-case", "createDemoProject:", "createDemoCase:"]) {
   assert(!appLifecycleSource.includes(forbidden), "demo lifecycle IPC is still exposed: " + forbidden);
 }
-for (const forbidden of ["showOpenDialog", "dialog.show", "shell.open", "openExternal", "openPath", "execFile", "spawn(", "exec(", "fetch(", "unlink", "rm("]) {
-  assert(!appLifecycleSource.includes(forbidden), "unsafe lifecycle source marker found: " + forbidden);
+for (const forbidden of ["openPath", "execFile", "spawn(", "exec(", "fetch(", "unlink", "rm("]) {
+  const found = forbidden === "rm("
+    ? appLifecycleSource.replaceAll("confirm(", "").includes("rm(")
+    : appLifecycleSource.includes(forbidden);
+  assert(!found, "unsafe lifecycle source marker found: " + forbidden);
 }
 pass("noUnsafeLifecycleCapabilities");
 

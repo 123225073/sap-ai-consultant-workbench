@@ -2,6 +2,9 @@
   "name": "@sap-ai-workbench/desktop",
   "version": "0.1.0",
   "private": true,
+  "productName": "SAP AI 顾问工作台",
+  "description": "本地优先的 SAP AI 顾问个人工作台",
+  "author": "SAP AI Consultant Workbench",
   "type": "module",
   "main": "dist/main/main.cjs",
   "scripts": {
@@ -11,22 +14,71 @@
     "build:preload": "esbuild src/preload/preload.ts --bundle --platform=node --format=cjs --external:electron --outfile=dist/preload/preload.cjs",
     "build:renderer": "vite build",
     "check": "tsc --noEmit",
-    "start": "electron ."
+    "start": "electron .",
+    "package:dir": "npm run build && electron-builder --dir --win --publish never",
+    "package:win:installer": "npm run build && electron-builder --win nsis --publish never",
+    "package:win:portable": "npm run build && electron-builder --win portable --publish never",
+    "package:win": "npm run build && electron-builder --win nsis portable --publish never"
   },
   "dependencies": {
-    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1"
+  },
+  "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
-    "electron": "^33.3.1",
+    "electron": "33.3.1",
     "esbuild": "^0.24.2",
+    "ipaddr.js": "^2.4.0",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
-  },
-  "devDependencies": {
+    "vite": "^6.0.5",
     "@types/node": "^22.10.2",
     "@types/react": "^19.0.2",
-    "@types/react-dom": "^19.0.2"
+    "@types/react-dom": "^19.0.2",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "online.fengsha.sap-ai-consultant-workbench",
+    "productName": "SAP AI 顾问工作台",
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/@sqlite.org/sqlite-wasm/**/*"
+    ],
+    "directories": {
+      "output": "../../release/0.1.0"
+    },
+    "files": [
+      "dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "SAP-AI-Consultant-Workbench-${version}-${arch}-Setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "SAP-AI-Consultant-Workbench-${version}-${arch}-Portable.${ext}"
+    }
   }
 }

@@ -1,8 +1,9 @@
-import type { CaseGeneratedFile, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
+import type { CaseActionId, CaseGeneratedFile, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
 
 export const SAFE_MODEL_CONTEXT_ALLOWED_FIELDS = [
   "taskMode",
   "taskLabel",
+  "actionId",
   "userInputSummary",
   "caseTitle",
   "caseSummary",
@@ -18,15 +19,15 @@ export const safeModelDraftBoundary = "安全模型草稿：只使用当前输�
 const MAX_USER_INPUT_CHARS = 1200;
 const MAX_CASE_TITLE_CHARS = 160;
 const MAX_CASE_SUMMARY_CHARS = 500;
-const MAX_STANDARDS_SUMMARY_CHARS = 300;
+const MAX_STANDARDS_SUMMARY_CHARS = 1200;
 const MAX_KNOWLEDGE_REFERENCES = 5;
 const MAX_KNOWLEDGE_TITLE_CHARS = 140;
 const MAX_KNOWLEDGE_SUMMARY_CHARS = 420;
 const MAX_KNOWLEDGE_SAP_OBJECTS = 8;
 const MAX_SAFE_SUMMARIES = 5;
 const MAX_SAFE_SUMMARY_CHARS = 360;
-const MAX_MODEL_CONTEXT_CHARS = 5200;
-const MAX_MODEL_DRAFT_CHARS = 5000;
+const MAX_MODEL_CONTEXT_CHARS = 9000;
+const MAX_MODEL_DRAFT_CHARS = 12000;
 
 const unsafeModelContextPatterns = [
   /-----BEGIN (RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/i,
@@ -78,6 +79,7 @@ export interface SafeModelKnowledgeReferenceInput {
 export interface SafeModelDraftContextInput {
   taskMode: TaskMode;
   taskLabel: string;
+  actionId?: CaseActionId | null;
   userInput: string;
   caseTitle: string;
   caseSummary: string;
@@ -85,6 +87,36 @@ export interface SafeModelDraftContextInput {
   standardsSummary: string;
   knowledgeReferences: SafeModelKnowledgeReferenceInput[];
   safeOutputSummaries: SafeModelOutputSummaryInput[];
+}
+
+function actionOutputRequirements(actionId: CaseActionId | null | undefined, taskMode: TaskMode): string[] {
+  if (actionId === "development-spec" || taskMode === "document-generation") {
+    return [
+      "请输出一份可直接审阅的 SAP 开发说明书正文，并严格包含以下二级标题：业务背景与目标、需求范围、现状与问题、方案设计、SAP 对象与接口、处理逻辑、权限与安全、异常处理、测试方案、上线与回退、待确认事项。",
+      "不得编造 SAP 对象、表、接口或已完成测试；未知项写“待确认”，并说明需要什么证据。",
+      "方案设计和处理逻辑必须来自当前案件上下文，不能输出通用模板说明。"
+    ];
+  }
+  if (actionId === "draw-flow" || taskMode === "flow-diagram") {
+    return [
+      "请只输出一段 Mermaid flowchart TD 源码，不要使用 Markdown 代码围栏，不要附加解释文字。",
+      "流程必须反映当前案件中的业务或技术逻辑，至少包含开始、主要处理、判断/异常分支和结束；证据不足的节点明确写“待确认”。",
+      "禁止 click、href、外部链接、HTML、脚本以及 SAP 写入、激活、传输释放动作。"
+    ];
+  }
+  if (actionId === "read-source") {
+    return ["按“已知事实、可用资料、信息缺口、建议补充顺序”输出案件资料梳理，不得把推测写成事实。"];
+  }
+  if (actionId === "capture-note") {
+    return ["按“结论、依据、未决事项、后续行动”沉淀当前讨论，保留待确认标识。"];
+  }
+  if (actionId === "candidate-knowledge") {
+    return ["提炼可复用经验，并明确适用范围、SAP 对象、前置条件、失效条件和待人工审核项。"];
+  }
+  if (actionId === "export-handoff") {
+    return ["按“交付结论、文件说明、验证状态、未决风险、接手人下一步”生成交接正文，不得声称不存在的文件已经交付。"];
+  }
+  return ["用简洁中文输出结论、依据、风险和下一步。"];
 }
 
 export interface SafeModelDraftMessage {
@@ -190,6 +222,7 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
   const caseSummary = safeField("案件摘要", input.caseSummary, MAX_CASE_SUMMARY_CHARS);
   const standardsSummary = safeField("项目规范摘要", input.standardsSummary, MAX_STANDARDS_SUMMARY_CHARS);
   const taskLabel = safeField("任务模式", input.taskLabel, 40);
+  const actionId = input.actionId ?? null;
   const sapVersion = input.sapVersion === "S4" || input.sapVersion === "ECC" ? input.sapVersion : "UNKNOWN";
 
   const summaryLines = safeSummaries.length > 0
@@ -206,6 +239,7 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
     "请基于以下安全上下文生成一份当前案件的本地草稿回复。",
     "",
     `任务模式：${taskLabel}`,
+    `成果动作：${actionId ?? "自由对话"}`,
     `用户输入摘要：${userInputSummary}`,
     `案件标题：${caseTitle}`,
     `案件当前摘要：${caseSummary}`,
@@ -224,7 +258,8 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
     "1. 只写可编辑的本地草稿，不声称已经读取 SAP。",
     "2. 不输出 SAP 写入、激活、传输释放或飞书发布动作。",
     "3. 如果证据不足，明确写“待用户确认”。",
-    "4. 用简洁中文输出结论、建议和下一步。"
+    "4. 输出必须是当前案件的专用内容，禁止用产品功能说明或通用占位模板冒充成果。",
+    ...actionOutputRequirements(actionId, input.taskMode).map((requirement, index) => `${index + 5}. ${requirement}`)
   ].join("\n").slice(0, MAX_MODEL_CONTEXT_CHARS);
 
   assertNoUnsafeModelContextText("完整模型上下文", userContext);
@@ -256,9 +291,12 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
 }
 
 export function assertSafeModelDraftResponseText(value: string): string {
-  const normalized = value.replace(/\r\n/g, "\n").trim().slice(0, MAX_MODEL_DRAFT_CHARS);
+  const normalized = value.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
     throw new Error("模型没有返回可保存的草稿内容。");
+  }
+  if (normalized.length > MAX_MODEL_DRAFT_CHARS) {
+    throw new Error(`模型返回内容超过 ${MAX_MODEL_DRAFT_CHARS} 字，已阻止静默截断。请缩小范围后重新生成。`);
   }
   assertNoUnsafeModelContextText("模型草稿回复", normalized);
   return normalized;

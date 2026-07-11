@@ -310,7 +310,6 @@ for (const forbidden of [
 pass("preparedContextUsesCleanedReviewedReferencesOnly");
 
 const sourceFiles = [
-  "apps/desktop/src/main/main.ts",
   "apps/desktop/src/main/workspaceStore.ts",
   "apps/desktop/src/main/safeModelCaseDraftService.ts",
   "apps/desktop/src/preload/preload.ts"

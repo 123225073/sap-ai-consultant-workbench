@@ -98,12 +98,13 @@ async function importCandidate(store, projectId, title, body = null) {
 }
 
 function editInput(itemId, overrides = {}) {
+  const objectSuffix = [...itemId].reduce((total, character) => (total + character.codePointAt(0)) % 100000, 0);
   return {
     itemId,
     title: "采购审批口径修订候选",
     summary: "采购审批口径已经按当前项目范围修订，等待人工重新审核。",
     content: "采购审批口径按当前项目范围执行，历史口径只作为参考。该候选经过修改后必须重新审核才能入库。",
-    sapObjects: ["ZMM_EDIT_SAFE"],
+    sapObjects: ["ZMM_EDIT_" + objectSuffix],
     effectiveFrom: "2026-07-04",
     effectiveTo: null,
     note: "修订适用范围",
@@ -217,7 +218,10 @@ pass("editReReviewThenPublishSucceeds");
 
 await assertRejects("editPublishedKnowledgeBlocked", () => store.editKnowledgeCandidate(project.id, editInput(reviewedItemId, { note: "尝试编辑发布知识" })));
 await assertRejects("markPublishedKnowledgeConflictBlocked", () => store.markKnowledgeConflicted(project.id, { itemId: reviewedItemId, note: "try conflict published" }));
-await assertRejects("expirePublishedKnowledgeBlocked", () => store.expireKnowledge(project.id, { itemId: reviewedItemId, note: "try expire published" }));
+const expiredPublishedState = await store.expireKnowledge(project.id, { itemId: reviewedItemId, note: "人工确认该正式知识已经失效。" });
+const expiredPublishedItem = activeProject(expiredPublishedState).knowledge.items.find((item) => item.id === reviewedItemId);
+assert(expiredPublishedItem.status === "expired", "published knowledge should support audited expiration");
+pass("expirePublishedKnowledgeAudited");
 
 const expiredItemId = await importCandidate(store, project.id, "已失效编辑候选");
 await store.expireKnowledge(project.id, { itemId: expiredItemId, note: "人工标记失效。" });

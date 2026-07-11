@@ -6,6 +6,8 @@ import {
   buildCaseMaintenanceArtifacts,
   buildCaseWorkflowArtifacts,
   createCaseMessage,
+  normalizeActionPermissionMode,
+  normalizeCaseActionId,
   normalizeTaskMode,
   parseCaseWorkflowInput,
   TASK_MODE_LABELS,
@@ -47,7 +49,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtVerificationMode, AdtVerificationReport, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, ConfigStatus, CreateLocalCaseInput, CreateLocalProjectInput, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, DailyChatMessage, DailyChatThread, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -56,7 +58,9 @@ interface StoredState {
   schemaVersion: number;
   activeProjectId: string;
   activeCaseId: string;
+  activeChatThreadId: string;
   projects: ProjectSummary[];
+  chatThreads: DailyChatThread[];
 }
 
 export interface PreparedSafeModelDraftRequest {
@@ -69,9 +73,55 @@ export interface PreparedSafeModelDraftRequest {
   context: SafeModelDraftContext;
 }
 
+export interface PreparedCodexCaseAssistRequest {
+  projectId: string;
+  caseId: string;
+  integrationType: ProjectConfig["codex"]["integrationType"];
+  executablePath: string;
+  workspaceRoot: string;
+  context: CodexCaseAssistContext;
+}
+
+export interface DailyChatAssistantReply {
+  content: string;
+  modelId: string;
+  responseMode: "model-success" | "model-failed";
+  projectId: string;
+  providerId: string;
+  providerName: string;
+}
+
 const DEMO_PROJECT_ID = "demo-s4hana";
 const DEMO_CASE_ID = "demo001";
-const SCHEMA_VERSION = 1;
+const STARTER_PROJECT_ID = "local-workspace";
+const STARTER_CASE_ID = "inbox";
+const DEFAULT_CHAT_THREAD_ID = "daily-chat-default";
+const SCHEMA_VERSION = 2;
+
+class IncompatibleStateVersionError extends Error {
+  constructor(readonly foundVersion: number) {
+    super(`本地数据版本 ${foundVersion} 高于当前应用支持的版本 ${SCHEMA_VERSION}。为避免旧版本覆盖新数据，应用已停止写入。请安装更新版本后重试。`);
+    this.name = "IncompatibleStateVersionError";
+  }
+}
+
+function storedStateVersion(value: unknown): number {
+  if (!value || typeof value !== "object") throw new Error("本地状态结构无效。");
+  const rawVersion = (value as { schemaVersion?: unknown }).schemaVersion;
+  if (rawVersion === undefined) return 1;
+  if (!Number.isInteger(rawVersion) || Number(rawVersion) < 1) throw new Error("本地状态版本无效。");
+  return Number(rawVersion);
+}
+
+function migrateStoredState(value: unknown): StoredState {
+  const sourceVersion = storedStateVersion(value);
+  if (sourceVersion > SCHEMA_VERSION) throw new IncompatibleStateVersionError(sourceVersion);
+  let migrated = { ...(value as StoredState) };
+  if (sourceVersion === 1) {
+    migrated = { ...migrated, schemaVersion: 2 };
+  }
+  return migrated;
+}
 
 const directories = [
   "outputs",
@@ -245,6 +295,27 @@ function demoCase(): CaseSummary {
   };
 }
 
+function demoChatThread(): DailyChatThread {
+  const createdAt = "2026-07-02T10:16:00.000Z";
+  return {
+    id: DEFAULT_CHAT_THREAD_ID,
+    title: "日常对话",
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: nowIso(),
+    messages: [
+      {
+        id: "seed-chat-assistant-1",
+        threadId: DEFAULT_CHAT_THREAD_ID,
+        role: "assistant",
+        content: "这里是独立日常对话，不关联项目、案件或文件夹。需要沉淀成果时，再新建正式案件。",
+        modelId: "local-chat",
+        createdAt
+      }
+    ]
+  };
+}
+
 function demoProject(): ProjectSummary {
   const createdAt = "2026-07-02T10:18:00.000Z";
   const projectDir = DEMO_PROJECT_ID;
@@ -263,6 +334,58 @@ function demoProject(): ProjectSummary {
     standards: createProjectStandards(DEMO_PROJECT_ID, "S4", "s4-default"),
     knowledge: createProjectKnowledge(DEMO_PROJECT_ID, true),
     cases: [demoCase()]
+  };
+}
+
+function starterCase(projectId = STARTER_PROJECT_ID): CaseSummary {
+  const createdAt = nowIso();
+  return {
+    id: STARTER_CASE_ID,
+    projectId,
+    title: "收件箱",
+    status: "active",
+    caseDir: STARTER_CASE_ID,
+    summary: "尚未生成案件成果。",
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt,
+    folderName: STARTER_CASE_ID,
+    currentSummary: "尚未生成案件成果。",
+    knowledgeReferences: [],
+    messages: []
+  };
+}
+
+function starterChatThread(): DailyChatThread {
+  const createdAt = nowIso();
+  return {
+    id: DEFAULT_CHAT_THREAD_ID,
+    title: "日常对话",
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt,
+    messages: []
+  };
+}
+
+function starterProject(): ProjectSummary {
+  const createdAt = nowIso();
+  const firstCase = starterCase();
+  return {
+    id: STARTER_PROJECT_ID,
+    name: "我的工作",
+    sapVersion: "UNKNOWN",
+    systemLabel: "Local",
+    projectDir: STARTER_PROJECT_ID,
+    isVisible: true,
+    visibleOrder: 1,
+    connectionState: "not-configured",
+    createdAt,
+    updatedAt: createdAt,
+    config: defaultProjectConfig(STARTER_PROJECT_ID, STARTER_PROJECT_ID, firstCase.folderName),
+    standards: createProjectStandards(STARTER_PROJECT_ID, "UNKNOWN", "s4-default"),
+    knowledge: createProjectKnowledge(STARTER_PROJECT_ID, false),
+    cases: [firstCase]
   };
 }
 
@@ -302,26 +425,31 @@ function syncProjectLocalStorage(project: ProjectSummary, caseItem: CaseSummary)
 function defaultProjectConfig(projectId: string, projectDir: string, caseDir: string, options: { demo?: boolean } = {}): ProjectConfig {
   const updatedAt = nowIso();
   const demo = options.demo === true;
+  const adt: ProjectConfig["adt"] = {
+    id: "adt-default",
+    alias: demo ? "演示开发系统" : "",
+    url: demo ? "https://sap-demo.example.com" : "",
+    client: demo ? "100" : "",
+    username: demo ? "DEMO_USER" : "",
+    language: "ZH",
+    sslMode: "strict",
+    readOnly: true,
+    credential: emptySecretHandle("adt-password"),
+    configStatus: demo ? "saved" : "not-configured",
+    connectionStatus: "pending-verification",
+    minimalReadStatus: "pending-verification",
+    lastVerificationMode: null,
+    lastCheckedAt: null
+  };
   return {
     schemaVersion: 2,
     projectId,
     updatedAt,
-    adt: {
-      alias: demo ? "演示开发系统" : "",
-      url: demo ? "https://sap-demo.example.com" : "",
-      client: demo ? "100" : "",
-      username: demo ? "DEMO_USER" : "",
-      language: "ZH",
-      sslMode: "strict",
-      readOnly: true,
-      credential: emptySecretHandle("adt-password"),
-      configStatus: demo ? "saved" : "not-configured",
-      connectionStatus: "pending-verification",
-      minimalReadStatus: "pending-verification",
-      lastVerificationMode: null,
-      lastCheckedAt: null
-    },
+    adt,
+    adtConnections: [{ ...adt }],
+    activeAdtConnectionId: adt.id,
     feishu: {
+      appId: "",
       profile: demo ? "demo-profile" : "",
       cliPath: "lark-cli",
       credential: emptySecretHandle("feishu-token"),
@@ -337,10 +465,14 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
         baseUrl: demo ? "https://api-demo.example.com/v1" : "",
         enabled: false,
         credential: emptySecretHandle("api-key"),
+        catalogMode: "remote",
+        testModelId: "",
+        manualModelIds: [],
         models: [],
         modelSyncStatus: "pending-verification",
         chatTestStatus: "pending-verification",
         lastVerificationMode: null,
+        verifiedModelIds: [],
         lastVerifiedModelId: null,
         lastCheckedAt: null
       }
@@ -361,14 +493,14 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
 
 function assertSafeLifecycleText(label: string, value: unknown, maxLength = 96): string {
   if (typeof value !== "string") {
-    throw new Error(`${label} must be plain text.`);
+    throw new Error(`${label}必须是普通文本。`);
   }
   const textValue = value.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   if (!textValue) {
-    throw new Error(`${label} is required.`);
+    throw new Error(`${label}不能为空。`);
   }
   if (textValue.length > maxLength) {
-    throw new Error(`${label} is too long.`);
+    throw new Error(`${label}过长。`);
   }
   const lower = textValue.toLowerCase();
   const unsafeText = /(authorization|cookie|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?key|secret|token|secure-store|sap_sessionid|mysapsso2)/i.test(textValue);
@@ -388,87 +520,178 @@ function assertSafeLifecycleText(label: string, value: unknown, maxLength = 96):
     lower.includes("project.json")
   );
   if (unsafeText || unsafePath) {
-    throw new Error(`${label} contains unsafe text or path-like content.`);
+    throw new Error(`${label}包含不安全文本或疑似文件路径。`);
   }
   return textValue;
 }
 
 export function parseCreateLocalProjectInput(input: unknown): CreateLocalProjectInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Create project request is invalid.");
+    throw new Error("新建 Project 请求无效。");
   }
   const keys = Object.keys(input);
   if (keys.some((key) => !["name", "sapVersion", "systemLabel"].includes(key))) {
-    throw new Error("Create project request contains unsupported fields.");
+    throw new Error("新建 Project 请求包含不支持的字段。");
   }
   const candidate = input as Partial<CreateLocalProjectInput>;
   return {
-    name: assertSafeLifecycleText("Project name", candidate.name, 80),
+    name: assertSafeLifecycleText("项目名称", candidate.name, 80),
     sapVersion: lifecycleSapVersion(candidate.sapVersion),
-    systemLabel: assertSafeLifecycleText("System label", candidate.systemLabel, 40)
+    systemLabel: assertSafeLifecycleText("系统标签", candidate.systemLabel, 40)
   };
 }
 
 function assertStrictLifecycleId(label: string, value: unknown): string {
   if (typeof value !== "string") {
-    throw new Error(`${label} must be a plain local ID.`);
+    throw new Error(`${label}必须是普通本地 ID。`);
   }
   if (value !== value.trim() || !/^[A-Za-z0-9_-]{1,80}$/.test(value)) {
-    throw new Error(`${label} contains unsafe or path-like content.`);
+    throw new Error(`${label}包含不安全内容或疑似文件路径。`);
   }
   return value;
 }
 
+function assertSafeDailyChatContent(value: unknown): string {
+  if (typeof value !== "string") return "";
+  const content = value.trim();
+  if (content.length > 8000) {
+    throw new Error("单条日常对话过长。请先整理成 8000 字以内再发送。");
+  }
+  const secretLikePatterns = [
+    /secure-store:sec_[a-f0-9]{32}/i,
+    /sk-[a-z0-9]{20,}/i,
+    /bearer\s+[a-z0-9._-]{12,}/i,
+    /authorization\s*[:=]\s*[^\s]+/i,
+    /cookie\s*[:=]\s*[^\s]+/i,
+    /api[_-]?key\s*[:=]\s*["']?[^"'\s]{8,}/i,
+    /password\s*[:=]\s*["']?[^"'\s]{6,}/i,
+    /passwd\s*[:=]\s*["']?[^"'\s]{6,}/i,
+    /token\s*[:=]\s*["']?[^"'\s]{8,}/i
+  ];
+  if (secretLikePatterns.some((pattern) => pattern.test(content))) {
+    throw new Error("日常对话中包含疑似密码、Token、API Key 或授权信息。请删除敏感内容后再发送。");
+  }
+  return content;
+}
+
 export function parseCreateLocalCaseInput(input: unknown): CreateLocalCaseInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Create case request is invalid.");
+    throw new Error("新建工作文件夹请求无效。");
   }
   const keys = Object.keys(input);
   if (keys.some((key) => !["projectId", "title"].includes(key))) {
-    throw new Error("Create case request contains unsupported fields.");
+    throw new Error("新建工作文件夹请求包含不支持的字段。");
   }
   const candidate = input as Partial<CreateLocalCaseInput>;
-  const projectId = candidate.projectId === undefined ? undefined : assertStrictLifecycleId("Project ID", candidate.projectId);
+  const projectId = assertStrictLifecycleId("项目 ID", candidate.projectId);
   return {
-    ...(projectId ? { projectId } : {}),
-    title: assertSafeLifecycleText("Case title", candidate.title, 120)
+    projectId,
+    title: assertSafeLifecycleText("工作文件夹名称", candidate.title, 120)
+  };
+}
+
+export function parseCreateDailyChatThreadInput(input: unknown): CreateDailyChatThreadInput {
+  if (input === undefined || input === null) return {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("新建日常对话请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["title", "initialMessage"].includes(key))) {
+    throw new Error("新建日常对话请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<CreateDailyChatThreadInput>;
+  return {
+    title: typeof candidate.title === "string" && candidate.title.trim()
+      ? assertSafeLifecycleText("日常对话标题", candidate.title, 80)
+      : undefined,
+    initialMessage: assertSafeDailyChatContent(candidate.initialMessage)
+  };
+}
+
+function parseSwitchDailyChatThreadInput(input: unknown): SwitchDailyChatThreadInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("切换日常对话请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "threadId") {
+    throw new Error("切换日常对话请求只能包含 threadId。");
+  }
+  return { threadId: assertStrictLifecycleId("日常对话 ID", (input as Partial<SwitchDailyChatThreadInput>).threadId) };
+}
+
+export function parseAppendDailyChatMessageInput(input: unknown): AppendDailyChatMessageInput {
+  if (typeof input === "string") {
+    return { content: assertSafeDailyChatContent(input) };
+  }
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { content: "" };
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["threadId", "projectId", "providerId", "content", "modelId"].includes(key))) {
+    throw new Error("发送日常对话请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<AppendDailyChatMessageInput>;
+  return {
+    threadId: typeof candidate.threadId === "string" && candidate.threadId.trim()
+      ? assertStrictLifecycleId("日常对话 ID", candidate.threadId)
+      : undefined,
+    projectId: typeof candidate.projectId === "string" && candidate.projectId.trim()
+      ? assertStrictLifecycleId("项目 ID", candidate.projectId)
+      : undefined,
+    providerId: typeof candidate.providerId === "string" && candidate.providerId.trim()
+      ? assertStrictLifecycleId("模型渠道 ID", candidate.providerId)
+      : undefined,
+    content: assertSafeDailyChatContent(candidate.content),
+    modelId: safeMessageModelId(candidate.modelId)
   };
 }
 
 function parseSwitchProjectInput(input: unknown): SwitchProjectInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Switch project request is invalid.");
+    throw new Error("切换 Project 请求无效。");
   }
   const keys = Object.keys(input);
   if (keys.length !== 1 || keys[0] !== "projectId") {
-    throw new Error("Switch project request may only contain projectId.");
+    throw new Error("切换 Project 请求只能包含 projectId。");
   }
-  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<SwitchProjectInput>).projectId);
+  const projectId = assertStrictLifecycleId("项目 ID", (input as Partial<SwitchProjectInput>).projectId);
   return { projectId };
 }
 
 function parseHideProjectFromSidebarInput(input: unknown): HideProjectFromSidebarInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Hide project request is invalid.");
+    throw new Error("隐藏 Project 请求无效。");
   }
   const keys = Object.keys(input);
   if (keys.length !== 1 || keys[0] !== "projectId") {
-    throw new Error("Hide project request may only contain projectId.");
+    throw new Error("隐藏 Project 请求只能包含 projectId。");
   }
-  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<HideProjectFromSidebarInput>).projectId);
+  const projectId = assertStrictLifecycleId("项目 ID", (input as Partial<HideProjectFromSidebarInput>).projectId);
+  return { projectId };
+}
+
+function parseRestoreProjectToSidebarInput(input: unknown): RestoreProjectToSidebarInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("恢复 Project 请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "projectId") {
+    throw new Error("恢复 Project 请求只能包含 projectId。");
+  }
+  const projectId = assertStrictLifecycleId("项目 ID", (input as Partial<RestoreProjectToSidebarInput>).projectId);
   return { projectId };
 }
 
 function parseSwitchCaseInput(input: unknown): SwitchCaseInput {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("Switch case request is invalid.");
+    throw new Error("切换工作文件夹请求无效。");
   }
   const keys = Object.keys(input);
   if (keys.some((key) => !["projectId", "caseId"].includes(key))) {
-    throw new Error("Switch case request may only contain projectId and caseId.");
+    throw new Error("切换工作文件夹请求只能包含 projectId 和 caseId。");
   }
-  const projectId = assertStrictLifecycleId("Project ID", (input as Partial<SwitchCaseInput>).projectId);
-  const caseId = assertStrictLifecycleId("Case ID", (input as Partial<SwitchCaseInput>).caseId);
+  const projectId = assertStrictLifecycleId("项目 ID", (input as Partial<SwitchCaseInput>).projectId);
+  const caseId = assertStrictLifecycleId("工作文件夹 ID", (input as Partial<SwitchCaseInput>).caseId);
   return { projectId, caseId };
 }
 
@@ -484,7 +707,7 @@ function uniqueEntityId(prefix: string, existingIds: Iterable<string>): string {
     const candidate = `${base}-${index}`;
     if (!existing.has(candidate)) return candidate;
   }
-  throw new Error("Unable to allocate a unique local ID.");
+  throw new Error("无法生成唯一的本地 ID。");
 }
 
 function safeKnowledgeImportFileName(title: string): string {
@@ -507,14 +730,58 @@ function createLocalCaseRecord(projectId: string, title: string, existingCaseIds
     title,
     status: "active",
     caseDir: id,
-    summary: "New local case. No output has been generated yet.",
+    summary: "尚未生成案件成果。",
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
     folderName: id,
-    currentSummary: "New local case. No output has been generated yet.",
+    currentSummary: "尚未生成案件成果。",
     knowledgeReferences: [],
     messages: []
+  };
+}
+
+function chatTitleFromContent(content: string): string {
+  const normalized = content.replace(/\s+/g, " ").trim();
+  return normalized.slice(0, 36) || "新对话";
+}
+
+function createDailyChatMessage(
+  role: DailyChatMessage["role"],
+  threadId: string,
+  content: string,
+  modelId = "local-chat",
+  provenance: Pick<DailyChatMessage, "responseMode" | "projectId" | "providerId" | "providerName"> = {}
+): DailyChatMessage {
+  return {
+    id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    threadId,
+    role,
+    content,
+    modelId: safeMessageModelId(modelId),
+    ...provenance,
+    createdAt: nowIso()
+  };
+}
+
+function createLocalChatThreadRecord(input: CreateDailyChatThreadInput, existingThreadIds: Iterable<string>): DailyChatThread {
+  const createdAt = nowIso();
+  const id = uniqueEntityId("chat", existingThreadIds);
+  const initialMessage = text(input.initialMessage);
+  const title = assertSafeLifecycleText("日常对话标题", input.title || chatTitleFromContent(initialMessage) || "新对话", 80);
+  const messages: DailyChatMessage[] = initialMessage
+    ? [
+        createDailyChatMessage("user", id, initialMessage),
+        createDailyChatMessage("assistant", id, "已记录为独立日常对话。本对话不关联项目、案件或文件夹；需要正式交付时，请新建案件。")
+      ]
+    : [];
+  return {
+    id,
+    title,
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt,
+    messages
   };
 }
 
@@ -522,7 +789,7 @@ function createLocalProjectRecord(input: CreateLocalProjectInput, existingProjec
   const createdAt = nowIso();
   const id = uniqueEntityId("project", existingProjectIds);
   const projectDir = id;
-  const firstCase = createLocalCaseRecord(id, `${input.name} initial case`, []);
+  const firstCase = createLocalCaseRecord(id, "收件箱", []);
   const templateId = input.sapVersion === "ECC" ? "ecc-default" : "s4-default";
   return {
     id,
@@ -543,11 +810,15 @@ function createLocalProjectRecord(input: CreateLocalProjectInput, existingProjec
 }
 
 function emptyState(): StoredState {
+  const chatThread = starterChatThread();
+  const project = starterProject();
   return {
     schemaVersion: SCHEMA_VERSION,
-    activeProjectId: DEMO_PROJECT_ID,
-    activeCaseId: DEMO_CASE_ID,
-    projects: [demoProject()]
+    activeProjectId: project.id,
+    activeCaseId: project.cases[0].id,
+    activeChatThreadId: chatThread.id,
+    projects: [project],
+    chatThreads: [chatThread]
   };
 }
 
@@ -584,6 +855,46 @@ function text(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
+function uniqueSecretTargetId(value: unknown, fallback: string, usedIds: Set<string>): string {
+  const normalized = text(value, fallback).replace(/[^a-zA-Z0-9_-]/g, "-").slice(0, 72) || fallback;
+  let id = normalized;
+  let suffix = 2;
+  while (usedIds.has(id)) {
+    const tail = `-${suffix}`;
+    id = `${normalized.slice(0, 80 - tail.length)}${tail}`;
+    suffix += 1;
+  }
+  usedIds.add(id);
+  return id;
+}
+
+function adtVerificationIdentity(config: AdtConfig): string {
+  return JSON.stringify({
+    id: config.id,
+    url: config.url,
+    client: config.client,
+    username: config.username,
+    language: config.language,
+    sslMode: config.sslMode,
+    secretRef: config.credential.secretRef,
+    secretUpdatedAt: config.credential.updatedAt
+  });
+}
+
+function modelVerificationIdentity(provider: ProjectConfig["apiProviders"][number]): string {
+  return JSON.stringify({
+    id: provider.id,
+    providerType: provider.providerType,
+    baseUrl: provider.baseUrl,
+    enabled: provider.enabled,
+    catalogMode: provider.catalogMode,
+    testModelId: provider.testModelId,
+    manualModelIds: provider.manualModelIds,
+    secretRef: provider.credential.secretRef,
+    secretUpdatedAt: provider.credential.updatedAt
+  });
+}
+
 function safeId(value: unknown, fallback: string): string {
   const raw = text(value, fallback);
   const safe = raw.replace(/[^a-zA-Z0-9_-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
@@ -605,7 +916,24 @@ function bool(value: unknown, fallback = false): boolean {
 }
 
 function providerType(value: unknown): ProjectConfig["apiProviders"][number]["providerType"] {
-  return value === "deepseek" || value === "custom" ? value : "openai-compatible";
+  return value === "anthropic-compatible" || value === "deepseek" || value === "custom" ? value : "openai-compatible";
+}
+
+function modelCatalogMode(value: unknown): NonNullable<ProjectConfig["apiProviders"][number]["catalogMode"]> {
+  return value === "manual" || value === "remote-with-manual-fallback" ? value : "remote";
+}
+
+function normalizedManualModelId(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(normalized)) return null;
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password/i.test(normalized)) return null;
+  return normalized;
+}
+
+function normalizeManualModelIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.map(normalizedManualModelId).filter((item): item is string => item !== null))).slice(0, 200);
 }
 
 function modelVerificationMode(value: unknown): ProjectConfig["apiProviders"][number]["lastVerificationMode"] {
@@ -668,15 +996,187 @@ function normalizeLocalStorageConfig(
   };
 }
 
+function adtConnectionFieldsChanged(previous: AdtConfig, next: AdtConfig): boolean {
+  return (
+    previous.url !== next.url ||
+    previous.client !== next.client ||
+    previous.username !== next.username ||
+    previous.language !== next.language ||
+    previous.sslMode !== next.sslMode
+  );
+}
+
+function feishuConnectionFieldsChanged(previous: ProjectConfig, next: ProjectConfig): boolean {
+  return (
+    previous.feishu.appId !== next.feishu.appId ||
+    previous.feishu.profile !== next.feishu.profile ||
+    previous.feishu.cliPath !== next.feishu.cliPath
+  );
+}
+
+function codexConnectionFieldsChanged(previous: ProjectConfig, next: ProjectConfig): boolean {
+  return (
+    previous.codex.integrationType !== next.codex.integrationType ||
+    previous.codex.executablePath !== next.codex.executablePath
+  );
+}
+
+function resetAdtConnectionVerification(adt: AdtConfig): void {
+  adt.configStatus = savedOrEmptyStatus(adt.alias, adt.url, adt.client, adt.username);
+  adt.connectionStatus = "pending-verification";
+  adt.minimalReadStatus = "pending-verification";
+  adt.lastVerificationMode = null;
+  adt.lastCheckedAt = null;
+}
+
+function syncActiveAdtConnection(config: ProjectConfig): void {
+  const active = config.adtConnections.find((item) => item.id === config.activeAdtConnectionId) ?? config.adtConnections[0];
+  if (!active) {
+    config.adtConnections = [{ ...config.adt }];
+    config.activeAdtConnectionId = config.adt.id;
+    return;
+  }
+  config.activeAdtConnectionId = active.id;
+  config.adt = { ...active };
+}
+
+function resetAdtVerification(config: ProjectConfig, connectionId = config.activeAdtConnectionId): void {
+  const target = config.adtConnections.find((item) => item.id === connectionId) ?? config.adt;
+  resetAdtConnectionVerification(target);
+  config.adtConnections = config.adtConnections.map((item) => item.id === target.id ? { ...target } : item);
+  syncActiveAdtConnection(config);
+}
+
+function resetModelProviderVerification(provider: ProjectConfig["apiProviders"][number]): void {
+  provider.models = [];
+  provider.modelSyncStatus = "pending-verification";
+  provider.chatTestStatus = "pending-verification";
+  provider.lastVerificationMode = null;
+  provider.verifiedModelIds = [];
+  provider.lastVerifiedModelId = null;
+  provider.lastCheckedAt = null;
+}
+
+function resetFeishuVerification(config: ProjectConfig): void {
+  config.feishu.authStatus = "pending-verification";
+  config.feishu.docPermissionStatus = "pending-verification";
+  config.feishu.lastCheckedAt = null;
+}
+
+function resetCodexVerification(config: ProjectConfig): void {
+  config.codex.cliStatus = "pending-verification";
+  config.codex.version = "";
+  config.codex.loginStatus = "pending-verification";
+  config.codex.readonlyTaskStatus = "pending-verification";
+  config.codex.lastCheckedAt = null;
+}
+
+function resetChangedVerification(previous: ProjectConfig | undefined, next: ProjectConfig): void {
+  if (!previous) return;
+
+  next.adtConnections.forEach((connection) => {
+    const previousConnection = previous.adtConnections.find((item) => item.id === connection.id);
+    if (!previousConnection || adtConnectionFieldsChanged(previousConnection, connection)) {
+      resetAdtConnectionVerification(connection);
+    }
+  });
+  syncActiveAdtConnection(next);
+
+  next.apiProviders.forEach((provider) => {
+    const previousProvider = previous.apiProviders.find((item) => item.id === provider.id);
+    const manualCatalogChanged = JSON.stringify(previousProvider?.manualModelIds ?? []) !== JSON.stringify(provider.manualModelIds ?? []);
+    if (
+      !previousProvider ||
+      previousProvider.baseUrl !== provider.baseUrl ||
+      previousProvider.providerType !== provider.providerType ||
+      (previousProvider.catalogMode ?? "remote") !== (provider.catalogMode ?? "remote") ||
+      (previousProvider.testModelId ?? "") !== (provider.testModelId ?? "") ||
+      manualCatalogChanged
+    ) {
+      resetModelProviderVerification(provider);
+    }
+  });
+
+  if (feishuConnectionFieldsChanged(previous, next)) {
+    resetFeishuVerification(next);
+  }
+
+  if (codexConnectionFieldsChanged(previous, next)) {
+    resetCodexVerification(next);
+  }
+}
+
+function preserveMainOwnedVerification(previous: ProjectConfig, next: ProjectConfig): void {
+  next.adtConnections.forEach((connection) => {
+    const previousConnection = previous.adtConnections.find((item) => item.id === connection.id);
+    if (!previousConnection) {
+      resetAdtConnectionVerification(connection);
+      return;
+    }
+    connection.credential = previousConnection.credential;
+    connection.configStatus = previousConnection.configStatus;
+    connection.connectionStatus = previousConnection.connectionStatus;
+    connection.minimalReadStatus = previousConnection.minimalReadStatus;
+    connection.lastVerificationMode = previousConnection.lastVerificationMode;
+    connection.lastCheckedAt = previousConnection.lastCheckedAt;
+  });
+  syncActiveAdtConnection(next);
+
+  next.apiProviders.forEach((provider) => {
+    const previousProvider = previous.apiProviders.find((item) => item.id === provider.id);
+    if (!previousProvider) {
+      resetModelProviderVerification(provider);
+      return;
+    }
+    provider.credential = previousProvider.credential;
+    provider.models = previousProvider.models;
+    provider.modelSyncStatus = previousProvider.modelSyncStatus;
+    provider.chatTestStatus = previousProvider.chatTestStatus;
+    provider.lastVerificationMode = previousProvider.lastVerificationMode;
+    provider.verifiedModelIds = previousProvider.verifiedModelIds ?? (previousProvider.lastVerifiedModelId ? [previousProvider.lastVerifiedModelId] : []);
+    provider.lastVerifiedModelId = previousProvider.lastVerifiedModelId;
+    provider.lastCheckedAt = previousProvider.lastCheckedAt;
+  });
+
+  next.feishu.credential = previous.feishu.credential;
+  next.feishu.authStatus = previous.feishu.authStatus;
+  next.feishu.docPermissionStatus = previous.feishu.docPermissionStatus;
+  next.feishu.lastCheckedAt = previous.feishu.lastCheckedAt;
+
+  next.codex.credential = previous.codex.credential;
+  next.codex.cliStatus = previous.codex.cliStatus;
+  next.codex.version = previous.codex.version;
+  next.codex.loginStatus = previous.codex.loginStatus;
+  next.codex.readonlyTaskStatus = previous.codex.readonlyTaskStatus;
+  next.codex.lastCheckedAt = previous.codex.lastCheckedAt;
+}
+
+function resetSecretTargetVerification(config: ProjectConfig, target: ProjectSecretTarget): void {
+  if (target.kind === "adt-password") {
+    resetAdtVerification(config, target.connectionId);
+    return;
+  }
+  if (target.kind === "api-key") {
+    const provider = config.apiProviders.find((item) => item.id === target.providerId);
+    if (provider) resetModelProviderVerification(provider);
+    return;
+  }
+  if (target.kind === "feishu-token") {
+    resetFeishuVerification(config);
+    return;
+  }
+  resetCodexVerification(config);
+}
+
 function sapVersion(value: unknown): ProjectSummary["sapVersion"] {
   return value === "S4" || value === "ECC" ? value : "UNKNOWN";
 }
 
 function lifecycleSapVersion(value: unknown): CreateLocalProjectInput["sapVersion"] {
-  if (value === "S4" || value === "ECC") {
+  if (value === "S4" || value === "ECC" || value === "UNKNOWN") {
     return value;
   }
-  throw new Error("Choose S4 or ECC before creating a local project.");
+  throw new Error("请选择 S4、ECC 或其他工作后再创建本地项目。");
 }
 
 function normalizeConnectionState(value: unknown): ProjectSummary["connectionState"] {
@@ -751,8 +1251,49 @@ function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | nul
     content: text(candidate.content),
     taskMode: normalizeTaskMode(candidate.taskMode),
     modelId: safeMessageModelId(candidate.modelId),
+    actionId: normalizeCaseActionId(candidate.actionId),
+    permissionModeUsed: normalizeActionPermissionMode(candidate.permissionModeUsed),
     linkedFileIds,
     createdAt: text(candidate.createdAt, nowIso())
+  };
+}
+
+function normalizeDailyChatMessage(value: unknown, threadId: string): DailyChatMessage | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<DailyChatMessage>;
+  const content = text(candidate.content);
+  if (!content) return null;
+  const role = candidate.role === "assistant" ? "assistant" : "user";
+  return {
+    id: safeId(candidate.id, `${role}-${Date.now()}`),
+    threadId,
+    role,
+    content,
+    modelId: safeMessageModelId(candidate.modelId),
+    responseMode: candidate.responseMode === "model-success" || candidate.responseMode === "model-failed" ? candidate.responseMode : "local-record",
+    projectId: typeof candidate.projectId === "string" ? candidate.projectId : undefined,
+    providerId: typeof candidate.providerId === "string" ? candidate.providerId : undefined,
+    providerName: typeof candidate.providerName === "string" ? candidate.providerName : undefined,
+    createdAt: text(candidate.createdAt, nowIso())
+  };
+}
+
+function normalizeDailyChatThread(value: unknown, fallback: DailyChatThread): DailyChatThread {
+  const candidate = value && typeof value === "object" ? value as Partial<DailyChatThread> : fallback;
+  const id = safeId(candidate.id, fallback.id);
+  const messages = Array.isArray(candidate.messages)
+    ? candidate.messages.flatMap((message) => {
+        const normalized = normalizeDailyChatMessage(message, id);
+        return normalized ? [normalized] : [];
+      })
+    : fallback.messages.map((message) => ({ ...message, threadId: id }));
+  return {
+    id,
+    title: text(candidate.title, fallback.title).slice(0, 80) || fallback.title,
+    createdAt: text(candidate.createdAt, fallback.createdAt),
+    updatedAt: text(candidate.updatedAt, fallback.updatedAt),
+    lastOpenedAt: text(candidate.lastOpenedAt, fallback.lastOpenedAt),
+    messages
   };
 }
 
@@ -861,17 +1402,35 @@ function projectVisibilityFingerprint(state: StoredState): unknown {
   }));
 }
 
+function chatThreadFingerprint(state: StoredState): unknown {
+  const threads = Array.isArray(state.chatThreads) ? state.chatThreads : [];
+  return threads.map((thread) => ({
+    id: thread.id,
+    title: thread.title,
+    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0
+  }));
+}
+
 export class WorkspaceStore {
   private readonly workspaceRoot: string;
   private readonly statePath: string;
+  private readonly stateBackupPath: string;
   private readonly database: DatabaseService;
   private databaseInitialized = false;
   private stateWriteQueue: Promise<void> = Promise.resolve();
+  private startupNotice: string | null = null;
+  private readonly adtVerificationSequences = new Map<string, number>();
+  private readonly modelVerificationSequences = new Map<string, number>();
 
   constructor(repoRoot: string) {
     this.workspaceRoot = path.join(repoRoot, "local-data", "workbench");
     this.statePath = path.join(this.workspaceRoot, "app-state.json");
+    this.stateBackupPath = path.join(this.workspaceRoot, "app-state.backup.json");
     this.database = new DatabaseService(this.workspaceRoot);
+  }
+
+  getWorkspaceRoot(): string {
+    return this.workspaceRoot;
   }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -886,6 +1445,20 @@ export class WorkspaceStore {
     } finally {
       release();
     }
+  }
+
+  beginAdtVerification(projectId: string, connectionId: string): number {
+    const key = `${projectId}\u0000${connectionId}`;
+    const sequence = (this.adtVerificationSequences.get(key) ?? 0) + 1;
+    this.adtVerificationSequences.set(key, sequence);
+    return sequence;
+  }
+
+  beginModelProviderVerification(projectId: string, providerId: string): number {
+    const key = `${projectId}\u0000${providerId}`;
+    const sequence = (this.modelVerificationSequences.get(key) ?? 0) + 1;
+    this.modelVerificationSequences.set(key, sequence);
+    return sequence;
   }
 
   async getState(): Promise<WorkbenchState> {
@@ -968,10 +1541,9 @@ export class WorkspaceStore {
     return this.runExclusive(async () => {
       const caseInput = parseCreateLocalCaseInput(input);
       const state = await this.loadOrCreateState();
-      const projectId = caseInput.projectId ?? state.activeProjectId;
-      const project = state.projects.find((item) => item.id === projectId);
+      const project = state.projects.find((item) => item.id === caseInput.projectId);
       if (!project) {
-        throw new Error("Target project is no longer available.");
+        throw new Error("目标 Project 已不存在。");
       }
       const caseItem = createLocalCaseRecord(project.id, caseInput.title, project.cases.map((item) => item.id));
       project.cases.unshift(caseItem);
@@ -987,20 +1559,127 @@ export class WorkspaceStore {
     });
   }
 
+  async createDailyChatThread(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const chatInput = parseCreateDailyChatThreadInput(input);
+      const state = await this.loadOrCreateState();
+      const thread = createLocalChatThreadRecord(chatInput, state.chatThreads.map((item) => item.id));
+      state.chatThreads.unshift(thread);
+      state.activeChatThreadId = thread.id;
+      await this.saveState(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async switchDailyChatThread(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { threadId } = parseSwitchDailyChatThreadInput(input);
+      const state = await this.loadOrCreateState();
+      const thread = state.chatThreads.find((item) => item.id === threadId);
+      if (!thread) {
+        throw new Error("日常对话已不存在。");
+      }
+      thread.lastOpenedAt = nowIso();
+      state.activeChatThreadId = thread.id;
+      await this.saveState(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async appendDailyChatMessage(input: unknown, assistantReply?: DailyChatAssistantReply): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const chatInput = parseAppendDailyChatMessageInput(input);
+      if (!chatInput.content) {
+        throw new Error("请输入日常对话内容。");
+      }
+      const state = await this.loadOrCreateState();
+      let thread = state.chatThreads.find((item) => item.id === (chatInput.threadId ?? state.activeChatThreadId));
+      if (!thread) {
+        thread = createLocalChatThreadRecord({ title: chatTitleFromContent(chatInput.content) }, state.chatThreads.map((item) => item.id));
+        state.chatThreads.unshift(thread);
+      }
+      const hadUserMessages = thread.messages.some((item) => item.role === "user");
+      const userMessage = createDailyChatMessage(
+        "user",
+        thread.id,
+        chatInput.content,
+        chatInput.modelId ?? "local-chat",
+        chatInput.projectId && chatInput.providerId
+          ? {
+              projectId: chatInput.projectId,
+              providerId: chatInput.providerId,
+              providerName: assistantReply?.providerName
+            }
+          : { responseMode: "local-record" }
+      );
+      const assistantMessage = createDailyChatMessage(
+        "assistant",
+        thread.id,
+        assistantReply?.content ?? "已作为独立日常对话回复：当前不会关联项目、案件或文件夹，也不会读取 SAP、生成案件文件或发布飞书。需要沉淀成果时，可以新建正式案件。",
+        assistantReply?.modelId ?? "local-chat",
+        assistantReply
+          ? {
+              responseMode: assistantReply.responseMode,
+              projectId: assistantReply.projectId,
+              providerId: assistantReply.providerId,
+              providerName: assistantReply.providerName
+            }
+          : { responseMode: "local-record" }
+      );
+      thread.messages.push(userMessage, assistantMessage);
+      if (!hadUserMessages) {
+        thread.title = chatTitleFromContent(chatInput.content);
+      }
+      thread.updatedAt = nowIso();
+      thread.lastOpenedAt = thread.updatedAt;
+      state.activeChatThreadId = thread.id;
+      await this.saveState(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async getDailyChatModelHistory(
+    threadId: string | undefined,
+    projectId: string,
+    providerId: string,
+    modelId: string
+  ): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+    const state = await this.loadOrCreateState();
+    const thread = state.chatThreads.find((item) => item.id === (threadId ?? state.activeChatThreadId));
+    if (!thread) return [];
+    const candidates = thread.messages
+      .filter((message) => (
+        message.projectId === projectId &&
+        message.providerId === providerId &&
+        message.modelId === modelId &&
+        (message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
+      ))
+      .slice(-12);
+    const selected: Array<{ role: "user" | "assistant"; content: string }> = [];
+    let totalLength = 0;
+    for (const message of candidates.reverse()) {
+      const content = message.content.trim().slice(0, 4000);
+      if (!content || totalLength + content.length > 12000) continue;
+      selected.unshift({ role: message.role, content });
+      totalLength += content.length;
+    }
+    return selected;
+  }
+
   async switchProject(input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
       const { projectId } = parseSwitchProjectInput(input);
       const state = await this.loadOrCreateState();
       const project = state.projects.find((item) => item.id === projectId);
       if (!project) {
-        throw new Error("Target project is no longer available.");
+        throw new Error("目标 Project 已不存在。");
       }
       if (project.isVisible === false) {
-        throw new Error("Project is hidden from the sidebar.");
+        throw new Error("目标 Project 已从左侧栏隐藏。");
       }
       const activeCase = [...project.cases].sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime())[0];
       if (!activeCase) {
-        throw new Error("Target project has no local case.");
+        throw new Error("目标 Project 没有可用的本地工作文件夹。");
       }
       activeCase.lastOpenedAt = nowIso();
       syncProjectLocalStorage(project, activeCase);
@@ -1020,14 +1699,14 @@ export class WorkspaceStore {
       const state = await this.loadOrCreateState();
       const project = state.projects.find((item) => item.id === projectId);
       if (!project) {
-        throw new Error("Target project is no longer available.");
+        throw new Error("目标 Project 已不存在。");
       }
       if (project.isVisible === false) {
-        throw new Error("Project is already hidden from the sidebar.");
+        throw new Error("目标 Project 已经从左侧栏隐藏。");
       }
       const visibleProjects = state.projects.filter((item) => item.isVisible !== false);
       if (visibleProjects.length <= 1) {
-        throw new Error("Keep at least one project visible in the sidebar.");
+        throw new Error("左侧栏至少需要保留一个可见 Project。");
       }
 
       project.isVisible = false;
@@ -1038,11 +1717,11 @@ export class WorkspaceStore {
           .filter((item) => item.id !== project.id && item.isVisible !== false)
           .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0];
         if (!nextProject) {
-          throw new Error("No visible project is available to switch to.");
+          throw new Error("没有可切换的可见 Project。");
         }
         const nextCase = [...nextProject.cases].sort((a, b) => new Date(b.lastOpenedAt).getTime() - new Date(a.lastOpenedAt).getTime())[0];
         if (!nextCase) {
-          throw new Error("Target project has no local case.");
+          throw new Error("目标 Project 没有可用的本地工作文件夹。");
         }
         nextCase.lastOpenedAt = nowIso();
         syncProjectLocalStorage(nextProject, nextCase);
@@ -1059,20 +1738,41 @@ export class WorkspaceStore {
     });
   }
 
+  async restoreProjectToSidebar(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { projectId } = parseRestoreProjectToSidebarInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project) {
+        throw new Error("目标 Project 已不存在。");
+      }
+      if (project.isVisible !== false) {
+        throw new Error("目标 Project 已经显示在左侧栏中。");
+      }
+      project.isVisible = true;
+      project.visibleOrder = Math.max(0, ...state.projects.filter((item) => item.isVisible !== false).map((item) => item.visibleOrder)) + 1;
+      project.updatedAt = nowIso();
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
   async switchCase(input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
       const { projectId, caseId } = parseSwitchCaseInput(input);
       const state = await this.loadOrCreateState();
       const project = state.projects.find((item) => item.id === projectId);
       if (!project) {
-        throw new Error("Target project is no longer available.");
+        throw new Error("目标 Project 已不存在。");
       }
       if (project.isVisible === false) {
-        throw new Error("Project is hidden from the sidebar.");
+        throw new Error("目标 Project 已从左侧栏隐藏。");
       }
       const caseItem = project.cases.find((item) => item.id === caseId);
       if (!caseItem) {
-        throw new Error("Target case is not part of the selected project.");
+        throw new Error("目标工作文件夹不属于所选 Project。");
       }
       caseItem.lastOpenedAt = nowIso();
       syncProjectLocalStorage(project, caseItem);
@@ -1086,7 +1786,18 @@ export class WorkspaceStore {
     });
   }
 
-  async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun): Promise<WorkbenchState> {
+  async bindCaseWorkflowTarget(input: unknown): Promise<CaseWorkflowInput> {
+    const workflowInput = parseCaseWorkflowInput(input);
+    const state = await this.loadOrCreateState();
+    const { project, caseItem } = this.resolveWorkflowTarget(state, workflowInput);
+    return {
+      ...workflowInput,
+      projectId: project.id,
+      caseId: caseItem.id
+    };
+  }
+
+  async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun, codexAssist?: CodexCaseAssistRun): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const workflowInput = parseCaseWorkflowInput(input);
     if (!workflowInput.content) {
@@ -1095,21 +1806,32 @@ export class WorkspaceStore {
     assertNoSensitiveCaseContent(workflowInput.content);
 
     const state = await this.loadOrCreateState();
-    const currentCase = this.getActiveCase(state);
-    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const { project, caseItem: currentCase } = this.resolveWorkflowTarget(state, workflowInput);
+    await this.ensureCaseFilesForCase(state, project, currentCase);
+    const existingFiles = this.flattenCaseFileNodes(await this.readCaseTreeForCase(project, currentCase))
+      .filter((node) => node.kind === "file")
+      .map((node) => ({
+        relativePath: node.relativePath,
+        purpose: node.purpose,
+        sizeBytes: node.sizeBytes,
+        updatedAt: node.updatedAt
+      }));
+    const runtimeContext = { existingFiles };
     syncProjectLocalStorage(project, currentCase);
     const persistedModelId = safeModelDraft ? safeMessageModelId(safeModelDraft.modelId) : "local-workflow";
     const persistedModelDraft = safeModelDraft ? { ...safeModelDraft, modelId: persistedModelId } : undefined;
     const persistedInput = { ...workflowInput, modelId: persistedModelId };
-    const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft).generatedFiles;
-    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId);
+    const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft, codexAssist, runtimeContext).generatedFiles;
+    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId, [], persistedInput.actionId ?? null, persistedInput.permissionMode);
     const assistantMessage = createCaseMessage(
       "assistant",
       currentCase.id,
-      buildAssistantContent(persistedInput, previewFiles, persistedModelDraft),
+      buildAssistantContent(persistedInput, previewFiles, persistedModelDraft, codexAssist),
       persistedInput.taskMode,
       persistedModelId,
-      previewFiles.map((file) => file.relativePath)
+      previewFiles.map((file) => file.relativePath),
+      persistedInput.actionId ?? null,
+      persistedInput.permissionMode
     );
 
     currentCase.messages.push(userMessage, assistantMessage);
@@ -1117,14 +1839,14 @@ export class WorkspaceStore {
     currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
     currentCase.lastOpenedAt = nowIso();
-    const artifacts = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft);
+    const artifacts = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft, codexAssist, runtimeContext);
     currentCase.currentSummary = artifacts.currentSummary;
     currentCase.summary = artifacts.currentSummary;
     project.knowledge = appendKnowledgeCandidatesFromCase(project, currentCase, artifacts.generatedFiles);
     project.updatedAt = nowIso();
-    await this.saveState(state);
-    await this.writeProjectKnowledge(project);
     await this.writeCaseMarkdown(state, currentCase, artifacts);
+    await this.writeProjectKnowledge(project);
+    await this.saveState(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
     });
@@ -1148,7 +1870,7 @@ export class WorkspaceStore {
       throw new Error("只能预览当前案件文件树中已经存在的文件。");
     }
 
-    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     const caseItem = this.getActiveCase(state);
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     const target = this.assertInsideWorkspace(path.join(caseRoot, relativePath));
@@ -1196,9 +1918,8 @@ export class WorkspaceStore {
     assertNoSensitiveCaseContent(workflowInput.content);
 
     const state = await this.loadOrCreateState();
-    await this.ensureCaseFiles(state);
-    const currentCase = this.getActiveCase(state);
-    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const { project, caseItem: currentCase } = this.resolveWorkflowTarget(state, workflowInput);
+    await this.ensureCaseFilesForCase(state, project, currentCase);
     const eligibleProviders = project.config.apiProviders.filter((item) => {
       const realEligible = item.lastVerificationMode === "http";
       const fakeEligible = options.allowFakeModelExecution === true && item.lastVerificationMode === "fake" && isFakeModelExecutionHost(item.baseUrl);
@@ -1207,7 +1928,7 @@ export class WorkspaceStore {
         item.credential.state === "set-in-secure-store" &&
         item.modelSyncStatus === "verified" &&
         item.chatTestStatus === "verified" &&
-        item.lastVerifiedModelId !== null &&
+        item.verifiedModelIds.length > 0 &&
         item.models.length > 0 &&
         (realEligible || fakeEligible)
       );
@@ -1215,24 +1936,24 @@ export class WorkspaceStore {
     const provider = workflowInput.providerId
       ? eligibleProviders.find((item) => item.id === workflowInput.providerId)
       : eligibleProviders[0];
-    const model = provider
-      ? (workflowInput.modelId === "local-workflow"
-        ? provider.models.find((item) => item.id === provider.lastVerifiedModelId) ?? null
-        : provider.models.find((item) => item.id === workflowInput.modelId && item.id === provider.lastVerifiedModelId) ?? null)
+    const requestedModelId = workflowInput.modelId === "local-workflow" ? provider?.lastVerifiedModelId ?? provider?.verifiedModelIds[0] : workflowInput.modelId;
+    const model = provider && requestedModelId && provider.verifiedModelIds.includes(requestedModelId)
+      ? provider.models.find((item) => item.id === requestedModelId) ?? null
       : null;
     if (!provider || !model) return null;
 
-    const files = await this.readCaseTree(state);
+    const files = await this.readCaseTreeForCase(project, currentCase);
     const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
     try {
       const context = buildSafeModelDraftContext({
         taskMode: workflowInput.taskMode,
         taskLabel: TASK_MODE_LABELS[workflowInput.taskMode],
+        actionId: workflowInput.actionId,
         userInput: workflowInput.content,
         caseTitle: currentCase.title,
         caseSummary: currentCase.currentSummary,
         sapVersion: project.sapVersion,
-        standardsSummary: standardsSummaryForTask(project.standards),
+        standardsSummary: standardsSummaryForTask(project.standards, workflowInput.taskMode),
         knowledgeReferences: currentCase.knowledgeReferences.map((reference) => ({
           title: reference.title,
           summary: reference.summary,
@@ -1262,6 +1983,44 @@ export class WorkspaceStore {
     }
   }
 
+  async prepareCodexCaseAssistRequest(input: unknown): Promise<PreparedCodexCaseAssistRequest | null> {
+    const workflowInput = parseCaseWorkflowInput(input);
+    if (!workflowInput.content || workflowInput.codexAssistEnabled !== true) return null;
+    assertNoSensitiveCaseContent(workflowInput.content);
+
+    const state = await this.loadOrCreateState();
+    const { project, caseItem: currentCase } = this.resolveWorkflowTarget(state, workflowInput);
+    await this.ensureCaseFilesForCase(state, project, currentCase);
+    const codexConfig = project.config.codex;
+    if (
+      codexConfig.integrationType !== "cli" ||
+      codexConfig.cliStatus !== "verified" ||
+      codexConfig.loginStatus !== "verified" ||
+      codexConfig.readonlyTaskStatus !== "verified"
+    ) {
+      throw new Error("Codex 还没有通过配置中心测试。请先到配置中心点击“测试 Codex”，通过后再开启工程辅助。");
+    }
+
+    return {
+      projectId: project.id,
+      caseId: currentCase.id,
+      integrationType: codexConfig.integrationType,
+      executablePath: codexConfig.executablePath || "codex",
+      workspaceRoot: this.workspaceRoot,
+      context: {
+        projectName: project.name,
+        systemLabel: project.systemLabel,
+        sapVersion: project.sapVersion,
+        caseTitle: currentCase.title,
+        caseSummary: currentCase.currentSummary,
+        taskMode: workflowInput.taskMode,
+        taskLabel: TASK_MODE_LABELS[workflowInput.taskMode],
+        userInput: workflowInput.content,
+        standardsSummary: standardsSummaryForTask(project.standards, workflowInput.taskMode)
+      }
+    };
+  }
+
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     this.assertNoRawSecretFields(config);
@@ -1271,7 +2030,12 @@ export class WorkspaceStore {
       throw new Error("未找到当前项目，无法保存配置。");
     }
 
-    project.config = this.sanitizeProjectConfig(project, config);
+    const previousConfig = project.config;
+    const nextConfig = this.sanitizeProjectConfig(project, config, { preserveVerification: true });
+    preserveMainOwnedVerification(previousConfig, nextConfig);
+    resetChangedVerification(previousConfig, nextConfig);
+    nextConfig.updatedAt = nowIso();
+    project.config = nextConfig;
     const activeCase = project.id === state.activeProjectId
       ? project.cases.find((item) => item.id === state.activeCaseId) ?? project.cases[0]
       : project.cases[0];
@@ -1299,7 +2063,7 @@ export class WorkspaceStore {
 
   async getActiveProjectConfig(): Promise<{ projectId: string; caseId: string; config: ProjectConfig }> {
     const state = await this.loadOrCreateState();
-    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     const caseItem = this.getActiveCase(state);
     return { projectId: project.id, caseId: caseItem.id, config: project.config };
   }
@@ -1313,11 +2077,11 @@ export class WorkspaceStore {
     const caseId = targetCase?.caseId ?? fallbackCase.id;
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
-      throw new Error("SAP evidence target project is no longer available.");
+      throw new Error("SAP 证据目标 Project 已不存在。");
     }
     const currentCase = project.cases.find((item) => item.id === caseId);
     if (!currentCase) {
-      throw new Error("SAP evidence target case is no longer available.");
+      throw new Error("SAP 证据目标工作文件夹已不存在。");
     }
     syncProjectLocalStorage(project, currentCase);
     const record = normalizeSapObjectEvidenceResult(result);
@@ -1344,7 +2108,7 @@ export class WorkspaceStore {
     );
 
     currentCase.messages.push(assistantMessage);
-    currentCase.currentSummary = `SAP read-only evidence attached for ${record.summary.objectType} ${record.summary.objectName}; case conclusions can cite this evidence after user review.`;
+    currentCase.currentSummary = `已加入 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据；用户审核后，案件结论可以引用该证据。`;
     currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
     currentCase.lastOpenedAt = nowIso();
@@ -1372,22 +2136,22 @@ export class WorkspaceStore {
       readme: [
         maintenance.readme,
         "",
-        "## SAP Read-Only Evidence",
+        "## SAP 只读证据",
         "",
         ...generatedPaths.map((file) => `- ${file}`)
       ].join("\n"),
       timeline: [
         maintenance.timeline,
-        `- ${record.summary.readAt}: SAP read-only evidence attached for ${record.summary.objectType} ${record.summary.objectName}.`
+        `- ${record.summary.readAt}：已加入 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据。`
       ].join("\n"),
       contextPack: [
         maintenance.contextPack,
         "",
-        "## SAP Read-Only Evidence",
+        "## SAP 只读证据",
         "",
-        `- ${record.summary.objectType} ${record.summary.objectName} from ${record.summary.systemAlias} / ${record.summary.client}.`,
-        `- Evidence time: ${record.summary.readAt}.`,
-        "- Full evidence remains in restricted case evidence files and is not sent to the model by default."
+        `- ${record.summary.objectType} ${record.summary.objectName}，来源 ${record.summary.systemAlias} / ${record.summary.client}。`,
+        `- 证据时间：${record.summary.readAt}。`,
+        "- 完整证据保留在受限的工作文件夹证据文件中，默认不发送给模型。"
       ].join("\n"),
       metadata
     };
@@ -1408,12 +2172,12 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     const currentCase = this.getActiveCase(state);
-    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === currentCase.projectId) ?? this.ensureFallbackProject(state);
     syncProjectLocalStorage(project, currentCase);
     const files = await this.readCaseTree(state);
     const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
     if (safeOutputSummaries.length === 0) {
-      throw new Error("Current case has no safe output summary yet. Generate a local output first, then prepare the Feishu handoff draft.");
+      throw new Error("当前工作文件夹还没有安全输出摘要。请先生成本地成果，再准备飞书交接草稿。");
     }
 
     const handoff = renderFeishuHandoffArtifacts({
@@ -1478,7 +2242,7 @@ export class WorkspaceStore {
     const updatedAt = nowIso();
     project.knowledge = {
       ...project.knowledge,
-      items: [item, ...project.knowledge.items].slice(0, 500),
+      items: [item, ...project.knowledge.items],
       documentJobs: [candidate.job, ...project.knowledge.documentJobs].slice(0, 100),
       updatedAt
     };
@@ -1528,6 +2292,9 @@ export class WorkspaceStore {
     }
     if (!sourceProject) {
       throw new Error("未找到来源项目，无法复制规范。");
+    }
+    if (sourceProject.isVisible === false) {
+      throw new Error("来源 Project 已从工作区隐藏。请先恢复后再复制规范。");
     }
 
     targetProject.standards = copyProjectStandardsFromProject(targetProject, sourceProject);
@@ -1665,6 +2432,36 @@ export class WorkspaceStore {
     });
   }
 
+  async detachPublishedKnowledgeFromCurrentCase(projectId: string, input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const referenceInput = parseKnowledgeCaseReferenceInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === projectId);
+      if (!project || project.id !== state.activeProjectId) {
+        throw new Error("只能调整当前 Project 的案件知识引用。");
+      }
+      const currentCase = this.getActiveCase(state);
+      if (currentCase.projectId !== project.id) {
+        throw new Error("当前工作文件夹不属于该 Project，无法解除知识引用。");
+      }
+      const existingReference = currentCase.knowledgeReferences.find((item) => item.itemId === referenceInput.itemId);
+      if (!existingReference) return this.withFiles(state);
+
+      currentCase.knowledgeReferences = currentCase.knowledgeReferences.filter((item) => item.itemId !== referenceInput.itemId);
+      const changedAt = nowIso();
+      currentCase.currentSummary = `${currentCase.currentSummary} 已解除知识引用：${existingReference.title}。`.slice(0, 500);
+      currentCase.summary = currentCase.currentSummary;
+      currentCase.updatedAt = changedAt;
+      currentCase.lastOpenedAt = changedAt;
+      project.updatedAt = changedAt;
+      await this.saveState(state);
+      await this.writeProjectMetadata(project);
+      await this.writeCaseMarkdown(state, currentCase, buildCaseMaintenanceArtifacts(project, currentCase));
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
   async markKnowledgeConflicted(projectId: string, input: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const actionInput = parseKnowledgeActionInput(input);
@@ -1705,7 +2502,7 @@ export class WorkspaceStore {
     });
   }
 
-  async updateAdtVerification(projectId: string, report: AdtVerificationReport): Promise<WorkbenchState> {
+  async updateAdtVerification(projectId: string, connectionId: string, verificationSequence: number, expectedConnection: AdtConfig, report: AdtVerificationReport): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -1713,12 +2510,32 @@ export class WorkspaceStore {
       throw new Error("未找到当前项目，无法保存 ADT 验证结果。");
     }
 
+    const connection = project.config.adtConnections.find((item) => item.id === connectionId);
+    if (!connection) {
+      throw new Error("未找到本次验证对应的 SAP 连接，已停止保存验证结果。");
+    }
+    if (adtVerificationIdentity(connection) !== adtVerificationIdentity(expectedConnection)) {
+      throw new Error("SAP 连接在验证期间已发生变化，本次旧验证结果未保存；请重新测试当前配置。");
+    }
+    if (this.adtVerificationSequences.get(`${projectId}\u0000${connectionId}`) !== verificationSequence) {
+      throw new Error("当前 SAP 连接已有更新的验证请求，本次较早结果未保存。");
+    }
     const configPassed = report.steps.some((item) => item.id === "config" && item.status === "passed");
-    project.config.adt.configStatus = configPassed ? "verified" : "failed";
-    project.config.adt.connectionStatus = report.connectionStatus;
-    project.config.adt.minimalReadStatus = report.minimalReadStatus;
-    project.config.adt.lastVerificationMode = report.mode;
-    project.config.adt.lastCheckedAt = report.checkedAt;
+    const verifiedConnection: AdtConfig = {
+      ...connection,
+      configStatus: configPassed ? "verified" : "failed",
+      connectionStatus: report.connectionStatus,
+      minimalReadStatus: report.minimalReadStatus,
+      lastVerificationMode: report.mode,
+      lastCheckedAt: report.checkedAt
+    };
+    if (report.ok && report.system.sslMode === "skip-certificate") {
+      verifiedConnection.sslMode = "skip-certificate";
+    }
+    project.config.adtConnections = project.config.adtConnections.map((item) => item.id === connectionId ? verifiedConnection : item);
+    if (project.config.activeAdtConnectionId === connectionId) {
+      project.config.adt = { ...verifiedConnection };
+    }
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
 
@@ -1740,6 +2557,9 @@ export class WorkspaceStore {
     project.config.feishu.authStatus = report.authStatus;
     project.config.feishu.docPermissionStatus = report.docPermissionStatus;
     project.config.feishu.lastCheckedAt = report.checkedAt;
+    if (report.cli.cliPath && report.cli.cliPath !== "未检测到") {
+      project.config.feishu.cliPath = report.cli.cliPath;
+    }
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
 
@@ -1763,7 +2583,7 @@ export class WorkspaceStore {
     return provider;
   }
 
-  async updateModelProviderVerification(projectId: string, providerId: string, report: ModelProviderVerificationReport): Promise<WorkbenchState> {
+  async updateModelProviderVerification(projectId: string, providerId: string, verificationSequence: number, expectedProvider: ProjectConfig["apiProviders"][number], report: ModelProviderVerificationReport): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -1774,13 +2594,55 @@ export class WorkspaceStore {
     if (!provider) {
       throw new Error("未找到当前 API 渠道，无法保存模型验证结果。");
     }
+    if (modelVerificationIdentity(provider) !== modelVerificationIdentity(expectedProvider)) {
+      throw new Error("模型渠道在验证期间已发生变化，本次旧验证结果未保存；请重新测试当前配置。");
+    }
+    if (this.modelVerificationSequences.get(`${projectId}\u0000${providerId}`) !== verificationSequence) {
+      throw new Error("当前模型渠道已有更新的验证请求，本次较早结果未保存。");
+    }
 
     provider.models = report.models;
     provider.modelSyncStatus = report.modelSyncStatus;
     provider.chatTestStatus = report.chatTestStatus;
     provider.lastVerificationMode = report.mode;
-    provider.lastVerifiedModelId = report.chatTestStatus === "verified" ? report.selectedModelId : null;
+    const availableModelIds = new Set(report.models.map((model) => model.id));
+    const previouslyVerified = (provider.verifiedModelIds ?? []).filter((modelId) => availableModelIds.has(modelId));
+    if (report.selectedModelId) {
+      provider.verifiedModelIds = report.chatTestStatus === "verified"
+        ? [...new Set([...previouslyVerified, report.selectedModelId])]
+        : previouslyVerified.filter((modelId) => modelId !== report.selectedModelId);
+    } else {
+      provider.verifiedModelIds = previouslyVerified;
+    }
+    provider.lastVerifiedModelId = report.chatTestStatus === "verified" ? report.selectedModelId : provider.verifiedModelIds[0] ?? null;
     provider.lastCheckedAt = report.checkedAt;
+    project.config.updatedAt = nowIso();
+    project.updatedAt = nowIso();
+
+    await this.saveState(state);
+    await this.writeProjectMetadata(project);
+    await this.ensureCaseFiles(state);
+    return this.withFiles(state);
+    });
+  }
+
+  async updateCodexVerification(projectId: string, report: CodexVerificationReport): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) {
+      throw new Error("未找到当前项目，无法保存 Codex 验证结果。");
+    }
+
+    project.config.codex.integrationType = report.cli.integrationType;
+    project.config.codex.executablePath = report.cli.executablePath && report.cli.executablePath !== "未检测到"
+      ? report.cli.executablePath
+      : project.config.codex.executablePath;
+    project.config.codex.cliStatus = report.cliStatus;
+    project.config.codex.version = report.cli.version;
+    project.config.codex.loginStatus = report.loginStatus;
+    project.config.codex.readonlyTaskStatus = report.readonlyTaskStatus;
+    project.config.codex.lastCheckedAt = report.checkedAt;
     project.config.updatedAt = nowIso();
     project.updatedAt = nowIso();
 
@@ -1814,7 +2676,9 @@ export class WorkspaceStore {
     }
 
     if (target.kind === "adt-password") {
-      project.config.adt.credential = safeHandle;
+      const connectionId = target.connectionId ?? project.config.activeAdtConnectionId;
+      project.config.adtConnections = project.config.adtConnections.map((item) => item.id === connectionId ? { ...item, credential: safeHandle } : item);
+      syncActiveAdtConnection(project.config);
     } else if (target.kind === "api-key") {
       const provider = project.config.apiProviders.find((item) => item.id === target.providerId);
       if (!provider) {
@@ -1827,7 +2691,8 @@ export class WorkspaceStore {
       project.config.codex.credential = safeHandle;
     }
 
-    project.config = this.sanitizeProjectConfig(project, project.config);
+    project.config = this.sanitizeProjectConfig(project, project.config, { preserveVerification: true });
+    resetSecretTargetVerification(project.config, target);
     const activeCase = project.id === state.activeProjectId
       ? project.cases.find((item) => item.id === state.activeCaseId) ?? project.cases[0]
       : project.cases[0];
@@ -1844,7 +2709,6 @@ export class WorkspaceStore {
 
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
-    await this.initializeDatabase();
     let raw: string;
     try {
       raw = await fs.readFile(this.statePath, "utf8");
@@ -1852,17 +2716,37 @@ export class WorkspaceStore {
       if (!isFileNotFound(error)) throw error;
       const state = emptyState();
       await this.saveState(state);
+      await this.initializeDatabase();
       return state;
     }
     let parsed: StoredState;
     let normalized: StoredState;
     try {
-      parsed = JSON.parse(raw) as StoredState;
+      const decoded = JSON.parse(raw) as unknown;
+      const sourceVersion = storedStateVersion(decoded);
+      if (sourceVersion < SCHEMA_VERSION) {
+        await this.createPreUpgradeSnapshot(sourceVersion);
+      }
+      parsed = migrateStoredState(decoded);
       normalized = this.normalizeState(parsed);
-    } catch {
-      const state = emptyState();
-      await this.saveState(state);
-      return state;
+      if (sourceVersion < SCHEMA_VERSION) {
+        this.startupNotice = `本地数据已从版本 ${sourceVersion} 安全升级到版本 ${SCHEMA_VERSION}，升级前快照已保留在 backups 目录。`;
+      }
+    } catch (error) {
+      if (error instanceof IncompatibleStateVersionError) throw error;
+      const recoveryStamp = new Date().toISOString().replace(/[:.]/g, "-");
+      const preservedPath = this.assertInsideWorkspace(path.join(this.workspaceRoot, `app-state.corrupt-${recoveryStamp}.json`));
+      await fs.writeFile(preservedPath, raw, "utf8");
+      try {
+        const backupRaw = await fs.readFile(this.stateBackupPath, "utf8");
+        const recovered = this.normalizeState(migrateStoredState(JSON.parse(backupRaw) as unknown));
+        await this.writeJsonAtomic(this.statePath, recovered);
+        this.startupNotice = `检测到本地状态文件损坏，已从有效备份恢复。原文件保留为 ${path.basename(preservedPath)}。`;
+        await this.initializeDatabase();
+        return recovered;
+      } catch {
+        throw new Error(`本地状态文件无法读取，原文件已保留为 ${path.basename(preservedPath)}。未找到可用备份，已停止写入以避免覆盖真实工作。`);
+      }
     }
     const activeProject = this.activeProjectFromState(normalized);
     const shouldPersistState = raw.includes("secure-store:sec_") || this.shouldPersistNormalizedState(parsed, normalized);
@@ -1872,13 +2756,39 @@ export class WorkspaceStore {
     if (shouldPersistState || await this.shouldPersistActiveProjectMetadata(activeProject)) {
       await this.writeProjectMetadata(activeProject);
     }
+    await this.initializeDatabase();
     return normalized;
+  }
+
+  private async createPreUpgradeSnapshot(sourceVersion: number): Promise<void> {
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+    const snapshotRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "backups", `pre-upgrade-v${sourceVersion}-to-v${SCHEMA_VERSION}-${stamp}`));
+    await fs.mkdir(snapshotRoot, { recursive: true });
+    const entries = ["app-state.json", "app-state.backup.json", "app.db", "projects", "secure-store"];
+    for (const entry of entries) {
+      const source = this.assertInsideWorkspace(path.join(this.workspaceRoot, entry));
+      const target = this.assertInsideWorkspace(path.join(snapshotRoot, entry));
+      try {
+        await fs.cp(source, target, { recursive: true, errorOnExist: true });
+      } catch (error) {
+        if (!isFileNotFound(error)) throw error;
+      }
+    }
+    await this.writeJsonAtomic(path.join(snapshotRoot, "snapshot.json"), {
+      schemaVersion: 1,
+      kind: "pre-upgrade",
+      sourceVersion,
+      targetVersion: SCHEMA_VERSION,
+      createdAt: nowIso(),
+      containsEncryptedSecrets: true,
+      note: "密钥仅以 Electron safeStorage 加密 blob 形式保留；没有导出明文。"
+    });
   }
 
   private activeProjectFromState(state: StoredState): ProjectSummary {
     const requestedProject = state.projects.find((project) => project.id === state.activeProjectId);
     if (requestedProject && requestedProject.isVisible !== false) return requestedProject;
-    return state.projects.find((project) => project.isVisible !== false) ?? state.projects[0] ?? demoProject();
+    return state.projects.find((project) => project.isVisible !== false) ?? state.projects[0] ?? starterProject();
   }
 
   private async shouldPersistActiveProjectMetadata(project: ProjectSummary): Promise<boolean> {
@@ -1900,8 +2810,10 @@ export class WorkspaceStore {
   private shouldPersistNormalizedState(parsed: StoredState, normalized: StoredState): boolean {
     if (parsed.schemaVersion !== normalized.schemaVersion) return true;
     if (parsed.activeProjectId !== normalized.activeProjectId || parsed.activeCaseId !== normalized.activeCaseId) return true;
+    if (parsed.activeChatThreadId !== normalized.activeChatThreadId) return true;
     if (JSON.stringify(caseReferenceFingerprint(parsed)) !== JSON.stringify(caseReferenceFingerprint(normalized))) return true;
     if (JSON.stringify(projectVisibilityFingerprint(parsed)) !== JSON.stringify(projectVisibilityFingerprint(normalized))) return true;
+    if (JSON.stringify(chatThreadFingerprint(parsed)) !== JSON.stringify(chatThreadFingerprint(normalized))) return true;
     const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
     const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
     if (!parsedProject || !normalizedProject) return true;
@@ -1911,7 +2823,20 @@ export class WorkspaceStore {
 
   private async saveState(state: StoredState): Promise<void> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
+    try {
+      const currentRaw = await fs.readFile(this.statePath, "utf8");
+      JSON.parse(currentRaw);
+      await fs.copyFile(this.statePath, this.stateBackupPath);
+    } catch (error) {
+      if (!isFileNotFound(error) && !(error instanceof SyntaxError)) throw error;
+    }
     await this.writeJsonAtomic(this.statePath, state);
+    try {
+      await fs.access(this.stateBackupPath);
+    } catch (error) {
+      if (!isFileNotFound(error)) throw error;
+      await fs.copyFile(this.statePath, this.stateBackupPath);
+    }
   }
 
   private async initializeDatabase(): Promise<void> {
@@ -1932,23 +2857,36 @@ export class WorkspaceStore {
   }
 
   private normalizeState(state: StoredState): StoredState {
-    const normalizedProjects = (state.projects.length > 0 ? state.projects : [demoProject()]).map((project) => {
-      const projectId = safeId(project.id, DEMO_PROJECT_ID);
+    const fallbackChatThread = starterChatThread();
+    const normalizedChatThreads = (Array.isArray(state.chatThreads) && state.chatThreads.length > 0 ? state.chatThreads : [fallbackChatThread])
+      .map((thread, index) => normalizeDailyChatThread(thread, index === 0 ? fallbackChatThread : {
+        ...fallbackChatThread,
+        id: `chat-${index + 1}`,
+        title: `日常对话 ${index + 1}`,
+        messages: []
+      }))
+      .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt || b.createdAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt || a.createdAt).getTime());
+    const requestedChatThreadId = safeId(state.activeChatThreadId, fallbackChatThread.id);
+    const activeChatThread = normalizedChatThreads.find((thread) => thread.id === requestedChatThreadId) ?? normalizedChatThreads[0] ?? fallbackChatThread;
+    const sourceProjects = Array.isArray(state.projects) ? state.projects : [];
+    const normalizedProjects = (sourceProjects.length > 0 ? sourceProjects : [starterProject()]).map((project) => {
+      const projectId = safeId(project.id, STARTER_PROJECT_ID);
       const projectDir = safeId(project.projectDir, projectId);
       const sourceCases = Array.isArray(project.cases) ? project.cases : [];
-      const cases = (sourceCases.length > 0 ? sourceCases : [demoCase()]).map((caseItem, index) => normalizeCaseSummary(caseItem, projectId, index === 0 ? demoCase() : {
-        ...demoCase(),
+      const fallbackCase = starterCase(projectId);
+      const cases = (sourceCases.length > 0 ? sourceCases : [fallbackCase]).map((caseItem, index) => normalizeCaseSummary(caseItem, projectId, index === 0 ? fallbackCase : {
+        ...fallbackCase,
         id: `case-${index + 1}`,
         caseDir: `case-${index + 1}`,
         folderName: `case-${index + 1}`,
         title: `案件 ${index + 1}`
       }));
-      const firstCase = cases[0] ?? normalizeCaseSummary(demoCase(), projectId, demoCase());
+      const firstCase = cases[0] ?? normalizeCaseSummary(fallbackCase, projectId, fallbackCase);
       const normalizedProject: ProjectSummary = {
         id: projectId,
-        name: text(project.name, "演示 S4HANA"),
+        name: text(project.name, "未命名 Project"),
         sapVersion: sapVersion(project.sapVersion),
-        systemLabel: text(project.systemLabel, "DEV/100"),
+        systemLabel: text(project.systemLabel, "Local"),
         projectDir,
         isVisible: typeof project.isVisible === "boolean" ? project.isVisible : true,
         visibleOrder: typeof project.visibleOrder === "number" ? project.visibleOrder : 1,
@@ -1968,22 +2906,24 @@ export class WorkspaceStore {
     if (!normalizedProjects.some((project) => project.isVisible !== false) && normalizedProjects[0]) {
       normalizedProjects[0].isVisible = true;
     }
-    const requestedProjectId = safeId(state.activeProjectId, DEMO_PROJECT_ID);
+    const requestedProjectId = safeId(state.activeProjectId, STARTER_PROJECT_ID);
     const requestedProject = normalizedProjects.find((project) => project.id === requestedProjectId);
     const activeProject = requestedProject && requestedProject.isVisible !== false
       ? requestedProject
       : normalizedProjects
         .filter((project) => project.isVisible !== false)
-        .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0] ?? requestedProject ?? normalizedProjects[0] ?? demoProject();
-    const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? DEMO_CASE_ID);
-    const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? demoCase();
+        .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0] ?? requestedProject ?? normalizedProjects[0] ?? starterProject();
+    const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? STARTER_CASE_ID);
+    const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? starterCase(activeProject.id);
     syncProjectLocalStorage(activeProject, activeCase);
     return {
       ...state,
-      schemaVersion: state.schemaVersion ?? SCHEMA_VERSION,
+      schemaVersion: SCHEMA_VERSION,
       activeProjectId: activeProject.id,
       activeCaseId: activeCase.id,
-      projects: normalizedProjects
+      activeChatThreadId: activeChatThread.id,
+      projects: normalizedProjects,
+      chatThreads: normalizedChatThreads
     };
   }
 
@@ -1997,6 +2937,9 @@ export class WorkspaceStore {
       "apikeyvalue",
       "api_key_value",
       "api-key-value",
+      "appsecret",
+      "app_secret",
+      "app-secret",
       "access_token",
       "accesstoken",
       "refreshtoken",
@@ -2038,7 +2981,12 @@ export class WorkspaceStore {
     }
     const target = targetInput as Partial<ProjectSecretTarget>;
     if (target.kind === "adt-password") {
-      return { target: { kind: "adt-password" }, existingRef: project.config.adt.credential.secretRef };
+      const connectionId = text(target.connectionId, project.config.activeAdtConnectionId);
+      const connection = project.config.adtConnections.find((item) => item.id === connectionId);
+      if (!connection) {
+        throw new Error("未找到当前 SAP 连接，无法保存密码。");
+      }
+      return { target: { kind: "adt-password", connectionId }, existingRef: connection.credential.secretRef };
     }
     if (target.kind === "api-key") {
       const providerId = text(target.providerId);
@@ -2059,44 +3007,65 @@ export class WorkspaceStore {
 
   private sanitizeProjectConfig(project: ProjectSummary, input: unknown, options: { preserveVerification?: boolean } = {}): ProjectConfig {
     const candidate = input && typeof input === "object" ? input as Partial<ProjectConfig> : {};
-    const firstCase = project.cases[0] ?? demoCase();
+    const firstCase = project.cases[0] ?? starterCase(project.id);
     const fallback = defaultProjectConfig(project.id, project.projectDir || project.id, firstCase.folderName || firstCase.id);
-    const adt = candidate.adt ?? fallback.adt;
+    const candidateAdtConnections = Array.isArray(candidate.adtConnections) ? candidate.adtConnections : [];
+    const usesLegacySingleAdt = candidateAdtConnections.length === 0;
+    const rawAdtConnections = !usesLegacySingleAdt
+      ? candidateAdtConnections.slice(0, 6)
+      : [candidate.adt ?? fallback.adt];
     const feishu = candidate.feishu ?? fallback.feishu;
     const codex = candidate.codex ?? fallback.codex;
     const providers = Array.isArray(candidate.apiProviders) && candidate.apiProviders.length > 0 ? candidate.apiProviders : fallback.apiProviders;
     const existingConfig = project.config;
 
-    const alias = text(adt.alias, fallback.adt.alias);
-    const url = text(adt.url, fallback.adt.url);
-    const client = text(adt.client, fallback.adt.client);
-    const username = text(adt.username, fallback.adt.username);
-    const language = text(adt.language, fallback.adt.language).toUpperCase() || "ZH";
     const preserveVerification = options.preserveVerification === true;
-    const adtConfigStatus = savedOrEmptyStatus(alias, url, client, username);
     const configUpdatedAt = nullableIso(candidate.updatedAt) ?? nullableIso(existingConfig?.updatedAt) ?? fallback.updatedAt;
     const localStorage = normalizeLocalStorageConfig(project, candidate.localStorage, fallback.localStorage);
-
-    return {
-      schemaVersion: 2,
-      projectId: project.id,
-      updatedAt: configUpdatedAt,
-      adt: {
+    const providerIds = new Set<string>();
+    const adtIds = new Set<string>();
+    const normalizedAdtIds = new Map<string, string>();
+    const existingAdtConnections = existingConfig?.adtConnections?.length ? existingConfig.adtConnections : existingConfig?.adt ? [existingConfig.adt] : [];
+    const adtConnections = rawAdtConnections.map((rawConnection, index): AdtConfig => {
+      const id = uniqueSecretTargetId(rawConnection.id, index === 0 ? "adt-default" : `adt-${index + 1}`, adtIds);
+      normalizedAdtIds.set(text(rawConnection.id, id), id);
+      const existingConnection = existingAdtConnections.find((item) => item.id === id) ?? (usesLegacySingleAdt && index === 0 ? existingConfig?.adt : undefined);
+      const alias = text(rawConnection.alias, fallback.adt.alias);
+      const url = text(rawConnection.url, fallback.adt.url);
+      const client = text(rawConnection.client, fallback.adt.client);
+      const username = text(rawConnection.username, fallback.adt.username);
+      const language = text(rawConnection.language, fallback.adt.language).toUpperCase() || "ZH";
+      const adtConfigStatus = savedOrEmptyStatus(alias, url, client, username);
+      return {
+        id,
         alias,
         url,
         client,
         username,
         language,
-        sslMode: sslMode(adt.sslMode),
+        sslMode: sslMode(rawConnection.sslMode),
         readOnly: true,
-        credential: normalizeSecretHandle(existingConfig?.adt?.credential, "adt-password"),
-        configStatus: preserveVerification ? normalizeConfigStatus(adt.configStatus, adtConfigStatus) : adtConfigStatus,
-        connectionStatus: preserveVerification ? normalizeConfigStatus(adt.connectionStatus, "pending-verification") : "pending-verification",
-        minimalReadStatus: preserveVerification ? normalizeConfigStatus(adt.minimalReadStatus, "pending-verification") : "pending-verification",
-        lastVerificationMode: preserveVerification ? adtVerificationMode(adt.lastVerificationMode) : null,
-        lastCheckedAt: preserveVerification ? nullableIso(adt.lastCheckedAt) : null
-      },
+        credential: normalizeSecretHandle(existingConnection?.credential, "adt-password"),
+        configStatus: preserveVerification ? normalizeConfigStatus(rawConnection.configStatus, adtConfigStatus) : adtConfigStatus,
+        connectionStatus: preserveVerification ? normalizeConfigStatus(rawConnection.connectionStatus, "pending-verification") : "pending-verification",
+        minimalReadStatus: preserveVerification ? normalizeConfigStatus(rawConnection.minimalReadStatus, "pending-verification") : "pending-verification",
+        lastVerificationMode: preserveVerification ? adtVerificationMode(rawConnection.lastVerificationMode) : null,
+        lastCheckedAt: preserveVerification ? nullableIso(rawConnection.lastCheckedAt) : null
+      };
+    });
+    const requestedActiveAdtIdRaw = text(candidate.activeAdtConnectionId, text(candidate.adt?.id, adtConnections[0]?.id ?? "adt-default"));
+    const requestedActiveAdtId = normalizedAdtIds.get(requestedActiveAdtIdRaw) ?? requestedActiveAdtIdRaw;
+    const activeAdt = adtConnections.find((item) => item.id === requestedActiveAdtId) ?? adtConnections[0] ?? fallback.adt;
+
+    return {
+      schemaVersion: 2,
+      projectId: project.id,
+      updatedAt: configUpdatedAt,
+      adt: { ...activeAdt },
+      adtConnections,
+      activeAdtConnectionId: activeAdt.id,
       feishu: {
+        appId: text(feishu.appId, fallback.feishu.appId),
         profile: text(feishu.profile, fallback.feishu.profile),
         cliPath: text(feishu.cliPath, fallback.feishu.cliPath),
         credential: normalizeSecretHandle(existingConfig?.feishu?.credential, "feishu-token"),
@@ -2105,7 +3074,7 @@ export class WorkspaceStore {
         lastCheckedAt: preserveVerification ? nullableIso(feishu.lastCheckedAt) : null
       },
       apiProviders: providers.slice(0, 6).map((provider, index) => {
-        const id = text(provider.id, `provider-${index + 1}`).replace(/[^a-zA-Z0-9_-]/g, "-") || `provider-${index + 1}`;
+        const id = uniqueSecretTargetId(provider.id, `provider-${index + 1}`, providerIds);
         const name = text(provider.name, `API 渠道 ${index + 1}`);
         const baseUrl = text(provider.baseUrl);
         const existingProvider = existingConfig?.apiProviders?.find((item) => item.id === id);
@@ -2113,6 +3082,12 @@ export class WorkspaceStore {
         const lastVerifiedModelId = preserveVerification && typeof provider.lastVerifiedModelId === "string" && models.some((model) => model.id === provider.lastVerifiedModelId)
           ? provider.lastVerifiedModelId
           : null;
+        const verifiedModelIds = preserveVerification
+          ? [...new Set([
+              ...(Array.isArray(provider.verifiedModelIds) ? provider.verifiedModelIds : []),
+              ...(lastVerifiedModelId ? [lastVerifiedModelId] : [])
+            ])].filter((modelId): modelId is string => typeof modelId === "string" && models.some((model) => model.id === modelId))
+          : [];
         return {
           id,
           name,
@@ -2120,11 +3095,15 @@ export class WorkspaceStore {
           baseUrl,
           enabled: bool(provider.enabled, false),
           credential: normalizeSecretHandle(existingProvider?.credential, "api-key"),
+          catalogMode: modelCatalogMode(provider.catalogMode),
+          testModelId: normalizedManualModelId(provider.testModelId) ?? "",
+          manualModelIds: normalizeManualModelIds(provider.manualModelIds),
           models,
           modelSyncStatus: preserveVerification ? normalizeConfigStatus(provider.modelSyncStatus, "pending-verification") : "pending-verification",
           chatTestStatus: preserveVerification ? normalizeConfigStatus(provider.chatTestStatus, "pending-verification") : "pending-verification",
           lastVerificationMode: preserveVerification ? modelVerificationMode(provider.lastVerificationMode) : null,
-          lastVerifiedModelId,
+          verifiedModelIds,
+          lastVerifiedModelId: lastVerifiedModelId ?? verifiedModelIds[0] ?? null,
           lastCheckedAt: preserveVerification ? nullableIso(provider.lastCheckedAt) : null
         };
       }),
@@ -2149,6 +3128,14 @@ export class WorkspaceStore {
     await fs.rename(tempPath, safePath);
   }
 
+  private async writeTextAtomic(targetPath: string, content: string): Promise<void> {
+    const safePath = this.assertInsideWorkspace(targetPath);
+    const tempPath = `${safePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    await fs.mkdir(path.dirname(safePath), { recursive: true });
+    await fs.writeFile(tempPath, content, "utf8");
+    await fs.rename(tempPath, safePath);
+  }
+
   private ensureDemoProject(state: StoredState): ProjectSummary {
     let project = state.projects.find((item) => item.id === DEMO_PROJECT_ID);
     if (!project) {
@@ -2158,19 +3145,53 @@ export class WorkspaceStore {
     return project;
   }
 
+  private ensureFallbackProject(state: StoredState): ProjectSummary {
+    const existing = state.projects.find((item) => item.id === state.activeProjectId) ?? state.projects[0];
+    if (existing) return existing;
+    const project = starterProject();
+    state.projects.push(project);
+    state.activeProjectId = project.id;
+    state.activeCaseId = project.cases[0].id;
+    return project;
+  }
+
   private getActiveCase(state: StoredState): CaseSummary {
-    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     let caseItem = project.cases.find((item) => item.id === state.activeCaseId);
     if (!caseItem) {
-      caseItem = demoCase();
+      caseItem = starterCase(project.id);
       project.cases.unshift(caseItem);
       state.activeCaseId = caseItem.id;
     }
     return caseItem;
   }
 
+  private resolveWorkflowTarget(state: StoredState, input: CaseWorkflowInput): { project: ProjectSummary; caseItem: CaseSummary } {
+    const hasProjectId = Boolean(input.projectId);
+    const hasCaseId = Boolean(input.caseId);
+    if (hasProjectId !== hasCaseId) {
+      throw new Error("案件请求必须同时指定 Project 和工作文件夹。");
+    }
+
+    if (!input.projectId || !input.caseId) {
+      const caseItem = this.getActiveCase(state);
+      const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
+      return { project, caseItem };
+    }
+
+    const project = state.projects.find((item) => item.id === input.projectId);
+    if (!project) {
+      throw new Error("发送时选择的 Project 已不存在，结果未写入其他位置。");
+    }
+    const caseItem = project.cases.find((item) => item.id === input.caseId && item.projectId === project.id);
+    if (!caseItem) {
+      throw new Error("发送时选择的工作文件夹已不存在，结果未写入其他位置。");
+    }
+    return { project, caseItem };
+  }
+
   private caseRoot(state: StoredState): string {
-    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     const caseItem = this.getActiveCase(state);
     return this.caseRootFor(project, caseItem);
   }
@@ -2470,12 +3491,44 @@ export class WorkspaceStore {
   private async writeGeneratedFile(caseRoot: string, file: CaseGeneratedFile): Promise<void> {
     const target = this.generatedFileTarget(caseRoot, file);
     const safeTarget = await this.assertSafeGeneratedWriteTarget(caseRoot, target);
-    await fs.writeFile(safeTarget, file.content, "utf8");
+    const tempPath = `${safeTarget}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    await fs.writeFile(tempPath, file.content, "utf8");
+    let archivedPath: string | null = null;
+    try {
+      const existing = await fs.lstat(safeTarget);
+      if (!existing.isFile() || existing.isSymbolicLink()) {
+        throw new Error("生成文件目标不是普通文件，已阻止覆盖。");
+      }
+      const parsed = path.parse(file.relativePath.replaceAll("/", "-"));
+      const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+      archivedPath = this.assertInsideWorkspace(path.join(
+        caseRoot,
+        "snapshots",
+        "versions",
+        `${parsed.name}-${stamp}-${Math.random().toString(16).slice(2, 8)}${parsed.ext || ".txt"}`
+      ));
+      archivedPath = await this.assertSafeGeneratedWriteTarget(caseRoot, archivedPath);
+      await fs.rename(safeTarget, archivedPath);
+    } catch (error) {
+      if (!isFileNotFound(error)) {
+        throw error;
+      }
+    }
+    try {
+      await fs.rename(tempPath, safeTarget);
+    } catch (error) {
+      if (archivedPath) await fs.rename(archivedPath, safeTarget).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async ensureCaseFiles(state: StoredState): Promise<void> {
     const caseItem = this.getActiveCase(state);
-    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
+    await this.ensureCaseFilesForCase(state, project, caseItem);
+  }
+
+  private async ensureCaseFilesForCase(state: StoredState, project: ProjectSummary, caseItem: CaseSummary): Promise<void> {
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     await Promise.all(state.projects.map((project) => this.ensureProjectStandardsFiles(project)));
     await Promise.all(state.projects.map((project) => this.ensureProjectKnowledgeFiles(project)));
@@ -2512,7 +3565,7 @@ export class WorkspaceStore {
     await fs.mkdir(standardsRoot, { recursive: true });
     await Promise.all([
       this.writeJsonAtomic(path.join(standardsRoot, "project-standards.json"), renderProjectStandardsJson(project.standards)),
-      fs.writeFile(this.assertInsideWorkspace(path.join(standardsRoot, "project-standards.md")), renderProjectStandardsMarkdown(project.standards), "utf8")
+      this.writeTextAtomic(path.join(standardsRoot, "project-standards.md"), renderProjectStandardsMarkdown(project.standards))
     ]);
   }
 
@@ -2532,7 +3585,7 @@ export class WorkspaceStore {
     await fs.mkdir(knowledgeRoot, { recursive: true });
     await Promise.all([
       this.writeJsonAtomic(path.join(knowledgeRoot, "project-knowledge.json"), renderProjectKnowledgeJson(project.knowledge)),
-      fs.writeFile(this.assertInsideWorkspace(path.join(knowledgeRoot, "project-knowledge.md")), renderProjectKnowledgeMarkdown(project.knowledge), "utf8")
+      this.writeTextAtomic(path.join(knowledgeRoot, "project-knowledge.md"), renderProjectKnowledgeMarkdown(project.knowledge))
     ]);
   }
 
@@ -2558,7 +3611,7 @@ export class WorkspaceStore {
   }
 
   private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
-    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {
       await this.writeGeneratedFile(caseRoot, file);
@@ -2567,10 +3620,10 @@ export class WorkspaceStore {
     await Promise.all([
       this.writeProjectMetadata(project),
       this.writeJsonAtomic(path.join(caseRoot, "messages.json"), caseItem.messages),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "README.md")), artifacts.readme, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "conversation.md")), artifacts.conversation, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "timeline.md")), artifacts.timeline, "utf8"),
-      fs.writeFile(this.assertInsideWorkspace(path.join(caseRoot, "context_pack.md")), artifacts.contextPack, "utf8"),
+      this.writeTextAtomic(path.join(caseRoot, "README.md"), artifacts.readme),
+      this.writeTextAtomic(path.join(caseRoot, "conversation.md"), artifacts.conversation),
+      this.writeTextAtomic(path.join(caseRoot, "timeline.md"), artifacts.timeline),
+      this.writeTextAtomic(path.join(caseRoot, "context_pack.md"), artifacts.contextPack),
       this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), artifacts.metadata),
       ...generatedWrites
     ]);
@@ -2584,18 +3637,23 @@ export class WorkspaceStore {
   }
 
   private async withFiles(state: StoredState): Promise<WorkbenchState> {
+    const startupNotice = this.startupNotice ?? undefined;
+    this.startupNotice = null;
     return {
       schemaVersion: state.schemaVersion,
       workspaceRoot: this.workspaceRoot,
       activeProjectId: state.activeProjectId,
       activeCaseId: state.activeCaseId,
+      activeChatThreadId: state.activeChatThreadId,
       projects: state.projects,
-      activeCaseFiles: await this.readCaseTree(state)
+      chatThreads: state.chatThreads,
+      activeCaseFiles: await this.readCaseTree(state),
+      ...(startupNotice ? { startupNotice } : {})
     };
   }
 
   private async readCaseTree(state: StoredState): Promise<CaseFileNode[]> {
-    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureDemoProject(state);
+    const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     const caseItem = this.getActiveCase(state);
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     return this.readDirectory(caseRoot, caseRoot, "", caseItem.id);

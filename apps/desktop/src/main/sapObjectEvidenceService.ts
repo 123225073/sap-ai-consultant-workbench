@@ -17,7 +17,7 @@ export const SAP_OBJECT_EVIDENCE_ALLOWED_TYPES = [
   "structure"
 ] as const;
 
-export const sapObjectEvidenceBoundary = "SAP read-only evidence: one explicit object for the active case only; no SAP write, no arbitrary SQL, no batch reads, no transport, no raw connector output.";
+export const sapObjectEvidenceBoundary = "SAP 只读证据：仅允许读取当前工作文件夹明确指定的单个对象；禁止 SAP 写入、任意 SQL、批量读取、传输和原始连接器输出。";
 
 export interface SapObjectEvidenceConnectorResult {
   objectType: SapObjectEvidenceType;
@@ -88,20 +88,20 @@ function text(value: unknown): string {
 function normalizeObjectName(value: unknown, label: string): string {
   const normalized = text(value).toUpperCase();
   if (!normalized || normalized.length > MAX_OBJECT_NAME_CHARS) {
-    throw new Error(`${label} is required and must be ${MAX_OBJECT_NAME_CHARS} characters or less.`);
+    throw new Error(`${label}不能为空，且不能超过 ${MAX_OBJECT_NAME_CHARS} 个字符。`);
   }
   if (unsafeNamePatterns.some((pattern) => pattern.test(normalized))) {
-    throw new Error(`${label} contains unsafe characters or command-like text.`);
+    throw new Error(`${label}包含不安全字符或疑似命令内容。`);
   }
   const slashCount = normalized.split("/").length - 1;
   if (slashCount !== 0 && !(slashCount === 2 && normalized.startsWith("/"))) {
-    throw new Error(`${label} must be a plain SAP name or a slash namespace name.`);
+    throw new Error(`${label}必须是普通 SAP 名称或斜杠命名空间名称。`);
   }
 
   const namespaceMatch = normalized.match(/^\/[A-Z0-9_]{1,12}\/[A-Z0-9_][A-Z0-9_/$-]{0,39}$/);
   const normalMatch = normalized.match(/^[A-Z0-9_][A-Z0-9_/$-]{0,47}$/);
   if (!namespaceMatch && !normalMatch) {
-    throw new Error(`${label} is not a supported SAP object identifier.`);
+    throw new Error(`${label}不是受支持的 SAP 对象标识。`);
   }
 
   return normalized;
@@ -109,30 +109,30 @@ function normalizeObjectName(value: unknown, label: string): string {
 
 export function parseSapObjectEvidenceRequest(input: unknown): SapObjectEvidenceRequest {
   if (!input || typeof input !== "object" || Array.isArray(input)) {
-    throw new Error("SAP evidence request must be an object.");
+    throw new Error("SAP 证据请求格式无效。");
   }
   const candidate = input as Partial<SapObjectEvidenceRequest>;
   const allowedKeys = new Set(["objectType", "objectName", "functionGroup"]);
   const extraKeys = Object.keys(candidate).filter((key) => !allowedKeys.has(key));
   if (extraKeys.length > 0) {
-    throw new Error("SAP evidence request contains unsupported fields.");
+    throw new Error("SAP 证据请求包含不支持的字段。");
   }
   const objectType = text(candidate.objectType);
   if (!allowedTypes.has(objectType)) {
-    throw new Error("SAP evidence object type is not supported.");
+    throw new Error("不支持当前 SAP 证据对象类型。");
   }
 
   const request: SapObjectEvidenceRequest = {
     objectType: objectType as SapObjectEvidenceType,
-    objectName: normalizeObjectName(candidate.objectName, "SAP object name")
+    objectName: normalizeObjectName(candidate.objectName, "SAP 对象名")
   };
 
   if (request.objectType === "function" && text(candidate.functionGroup)) {
-    request.functionGroup = normalizeObjectName(candidate.functionGroup, "Function group");
+    request.functionGroup = normalizeObjectName(candidate.functionGroup, "Function group 名称");
   }
 
   if (request.objectType !== "function" && text(candidate.functionGroup)) {
-    throw new Error("Function group is only allowed for function evidence.");
+    throw new Error("Function group 只允许用于 Function 证据。");
   }
 
   return request;
@@ -147,16 +147,16 @@ function hasTableLikeRows(value: string): boolean {
 export function assertSafeSapObjectEvidenceText(value: string, options: { allowReadOnlySourceText?: boolean } = {}): string {
   const normalized = value.replace(/\r\n/g, "\n").trim();
   if (!normalized) {
-    throw new Error("SAP evidence connector returned empty content.");
+    throw new Error("SAP 证据连接器没有返回内容。");
   }
   if (normalized.length > MAX_EVIDENCE_TEXT_CHARS) {
-    throw new Error("SAP evidence content is larger than the current single-object limit.");
+    throw new Error("SAP 证据内容超过当前单对象大小限制。");
   }
   if (hardUnsafeEvidenceTextPatterns.some((pattern) => pattern.test(normalized)) || hasTableLikeRows(normalized)) {
-    throw new Error("SAP evidence content did not pass the safety checks.");
+    throw new Error("SAP 证据内容未通过安全检查，已停止处理。");
   }
   if (options.allowReadOnlySourceText !== true && commandLikeEvidenceTextPatterns.some((pattern) => pattern.test(normalized))) {
-    throw new Error("SAP evidence content did not pass the safety checks.");
+    throw new Error("SAP 证据内容未通过安全检查，已停止处理。");
   }
   return normalized;
 }
@@ -200,8 +200,8 @@ export function normalizeSapObjectEvidenceResult(result: SapObjectEvidenceConnec
   });
   const summary: SapObjectEvidenceSummary = {
     objectType: result.objectType,
-    objectName: normalizeObjectName(result.objectName, "SAP object name"),
-    functionGroup: result.functionGroup ? normalizeObjectName(result.functionGroup, "Function group") : null,
+    objectName: normalizeObjectName(result.objectName, "SAP 对象名"),
+    functionGroup: result.functionGroup ? normalizeObjectName(result.functionGroup, "Function group 名称") : null,
     systemAlias: result.system.alias,
     endpointHost: result.system.endpointHost,
     client: result.system.client,
@@ -226,24 +226,24 @@ export function renderSapObjectEvidenceFiles(record: SapObjectEvidenceRecord): C
       relativePath: evidencePath,
       purpose: "evidence",
       content: [
-        "# SAP Read-Only Object Evidence",
+        "# SAP 只读对象证据",
         "",
         ...metadataLines(record.summary).map((line) => `- ${line}`),
         "",
-        "## Boundary",
+        "## 安全边界",
         "",
         sapObjectEvidenceBoundary,
         "",
-        "## Snapshot",
+        "## 快照",
         "",
-        `Full sanitized object evidence is stored in ${snapshotPath}.`
+        `完整脱敏对象证据保存在 ${snapshotPath}。`
       ].join("\n")
     },
     {
       relativePath: snapshotPath,
       purpose: "snapshot",
       content: [
-        "# SAP Read-Only Object Snapshot",
+        "# SAP 只读对象快照",
         "",
         ...metadataLines(record.summary),
         "",
@@ -257,19 +257,19 @@ export function renderSapObjectEvidenceFiles(record: SapObjectEvidenceRecord): C
       relativePath: summaryPath,
       purpose: "output",
       content: [
-        "# SAP Evidence Summary",
+        "# SAP 证据摘要",
         "",
-        `A read-only SAP evidence record was attached to the current case for ${record.summary.objectType} ${record.summary.objectName}.`,
+        `已将 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据加入当前工作文件夹。`,
         "",
-        "| Field | Value |",
+        "| 字段 | 值 |",
         "|---|---|",
-        `| Object | ${record.summary.objectType} ${record.summary.objectName} |`,
-        `| System | ${record.summary.systemAlias} / ${record.summary.client} |`,
-        `| Source mode | ${record.summary.sourceMode} |`,
-        `| Read at | ${record.summary.readAt} |`,
-        `| Digest | ${record.summary.digest.slice(0, 16)} |`,
+        `| 对象 | ${record.summary.objectType} ${record.summary.objectName} |`,
+        `| 系统 | ${record.summary.systemAlias} / ${record.summary.client} |`,
+        `| 来源模式 | ${record.summary.sourceMode} |`,
+        `| 读取时间 | ${record.summary.readAt} |`,
+        `| 摘要指纹 | ${record.summary.digest.slice(0, 16)} |`,
         "",
-        "This summary is safe for search and case context. Detailed evidence remains in restricted case evidence files and is not sent to the model by default."
+        "该摘要可用于搜索和工作文件夹上下文；详细证据保留在受限证据文件中，默认不发送给模型。"
       ].join("\n")
     },
     {

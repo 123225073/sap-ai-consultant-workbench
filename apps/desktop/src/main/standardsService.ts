@@ -10,10 +10,37 @@ import type {
   StandardsCategoryInput,
   StandardsDiffItem,
   StandardsTemplateId,
-  StandardsTemplateSummary
+  StandardsTemplateSummary,
+  TaskMode
 } from "../shared/workbenchTypes";
 
 const MAX_CATEGORY_CONTENT_LENGTH = 12000;
+const MAX_TASK_STANDARDS_SUMMARY_LENGTH = 300;
+
+const taskModeCategoryOrder: Record<TaskMode, StandardsCategoryId[]> = {
+  "problem-analysis": ["alv", "interface", "excel", "abap"],
+  "abap-development": ["abap", "comments", "request", "alv", "interface"],
+  "document-generation": ["document", "request", "excel", "comments"],
+  "flow-diagram": ["diagram", "document"]
+};
+
+const taskModeSummaryLabels: Record<TaskMode, string> = {
+  "problem-analysis": "问题分析",
+  "abap-development": "ABAP 开发",
+  "document-generation": "文档生成",
+  "flow-diagram": "流程图"
+};
+
+const categorySummaryLabels: Record<StandardsCategoryId, string> = {
+  abap: "ABAP",
+  comments: "注释",
+  request: "请求",
+  alv: "ALV",
+  interface: "接口",
+  document: "文档",
+  diagram: "流程图",
+  excel: "Excel"
+};
 
 const categoryMeta: Record<StandardsCategoryId, { title: string; description: string }> = {
   abap: {
@@ -414,10 +441,83 @@ export function projectStandardsView(profile: ProjectStandardsProfile, sapVersio
   };
 }
 
-export function standardsSummaryForTask(profile: ProjectStandardsProfile): string {
-  const changed = profile.categories.filter((category) => category.currentContent.trim() !== category.sourceContent.trim()).map((category) => category.title);
-  const changedText = changed.length > 0 ? `已修改：${changed.join("、")}` : "当前项目仍沿用模板默认内容";
-  return `${profile.sourceTemplateName} v${profile.version}；${changedText}`;
+function safeSummaryMetadata(value: unknown, fallback: string, maxLength: number): string {
+  if (typeof value !== "string") return fallback;
+  const compact = value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!compact) return fallback;
+  try {
+    assertNoSensitiveStandardsContent(compact);
+  } catch {
+    return fallback;
+  }
+  return compact.length > maxLength ? `${compact.slice(0, Math.max(1, maxLength - 1))}…` : compact;
+}
+
+function safeRuleSummaryContent(content: string): string {
+  if (!content.trim()) return "未设置";
+  if (content.length > MAX_CATEGORY_CONTENT_LENGTH) return "内容过长，未纳入";
+  try {
+    assertNoSensitiveStandardsContent(content);
+  } catch {
+    return "内容因安全限制未纳入";
+  }
+  return content.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim() || "未设置";
+}
+
+function safeStandardsUpdatedDate(value: unknown): string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}/.test(value) || Number.isNaN(new Date(value).getTime())) {
+    return "未知";
+  }
+  return value.slice(0, 10);
+}
+
+function isTaskMode(value: unknown): value is TaskMode {
+  return typeof value === "string" && Object.prototype.hasOwnProperty.call(taskModeCategoryOrder, value);
+}
+
+function categoryIdsForTask(profile: ProjectStandardsProfile, taskMode?: TaskMode | null): StandardsCategoryId[] {
+  if (isTaskMode(taskMode)) return taskModeCategoryOrder[taskMode];
+  const changedIds = profile.categories
+    .filter((category) => category.currentContent.trim() !== category.sourceContent.trim())
+    .map((category) => category.id);
+  return Array.from(new Set<StandardsCategoryId>([
+    ...changedIds,
+    "abap",
+    "document",
+    "diagram",
+    "interface",
+    "excel"
+  ])).slice(0, 5);
+}
+
+export function standardsSummaryForTask(profile: ProjectStandardsProfile, taskMode?: TaskMode | null): string {
+  const sourceName = safeSummaryMetadata(profile.sourceTemplateName, "项目规范", 40);
+  const version = Number.isFinite(profile.version) && profile.version >= 1 ? Math.floor(profile.version) : 1;
+  const modeLabel = isTaskMode(taskMode) ? taskModeSummaryLabels[taskMode] : "通用兼容";
+  const categories = categoryIdsForTask(profile, taskMode)
+    .map((id) => profile.categories.find((category) => category.id === id))
+    .filter((category): category is StandardsCategory => Boolean(category));
+  const changedCount = categories.filter((category) => category.currentContent.trim() !== category.sourceContent.trim()).length;
+  const header = `${sourceName} v${version}；用途：${modeLabel}；更新：${safeStandardsUpdatedDate(profile.updatedAt)}；相关修改：${changedCount}`;
+  if (categories.length === 0) return `${header}；规则：未设置可用规则`;
+
+  const rulePrefix = "；规则：";
+  const separatorsLength = Math.max(0, categories.length - 1) * 2;
+  const labelsLength = categories.reduce((total, category) => (
+    total + categorySummaryLabels[category.id].length + (category.currentContent.trim() !== category.sourceContent.trim() ? 2 : 1)
+  ), 0);
+  const contentBudget = Math.max(12 * categories.length, MAX_TASK_STANDARDS_SUMMARY_LENGTH - header.length - rulePrefix.length - separatorsLength - labelsLength);
+  const perCategoryBudget = Math.max(12, Math.floor(contentBudget / categories.length));
+  const rules = categories.map((category) => {
+    const content = safeRuleSummaryContent(category.currentContent);
+    const excerpt = content.length > perCategoryBudget ? `${content.slice(0, Math.max(1, perCategoryBudget - 1))}…` : content;
+    const changedMarker = category.currentContent.trim() !== category.sourceContent.trim() ? "*" : "";
+    return `${categorySummaryLabels[category.id]}${changedMarker}：${excerpt}`;
+  });
+  const summary = `${header}${rulePrefix}${rules.join("；")}`;
+  return summary.length > MAX_TASK_STANDARDS_SUMMARY_LENGTH
+    ? `${summary.slice(0, MAX_TASK_STANDARDS_SUMMARY_LENGTH - 1)}…`
+    : summary;
 }
 
 export function renderProjectStandardsMarkdown(profile: ProjectStandardsProfile): string {

@@ -4,6 +4,8 @@ export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-to
 export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "failed" | "needs-rotation";
 export type SecretStoreKind = "electron-safe-storage";
 export type TaskMode = "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
+export type CaseActionId = "read-source" | "capture-note" | "development-spec" | "draw-flow" | "candidate-knowledge" | "export-handoff";
+export type ActionPermissionMode = "request_approval" | "approve_for_me" | "full_access";
 export type CaseGeneratedFilePurpose = "output" | "candidate_knowledge" | "technical" | "evidence" | "snapshot";
 export type AdtVerificationMode = "fake" | "adt";
 export type SapObjectEvidenceType = "program" | "class" | "function" | "include" | "table" | "structure";
@@ -28,18 +30,22 @@ export type AdtVerificationErrorCode =
   | "status-failed"
   | "minimal-read-failed"
   | "unexpected-error";
-export type FeishuVerificationStepId = "cli" | "auth" | "docs";
+export type FeishuVerificationStepId = "cli" | "profile" | "auth" | "docs";
 export type FeishuHandoffPublishStatus = "not-published";
 export type FeishuVerificationErrorCode =
   | "missing-config"
   | "invalid-cli-path"
   | "cli-missing"
+  | "install-failed"
+  | "profile-missing"
+  | "profile-save-failed"
   | "doctor-failed"
   | "auth-failed"
   | "missing-scope"
   | "permission-unknown"
   | "unexpected-error";
 export type ModelCapability = "vision" | "reasoning" | "tools" | "web" | "free" | "chat";
+export type ModelCatalogMode = "remote" | "manual" | "remote-with-manual-fallback";
 export type ModelProviderVerificationStepId = "models" | "chat";
 export type ModelProviderVerificationErrorCode =
   | "missing-config"
@@ -50,6 +56,22 @@ export type ModelProviderVerificationErrorCode =
   | "no-models"
   | "chat-failed"
   | "unexpected-error";
+export type CodexVerificationMode = "cli";
+export type CodexVerificationStepId = "cli" | "login" | "readonly-task";
+export type CodexCaseAssistStatus = "success" | "failed";
+export type CodexVerificationErrorCode =
+  | "missing-config"
+  | "invalid-cli-path"
+  | "unsupported-integration"
+  | "cli-missing"
+  | "version-failed"
+  | "login-failed"
+  | "readonly-task-failed"
+  | "unexpected-error";
+export type CodexCapabilityId = "task-runner" | "mcp" | "plugins" | "skills";
+export type LocalAiCapabilityId = "codex-cli";
+export type LocalAiInstallStatus = "cancelled" | "installed" | "failed";
+export type LocalAiCapabilityPathLabel = "npm 全局安装目录" | "系统命令目录";
 
 export interface SecretHandle {
   secretRef: string | null;
@@ -62,6 +84,7 @@ export interface SecretHandle {
 export interface ProjectSecretTarget {
   kind: SecretKind;
   providerId?: string;
+  connectionId?: string;
 }
 
 export interface ProjectSecretInput {
@@ -70,6 +93,7 @@ export interface ProjectSecretInput {
 }
 
 export interface AdtConfig {
+  id: string;
   alias: string;
   url: string;
   client: string;
@@ -144,6 +168,7 @@ export interface ModelSummary {
 }
 
 export interface FeishuConfig {
+  appId: string;
   profile: string;
   cliPath: string;
   credential: SecretHandle;
@@ -154,7 +179,54 @@ export interface FeishuConfig {
 
 export interface FeishuCliRedactedInfo {
   cliName: string;
+  cliPath: string;
+  installDir: string | null;
+  version: string | null;
   profile: string;
+  profileUser: string | null;
+  profileTokenStatus: string | null;
+  appIdMasked: string | null;
+}
+
+export interface FeishuCliProfileSummary {
+  name: string;
+  appId: string;
+  appIdMasked: string;
+  brand: "feishu" | "lark" | string;
+  active: boolean;
+  user: string | null;
+  tokenStatus: string | null;
+}
+
+export interface FeishuCliDiscoveryReport {
+  checkedAt: string;
+  installed: boolean;
+  cliPath: string | null;
+  installDir: string | null;
+  commandName: string | null;
+  version: string | null;
+  profiles: FeishuCliProfileSummary[];
+  recommendedProfile: string | null;
+  message: string;
+}
+
+export interface FeishuCliInstallResult {
+  checkedAt: string;
+  ok: boolean;
+  cliPath: string | null;
+  installDir: string | null;
+  version: string | null;
+  message: string;
+  errors: FeishuVerificationError[];
+}
+
+export interface FeishuCliProfileSetupResult {
+  checkedAt: string;
+  ok: boolean;
+  profile: string;
+  appIdMasked: string;
+  message: string;
+  errors: FeishuVerificationError[];
 }
 
 export interface FeishuVerificationError {
@@ -171,6 +243,11 @@ export interface FeishuVerificationStep {
   checkedAt: string;
 }
 
+export interface FeishuAuthAction {
+  status: "not-needed" | "opened" | "completed" | "failed";
+  message: string;
+}
+
 export interface FeishuVerificationReport {
   ok: boolean;
   checkedAt: string;
@@ -180,6 +257,7 @@ export interface FeishuVerificationReport {
   authStatus: ConfigStatus;
   docPermissionStatus: ConfigStatus;
   errors: FeishuVerificationError[];
+  authAction?: FeishuAuthAction;
 }
 
 export interface FeishuVerificationResult {
@@ -199,14 +277,18 @@ export interface FeishuHandoffResult {
 export interface ApiProviderConfig {
   id: string;
   name: string;
-  providerType: "openai-compatible" | "deepseek" | "custom";
+  providerType: "openai-compatible" | "anthropic-compatible" | "deepseek" | "custom";
   baseUrl: string;
   enabled: boolean;
   credential: SecretHandle;
+  catalogMode?: ModelCatalogMode;
+  testModelId?: string;
+  manualModelIds?: string[];
   models: ModelSummary[];
   modelSyncStatus: ConfigStatus;
   chatTestStatus: ConfigStatus;
   lastVerificationMode: "fake" | "http" | null;
+  verifiedModelIds: string[];
   lastVerifiedModelId: string | null;
   lastCheckedAt: string | null;
 }
@@ -248,6 +330,102 @@ export interface ModelProviderVerificationReport {
 export interface ModelProviderVerificationResult {
   report: ModelProviderVerificationReport;
   state: WorkbenchState;
+}
+
+export interface CodexCapabilitySummary {
+  id: CodexCapabilityId;
+  label: string;
+  status: ConfigStatus;
+  detail: string;
+}
+
+export interface CodexRedactedInfo {
+  integrationType: CodexConfig["integrationType"];
+  executablePath: string;
+  installDir: string | null;
+  cliName: string;
+  version: string;
+}
+
+export interface CodexVerificationError {
+  code: CodexVerificationErrorCode;
+  message: string;
+  suggestion: string;
+}
+
+export interface CodexVerificationStep {
+  id: CodexVerificationStepId;
+  title: string;
+  status: AdtVerificationStepStatus;
+  detail: string;
+  checkedAt: string;
+}
+
+export interface CodexVerificationReport {
+  ok: boolean;
+  checkedAt: string;
+  mode: CodexVerificationMode;
+  cli: CodexRedactedInfo;
+  steps: CodexVerificationStep[];
+  cliStatus: ConfigStatus;
+  loginStatus: ConfigStatus;
+  readonlyTaskStatus: ConfigStatus;
+  capabilities: CodexCapabilitySummary[];
+  errors: CodexVerificationError[];
+}
+
+export interface CodexVerificationResult {
+  report: CodexVerificationReport;
+  state: WorkbenchState;
+}
+
+export interface LocalAiCapability {
+  capabilityId: LocalAiCapabilityId;
+  label: "Codex CLI";
+  installed: boolean;
+  version: string | null;
+  pathLabel: LocalAiCapabilityPathLabel | null;
+}
+
+export interface LocalAiScanResult {
+  checkedAt: string;
+  capabilities: LocalAiCapability[];
+  message: string;
+}
+
+export interface LocalAiInstallInput {
+  capabilityId: LocalAiCapabilityId;
+}
+
+export interface LocalAiInstallResult {
+  checkedAt: string;
+  capabilityId: LocalAiCapabilityId;
+  status: LocalAiInstallStatus;
+  installed: boolean;
+  version: string | null;
+  pathLabel: LocalAiCapabilityPathLabel | null;
+  message: string;
+}
+
+export interface CodexCaseAssistContext {
+  projectName: string;
+  systemLabel: string;
+  sapVersion: ProjectSummary["sapVersion"];
+  caseTitle: string;
+  caseSummary: string;
+  taskMode: TaskMode;
+  taskLabel: string;
+  userInput: string;
+  standardsSummary: string;
+}
+
+export interface CodexCaseAssistRun {
+  status: CodexCaseAssistStatus;
+  generatedAt: string;
+  executorLabel: string;
+  content?: string;
+  errorMessage?: string;
+  outputCharCount: number;
 }
 
 export interface SapObjectEvidenceRequest {
@@ -518,13 +696,52 @@ export type KnowledgeImportTextFileResult =
 
 export interface CreateLocalProjectInput {
   name: string;
-  sapVersion: Extract<ProjectSummary["sapVersion"], "S4" | "ECC">;
+  sapVersion: ProjectSummary["sapVersion"];
   systemLabel: string;
 }
 
 export interface CreateLocalCaseInput {
-  projectId?: string;
+  projectId: string;
   title: string;
+}
+
+export interface DailyChatMessage {
+  id: string;
+  threadId: string;
+  role: "user" | "assistant";
+  content: string;
+  modelId: string;
+  responseMode?: "model-success" | "model-failed" | "local-record";
+  projectId?: string;
+  providerId?: string;
+  providerName?: string;
+  createdAt: string;
+}
+
+export interface DailyChatThread {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt: string;
+  messages: DailyChatMessage[];
+}
+
+export interface CreateDailyChatThreadInput {
+  title?: string;
+  initialMessage?: string;
+}
+
+export interface SwitchDailyChatThreadInput {
+  threadId: string;
+}
+
+export interface AppendDailyChatMessageInput {
+  threadId?: string;
+  projectId?: string;
+  providerId?: string;
+  content: string;
+  modelId?: string;
 }
 
 export interface SwitchProjectInput {
@@ -532,6 +749,10 @@ export interface SwitchProjectInput {
 }
 
 export interface HideProjectFromSidebarInput {
+  projectId: string;
+}
+
+export interface RestoreProjectToSidebarInput {
   projectId: string;
 }
 
@@ -545,6 +766,8 @@ export interface ProjectConfig {
   projectId: string;
   updatedAt: string;
   adt: AdtConfig;
+  adtConnections: AdtConfig[];
+  activeAdtConnectionId: string;
   feishu: FeishuConfig;
   apiProviders: ApiProviderConfig[];
   codex: CodexConfig;
@@ -552,10 +775,15 @@ export interface ProjectConfig {
 }
 
 export interface CaseWorkflowInput {
+  projectId?: string;
+  caseId?: string;
   content: string;
   taskMode: TaskMode;
   modelId: string;
+  actionId?: CaseActionId | null;
+  permissionMode: ActionPermissionMode;
   providerId?: string;
+  codexAssistEnabled?: boolean;
   modelSelectionRejected?: boolean;
 }
 
@@ -572,6 +800,8 @@ export interface CaseMessage {
   content: string;
   taskMode: TaskMode;
   modelId: string;
+  actionId?: CaseActionId | null;
+  permissionModeUsed?: ActionPermissionMode;
   linkedFileIds: string[];
   createdAt: string;
 }
@@ -656,8 +886,27 @@ export interface WorkbenchState {
   workspaceRoot: string;
   activeProjectId: string;
   activeCaseId: string;
+  activeChatThreadId: string;
   projects: ProjectSummary[];
+  chatThreads: DailyChatThread[];
   activeCaseFiles: CaseFileNode[];
+  startupNotice?: string;
+}
+
+export interface WorkspaceBackupResult {
+  status: "created";
+  backupPath: string;
+  fileCount: number;
+  totalBytes: number;
+}
+
+export interface WorkspaceImportResult {
+  status: "cancelled" | "imported";
+  sourcePath?: string;
+  backupPath?: string;
+  fileCount?: number;
+  totalBytes?: number;
+  restartRequired: boolean;
 }
 
 export interface WorkbenchResult<T> {

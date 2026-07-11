@@ -64,12 +64,12 @@ function snippet(value: string): string {
 
 function statusLabel(value: FeishuConfig): string {
   if (value.authStatus === "verified" && value.docPermissionStatus === "verified") {
-    return "verified locally by CLI status checks";
+    return "本机 CLI 状态检查已通过";
   }
   if (value.authStatus === "verified") {
-    return "CLI login verified, document permission not verified";
+    return "CLI 登录已验证，文档权限未验证";
   }
-  return "not verified for cloud publishing";
+  return "尚未验证云端发布能力";
 }
 
 function sensitivePatterns(): RegExp[] {
@@ -94,7 +94,7 @@ function sensitivePatterns(): RegExp[] {
 
 export function assertSafeFeishuHandoffText(content: string): string {
   if (sensitivePatterns().some((pattern) => pattern.test(content))) {
-    throw new Error("Feishu handoff draft contains a blocked secret, auth, or cloud-publication marker.");
+    throw new Error("飞书交接草稿包含疑似密钥、授权信息或云端发布标记，已阻止生成。");
   }
   return content;
 }
@@ -103,44 +103,44 @@ function renderMarkdown(input: Required<FeishuHandoffRenderInput>, sources: Feis
   const rows = sources.map((source) => (
     `| ${mdCell(source.displayName)} | ${mdCell(source.relativePath)} | ${mdCell(source.fileType || "text")} | ${mdCell(snippet(source.snippet))} |`
   ));
-  const sourceRows = rows.length > 0 ? rows : ["| No safe output source | outputs/ | text | Generate a case output first, then prepare this handoff again. |"];
+  const sourceRows = rows.length > 0 ? rows : ["| 暂无安全输出来源 | outputs/ | text | 请先生成案件成果，再重新准备交接草稿。 |"];
   return assertSafeFeishuHandoffText([
-    "# Feishu CLI Local Handoff Draft",
+    "# 飞书 CLI 本地交接草稿",
     "",
-    `Marker: ${FEISHU_HANDOFF_LOCAL_ONLY_MARKER}`,
+    `标记：${FEISHU_HANDOFF_LOCAL_ONLY_MARKER}`,
     "",
-    "## Status",
+    "## 状态",
     "",
-    "| Field | Value |",
+    "| 字段 | 值 |",
     "|---|---|",
-    `| Publish status | not-published |`,
-    `| Created at | ${input.createdAt} |`,
+    `| 发布状态 | 未发布 |`,
+    `| 创建时间 | ${input.createdAt} |`,
     `| Project | ${mdCell(input.project.name)} |`,
-    `| Case | ${mdCell(input.caseItem.title)} |`,
-    `| Feishu profile | ${mdCell(input.feishu.profile || "default")} |`,
-    `| Feishu CLI check | ${statusLabel(input.feishu)} |`,
+    `| 工作文件夹 | ${mdCell(input.caseItem.title)} |`,
+    `| 飞书 Profile | ${mdCell(input.feishu.profile || "default")} |`,
+    `| 飞书 CLI 检查 | ${statusLabel(input.feishu)} |`,
     "",
-    "## Boundary",
+    "## 边界",
     "",
-    "- This file is a local draft for human review.",
-    "- The workbench did not create or update any Feishu cloud document.",
-    "- The final cloud publish step must be performed and confirmed by a human.",
-    "- No secret values or cloud document identifiers are stored here.",
+    "- 本文件是等待人工审核的本地草稿。",
+    "- 工作台没有创建或更新任何 Feishu/Lark 云文档。",
+    "- 最终云端发布必须由用户本人执行并确认。",
+    "- 本文件不保存密钥或云端文档标识。",
     "",
-    "## Source Outputs",
+    "## 来源成果",
     "",
-    "| Name | Local file | Type | Safe summary |",
+    "| 名称 | 本地文件 | 类型 | 安全摘要 |",
     "|---|---|---|---|",
     ...sourceRows,
     "",
-    "## Manual Handoff Checklist",
+    "## 人工交接清单",
     "",
-    "1. Open the Markdown output in this case folder.",
-    "2. Review the business wording and remove anything not suitable for the target Feishu workspace.",
-    "3. Use the approved Feishu CLI or Feishu client workflow outside this action.",
-    "4. Record the final cloud link manually in the case only after the human publish step succeeds.",
+    "1. 打开当前工作文件夹里的 Markdown 成果。",
+    "2. 审核业务表述，移除不适合目标飞书空间的内容。",
+    "3. 在本动作之外使用已批准的飞书 CLI 或飞书客户端流程。",
+    "4. 只有人工发布成功后，才在工作文件夹中记录最终云端链接。",
     "",
-    "## Blocked In This Action",
+    "## 本动作明确禁止",
     "",
     ...FEISHU_HANDOFF_BLOCKED_ACTIONS.map((action) => `- ${action}`)
   ].join("\n"));
@@ -148,16 +148,16 @@ function renderMarkdown(input: Required<FeishuHandoffRenderInput>, sources: Feis
 
 function renderMermaid(input: Required<FeishuHandoffRenderInput>, sources: FeishuHandoffSourceSummary[]): string {
   const sourceLines = sources.slice(0, 5).map((source, index) => (
-    `  S${index + 1}["${mermaidLabel(source.displayName)}"] --> R["Human review"]`
+    `  S${index + 1}["${mermaidLabel(source.displayName)}"] --> R["人工审核"]`
   ));
   return assertSafeFeishuHandoffText([
     "flowchart TD",
-    `  A["${mermaidLabel(input.caseItem.title)}"] --> B["Safe local outputs"]`,
-    "  B --> R[\"Human review\"]",
+    `  A["${mermaidLabel(input.caseItem.title)}"] --> B["安全本地成果"]`,
+    "  B --> R[\"人工审核\"]",
     ...sourceLines,
-    "  R --> C[\"Approved Feishu workflow outside this app\"]",
-    "  C --> D[\"Manual publish confirmation\"]",
-    "  D --> E[\"Record final link only after confirmation\"]"
+    "  R --> C[\"在应用外执行已批准的飞书流程\"]",
+    "  C --> D[\"人工确认发布\"]",
+    "  D --> E[\"确认后记录最终链接\"]"
   ].join("\n"));
 }
 

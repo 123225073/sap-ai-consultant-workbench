@@ -108,7 +108,8 @@ export function buildSearchDocuments(projects: ProjectSummary[], files: CaseFile
     }
   }
 
-  flattenFiles(files, records, updatedAt);
+  const caseProjects = new Map(projects.flatMap((project) => project.cases.map((caseItem) => [caseItem.id, project.id] as const)));
+  flattenFiles(files, records, updatedAt, caseProjects);
   appendSafeOutputSummaries(records, safeOutputSummaries);
   return records;
 }
@@ -139,8 +140,9 @@ function mergeResults(primary: SearchResult[], fallback: SearchResult[]): Search
   const seen = new Set<string>();
   const results: SearchResult[] = [];
   for (const item of [...primary, ...fallback]) {
-    if (seen.has(item.id)) continue;
-    seen.add(item.id);
+    const key = item.type === "file" ? `file:${item.projectId ?? ""}:${item.caseId ?? ""}:${item.sourcePath ?? item.id}` : item.id;
+    if (seen.has(key)) continue;
+    seen.add(key);
     results.push(item);
     if (results.length >= SEARCH_RESULT_LIMIT) break;
   }
@@ -222,14 +224,16 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
       if (isUnsafeFileSearchPath(node.relativePath)) continue;
       const searchable = [node.name, node.displayName, safeFilePurposeLabel(node.purpose), node.purpose].join(" ").toLowerCase();
       if (searchable.includes(trimmed)) {
+        const projectId = projects.find((project) => project.cases.some((caseItem) => caseItem.id === node.caseId))?.id;
         results.push({
-          id: `file-${safeSearchId(node.caseId, node.relativePath)}`,
+          id: `file-${safeSearchId(projectId ?? "", node.caseId, node.relativePath)}`,
           title: node.name,
           type: "file",
           location: `当前案件 · ${safeFilePurposeLabel(node.purpose)}`,
           snippet: `当前案件文件：${safeFilePurposeLabel(node.purpose)}`,
+          projectId,
           caseId: node.caseId,
-          sourcePath: null
+          sourcePath: node.relativePath
         });
       }
       if (node.children) flatten(node.children);
@@ -246,32 +250,39 @@ export function fallbackSearch(projects: ProjectSummary[], files: CaseFileNode[]
     ].join(" ").toLowerCase();
     if (searchable.includes(trimmed)) {
       results.push({
-        id: `file-summary-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
+        id: `file-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
         title: summary.displayName,
         type: "file",
         location: `${summary.projectName} · ${summary.caseTitle} · 安全输出摘要`,
         snippet: `安全输出摘要：${summary.snippet}`,
         projectId: summary.projectId,
         caseId: summary.caseId,
-        sourcePath: null
+        sourcePath: summary.relativePath
       });
     }
   }
 
-  return results.slice(0, SEARCH_RESULT_LIMIT);
+  return mergeResults(results, []).slice(0, SEARCH_RESULT_LIMIT);
 }
 
 function appendSafeOutputSummaries(records: SearchDocumentRecord[], safeOutputSummaries: SafeOutputSummaryRecord[]): void {
   for (const summary of safeOutputSummaries) {
+    const existing = records.find((record) => record.type === "file" && record.projectId === summary.projectId && record.caseId === summary.caseId && record.sourcePath === summary.relativePath);
+    if (existing) {
+      existing.snippet = `安全输出摘要：${summary.snippet}`;
+      existing.content = [existing.content, summary.content].join(" ");
+      existing.updatedAt = summary.updatedAt;
+      continue;
+    }
     records.push({
-      id: `file-summary-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
+      id: `file-${safeSearchId(summary.projectId, summary.caseId, summary.relativePath)}`,
       type: "file",
       projectId: summary.projectId,
       caseId: summary.caseId,
       title: summary.displayName,
       location: `${summary.projectName} · ${summary.caseTitle} · 安全输出摘要`,
       snippet: `安全输出摘要：${summary.snippet}`,
-      sourcePath: null,
+      sourcePath: summary.relativePath,
       status: "safe-output-summary",
       content: summary.content,
       updatedAt: summary.updatedAt
@@ -279,25 +290,26 @@ function appendSafeOutputSummaries(records: SearchDocumentRecord[], safeOutputSu
   }
 }
 
-function flattenFiles(nodes: CaseFileNode[], records: SearchDocumentRecord[], updatedAt: string): void {
+function flattenFiles(nodes: CaseFileNode[], records: SearchDocumentRecord[], updatedAt: string, caseProjects: Map<string, string>): void {
   for (const node of nodes) {
     if (isUnsafeFileSearchPath(node.relativePath)) continue;
     if (node.kind === "file") {
+      const projectId = caseProjects.get(node.caseId) ?? "active-project";
       records.push({
-        id: `file-${safeSearchId(node.caseId, node.relativePath)}`,
+        id: `file-${safeSearchId(projectId, node.caseId, node.relativePath)}`,
         type: "file",
-        projectId: "active-project",
+        projectId,
         caseId: node.caseId,
         title: node.name,
         location: `当前案件 · ${safeFilePurposeLabel(node.purpose)}`,
         snippet: `当前案件文件：${safeFilePurposeLabel(node.purpose)}`,
-        sourcePath: null,
+        sourcePath: node.relativePath,
         status: node.purpose,
         content: [node.name, safeFilePurposeLabel(node.purpose), node.purpose].join(" "),
         updatedAt
       });
     }
-    if (node.children) flattenFiles(node.children, records, updatedAt);
+    if (node.children) flattenFiles(node.children, records, updatedAt, caseProjects);
   }
 }
 
