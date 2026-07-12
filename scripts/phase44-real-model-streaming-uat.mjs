@@ -95,6 +95,11 @@ try {
   await mkdir(outputRoot, { recursive: true });
 
   const state = JSON.parse(await readFile(path.join(sourceWorkspace, "app-state.json"), "utf8"));
+  await writeFile(path.join(isolatedRepoRoot, "local-data", "workbench", "app-state.json"), JSON.stringify({
+    ...state,
+    chatThreads: [],
+    activeChatThreadId: null
+  }, null, 2));
   const project = state.projects.find((item) => item.isVisible !== false && item.config.apiProviders.some((provider) => (
     provider.enabled
     && provider.lastVerificationMode === "http"
@@ -158,6 +163,8 @@ try {
     await until(() => projectButton.closest('.project-card')?.classList.contains('active'));
     [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat'))?.click();
     await until(() => document.querySelector('.daily-chat-composer .model-select'));
+    document.querySelector('.primary-nav button')?.click();
+    await until(() => document.body.innerText.includes('新对话已创建'));
     document.querySelector('.daily-chat-composer .model-select').click();
     await until(() => document.querySelector('.daily-chat-composer .model-picker-panel'));
     const modelButtons = [...document.querySelectorAll('.daily-chat-composer .model-picker-list button')];
@@ -179,6 +186,8 @@ try {
     });
     observer.observe(document.body, { childList: true, subtree: true, characterData: true });
     document.querySelector('.daily-chat-composer').requestSubmit();
+    await until(() => textarea.value === '');
+    const clearedAfterSubmit = textarea.value === '';
     await until(() => window.__streamUat.seen || (
       document.querySelectorAll('.daily-chat-message').length > baselineReplyCount
       && !document.querySelector('.daily-chat-composer .send-button').disabled
@@ -191,21 +200,82 @@ try {
     observer.disconnect();
     const replies = [...document.querySelectorAll('.daily-chat-message')];
     const latest = replies.at(-1);
-    return JSON.stringify({
-      optionCount: modelButtons.length,
-      selectedLabel,
+    const flow = document.querySelector('.conversation-flow');
+    const distanceFromBottom = flow ? flow.scrollHeight - flow.scrollTop - flow.clientHeight : Number.POSITIVE_INFINITY;
+    const chatResult = {
+      clearedAfterSubmit,
+      distanceFromBottom,
       sawStreaming: window.__streamUat.seen,
       streamedChars: window.__streamUat.maxChars,
       finalLabel: latest?.querySelector('.run-time')?.textContent ?? '',
       finalChars: latest?.querySelector('p')?.textContent?.length ?? 0,
       finalText: latest?.querySelector('p')?.textContent ?? ''
+    };
+
+    [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Work'))?.click();
+    await until(() => document.querySelector('[aria-label="继续追问"]') && document.querySelector('.composer .model-select'));
+    document.querySelector('.composer .model-select').click();
+    await until(() => document.querySelector('.composer .model-picker-panel'));
+    const workTarget = [...document.querySelectorAll('.composer .model-picker-list button')]
+      .find((button) => button.querySelector('small')?.textContent === ${JSON.stringify(modelId)});
+    if (!workTarget) throw new Error('verified-model-not-in-work-selector');
+    workTarget.click();
+    const workTextarea = document.querySelector('[aria-label="继续追问"]');
+    setValue(workTextarea, '请只回复：Work 真实流式回测成功');
+    window.__workStreamUat = { seen: false, maxChars: 0 };
+    const baselineWorkReplyCount = document.querySelectorAll('.assistant-message:not(.streaming-assistant-message)').length;
+    const workObserver = new MutationObserver(() => {
+      const streaming = document.querySelector('.streaming-assistant-message');
+      const streamedChars = Number(streaming?.getAttribute('data-streaming-chars') ?? 0);
+      if (streamedChars > 0) {
+        window.__workStreamUat.seen = true;
+        window.__workStreamUat.maxChars = Math.max(window.__workStreamUat.maxChars, streamedChars);
+      }
+    });
+    workObserver.observe(document.body, { childList: true, subtree: true, characterData: true });
+    document.querySelector('.composer').requestSubmit();
+    await until(() => workTextarea.value === '');
+    await until(() => window.__workStreamUat.seen, 120000);
+    await until(() => (
+      document.querySelectorAll('.assistant-message:not(.streaming-assistant-message)').length > baselineWorkReplyCount
+      && !document.querySelector('.streaming-assistant-message')
+      && !document.querySelector('.composer .send-button').disabled
+    ), 120000);
+    workObserver.disconnect();
+    const workFlow = document.querySelector('.conversation-flow');
+    const workState = (await window.workbench.getState()).data;
+    const workProject = workState.projects.find((item) => item.id === workState.activeProjectId);
+    const workCase = workProject?.cases.find((item) => item.id === workState.activeCaseId);
+    const workLastMessage = workCase?.messages.at(-1);
+    const workResult = {
+      clearedAfterSubmit: workTextarea.value === '',
+      distanceFromBottom: workFlow ? workFlow.scrollHeight - workFlow.scrollTop - workFlow.clientHeight : Number.POSITIVE_INFINITY,
+      sawStreaming: window.__workStreamUat.seen,
+      streamedChars: window.__workStreamUat.maxChars,
+      finalModelId: workLastMessage?.modelId ?? '',
+      finalChars: workLastMessage?.content?.length ?? 0
+    };
+
+    [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat'))?.click();
+    await until(() => document.querySelector('.daily-chat-composer'));
+    return JSON.stringify({
+      optionCount: modelButtons.length,
+      selectedLabel,
+      chat: chatResult,
+      work: workResult
     });
   })()`));
 
   console.log(`realStreamObservation=${JSON.stringify(result)}`);
   assert(result.optionCount >= provider.models.length, "模型选择器没有展示已获取的完整模型目录。");
-  assert(result.sawStreaming && result.streamedChars > 0, "真实模型回复没有出现渐进式流式内容。");
-  assert(result.finalChars > 0 && result.finalLabel.includes(modelId), "真实模型回复没有以所选模型持久化。");
+  assert(result.chat.clearedAfterSubmit, "Chat 发送后输入框没有立即清空。");
+  assert(result.chat.distanceFromBottom < 4, "Chat 对话完成后没有自动跟随到最新消息。");
+  assert(result.chat.sawStreaming && result.chat.streamedChars > 0, "Chat 真实模型回复没有出现渐进式流式内容。");
+  assert(result.chat.finalChars > 0 && result.chat.finalLabel.includes(modelId), "Chat 真实模型回复没有以所选模型持久化。");
+  assert(result.work.clearedAfterSubmit, "Work 发送后输入框没有立即清空。");
+  assert(result.work.distanceFromBottom < 4, "Work 对话完成后没有自动跟随到最新消息。");
+  assert(result.work.sawStreaming && result.work.streamedChars > 0, "Work 短回复没有真实流式输出。");
+  assert(result.work.finalChars > 0 && result.work.finalModelId === modelId, "Work 真实模型回复没有以所选模型持久化。");
   const screenshot = await session.send("Page.captureScreenshot", { format: "png", fromSurface: true });
   await writeFile(path.join(outputRoot, "latest.png"), Buffer.from(screenshot.data, "base64"));
   await writeFile(path.join(outputRoot, "latest.json"), JSON.stringify({
@@ -216,7 +286,8 @@ try {
   }, null, 2));
   console.log(`realModelProvider=${provider.name}`);
   console.log(`realModelId=${modelId}`);
-  console.log(`realStreamedChars=${result.streamedChars}`);
+  console.log(`realChatStreamedChars=${result.chat.streamedChars}`);
+  console.log(`realWorkStreamedChars=${result.work.streamedChars}`);
   console.log("phase44-real-model-streaming-uat=ok");
 } finally {
   session?.close();

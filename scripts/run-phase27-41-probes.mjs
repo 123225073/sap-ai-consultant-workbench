@@ -11,7 +11,8 @@ const probes = entries
 const failed = [];
 for (const probe of probes) {
   process.stdout.write(`\n== ${probe} ==\n`);
-  const result = spawnSync(process.execPath, [path.join(scriptDir, probe)], { stdio: "inherit", timeout: 120_000 });
+  const timeout = probe === "phase43-desktop-release-uat-probe.mjs" ? 240_000 : 120_000;
+  const result = spawnSync(process.execPath, [path.join(scriptDir, probe)], { stdio: "inherit", timeout });
   if (result.error?.code === "ETIMEDOUT") {
     process.stderr.write(`探针超时：${probe}\n`);
     failed.push(probe);

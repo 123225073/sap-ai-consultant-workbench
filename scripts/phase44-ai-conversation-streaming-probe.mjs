@@ -74,6 +74,7 @@ const anthropicResult = await anthropic.generateSafeDraft({
   onDelta: (delta) => anthropicDeltas.push(delta)
 });
 if (anthropicResult.content !== "流式回复" || anthropicDeltas.join("") !== "流式回复") throw new Error("Anthropic SSE 分片没有按顺序输出");
+if (anthropicDeltas.length < 2) throw new Error("Work 短回复仍被缓冲到生成结束后一次性输出");
 
 const unsafeDeltas = [];
 const unsafe = new OpenAiCompatibleModelProviderConnector(jsonRequester, splitSseRequester([
@@ -146,6 +147,7 @@ try {
   assert.match(main, /isChatCapableModel\(selectedModel\)/, "main process 没有拒绝非文本对话模型");
   assert.doesNotMatch(main.slice(main.indexOf("function isProviderReadyForDailyChat"), main.indexOf("async function prepareDailyChatAssistantReply")), /verifiedModelIds/, "Daily Chat 仍把健康检查模型当作唯一白名单");
   assert.match(connector, /stream:\s*true/, "模型连接器没有开启真实流式协议");
+  assert.match(connector, /SAFE_DRAFT_STREAM_HOLD_CHARS = 0/, "Work 短回复仍受固定字符缓冲阻塞");
   assert.match(security, /createSecureModelStreamRequester/, "流式请求没有复用受控 DNS 与 HTTPS 边界");
   assert.match(preload, /workbench:ai-conversation-stream/, "preload 缺少固定流式事件通道");
   assert.match(rendererTypes, /appendDailyChatMessageStreaming/, "renderer 类型桥缺少 Daily Chat 流式方法");

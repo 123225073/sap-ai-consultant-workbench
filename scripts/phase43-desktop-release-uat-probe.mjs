@@ -251,13 +251,19 @@ try {
   await capture("work-case-created");
 
   await pageSession.evaluate(`(async () => {
-    __phase43.setValue(document.querySelector('[aria-label="继续追问"]'), '请记录本次 UAT：验证本地案件对话不依赖 SAP 连接。');
+    const textarea = document.querySelector('[aria-label="继续追问"]');
+    __phase43.setValue(textarea, '请记录本次 UAT：验证本地案件对话不依赖 SAP 连接。');
     document.querySelector('.composer').requestSubmit();
+    await __phase43.until(() => textarea.value === '');
     await __phase43.until(async () => {
       const state = (await window.workbench.getState()).data;
       const project = state.projects.find((item) => item.name === 'Phase43 正式 UAT');
       const currentCase = project?.cases.find((item) => item.title === 'UAT 核心旅程');
       return (currentCase?.messages.length ?? 0) >= 2;
+    });
+    await __phase43.until(() => {
+      const flow = document.querySelector('.conversation-flow');
+      return flow && flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4;
     });
     return true;
   })()`);
@@ -265,9 +271,15 @@ try {
   await pageSession.evaluate(`(async () => {
     [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat')).click();
     await __phase43.until(() => Boolean(document.querySelector('[aria-label="日常对话输入"]')));
-    __phase43.setValue(document.querySelector('[aria-label="日常对话输入"]'), 'Phase43 日常对话隔离验证');
+    const textarea = document.querySelector('[aria-label="日常对话输入"]');
+    __phase43.setValue(textarea, 'Phase43 日常对话隔离验证');
     document.querySelector('.daily-chat-composer').requestSubmit();
+    await __phase43.until(() => textarea.value === '');
     await __phase43.until(() => document.body.innerText.includes('Phase43 日常对话隔离验证'));
+    await __phase43.until(() => {
+      const flow = document.querySelector('.conversation-flow');
+      return flow && flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4;
+    });
     return true;
   })()`);
   const chatBoundary = await evaluateJson(`({
@@ -386,6 +398,23 @@ try {
     document.querySelector('[aria-label="隐藏右侧面板"]')?.click();
     return true;
   })()`);
+  const scrollControl = await evaluateJson(`await (async () => {
+    const flow = document.querySelector('.conversation-flow');
+    const content = document.querySelector('.conversation-content');
+    const spacer = document.createElement('div');
+    spacer.style.height = '1200px';
+    content.appendChild(spacer);
+    flow.scrollTop = 0;
+    flow.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await __phase43.until(() => Boolean(document.querySelector('.scroll-latest-button')));
+    const buttonVisible = Boolean(document.querySelector('.scroll-latest-button'));
+    document.querySelector('.scroll-latest-button').click();
+    await __phase43.until(() => flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4);
+    const returnedToLatest = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4;
+    spacer.remove();
+    return { buttonVisible, returnedToLatest };
+  })()`);
+  assert(scrollControl.buttonVisible && scrollControl.returnedToLatest, "用户向上阅读时显示回到底部按钮，点击后回到最新消息");
   await setViewport(900, 700);
   const responsive = await evaluateJson(`(() => {
     const viewport = { width: innerWidth, height: innerHeight };
@@ -407,6 +436,23 @@ try {
   assert(responsive.noHorizontalPageOverflow && responsive.composerInside && responsive.sendInside, "900×700 响应式布局无页面横向溢出且输入区可操作");
   assert(responsive.sidebarWidth >= 160 && responsive.conversationWidth >= 500 && responsive.filesHidden, "紧凑窗口保留导航与核心工作区，文件面板可收起");
   await capture("responsive-900x700");
+
+  await setViewport(680, 520);
+  const minimumViewport = await evaluateJson(`(() => {
+    const composer = document.querySelector('.composer')?.getBoundingClientRect();
+    const send = document.querySelector('.send-button')?.getBoundingClientRect();
+    const conversation = document.querySelector('.conversation-panel')?.getBoundingClientRect();
+    const inside = (rect) => rect && rect.left >= -1 && rect.right <= innerWidth + 1 && rect.top >= -1 && rect.bottom <= innerHeight + 1;
+    return {
+      noHorizontalPageOverflow: document.documentElement.scrollWidth <= innerWidth + 1,
+      composerInside: inside(composer),
+      sendInside: inside(send),
+      conversationWidth: Math.round(conversation?.width ?? 0)
+    };
+  })()`);
+  assert(minimumViewport.noHorizontalPageOverflow && minimumViewport.composerInside && minimumViewport.sendInside, "680×520 最小窗口输入区仍完整可操作");
+  assert(minimumViewport.conversationWidth >= 500, "680×520 最小窗口保留足够的核心对话宽度");
+  await capture("responsive-680x520");
 
   const persisted = await evaluateJson(`await (async () => {
     const response = await window.workbench.getState();

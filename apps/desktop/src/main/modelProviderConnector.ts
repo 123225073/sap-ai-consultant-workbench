@@ -96,7 +96,8 @@ interface AnthropicMessageResponse {
 }
 
 type ChatMessagePayload = { role: "system" | "user" | "assistant"; content: string };
-const SAFE_DRAFT_STREAM_HOLD_CHARS = 256;
+// Validate every accumulated prefix before emitting its newest delta.
+const SAFE_DRAFT_STREAM_HOLD_CHARS = 0;
 
 function nowIso(): string {
   return new Date().toISOString();

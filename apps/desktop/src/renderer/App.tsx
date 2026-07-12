@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import {
   Archive,
+  ArrowDown,
   BookOpen,
   Bot,
   ChevronDown,
@@ -77,6 +78,11 @@ function formatSize(size: number): string {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function readableHistoricalText(value: string, fallback: string): string {
+  const questionMarks = value.match(/\?/g)?.length ?? 0;
+  return value.includes("????") && questionMarks / Math.max(value.length, 1) > 0.25 ? fallback : value;
 }
 
 function searchResultLabel(result: SearchResult): string {
@@ -475,6 +481,89 @@ function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFi
   );
 }
 
+function inlineMessageContent(value: string): ReactNode[] {
+  return value.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).filter(Boolean).map((part, index) => {
+    if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
+    return part;
+  });
+}
+
+const MessageContent = memo(function MessageContent({ content }: { content: string }) {
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    if (!line.trim()) {
+      index += 1;
+      continue;
+    }
+    if (line.trim().startsWith("```")) {
+      const language = line.trim().slice(3).trim();
+      const codeLines: string[] = [];
+      index += 1;
+      while (index < lines.length && !lines[index].trim().startsWith("```")) {
+        codeLines.push(lines[index]);
+        index += 1;
+      }
+      if (index < lines.length) index += 1;
+      blocks.push(<pre key={`code-${index}`} data-language={language || undefined}><code>{codeLines.join("\n")}</code></pre>);
+      continue;
+    }
+    const heading = line.match(/^(#{1,3})\s+(.+)$/);
+    if (heading) {
+      const level = heading[1].length;
+      const children = inlineMessageContent(heading[2]);
+      blocks.push(level === 1 ? <h2 key={`heading-${index}`}>{children}</h2> : <h3 key={`heading-${index}`}>{children}</h3>);
+      index += 1;
+      continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: ReactNode[] = [];
+      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
+        items.push(<li key={index}>{inlineMessageContent(lines[index].replace(/^\s*[-*]\s+/, ""))}</li>);
+        index += 1;
+      }
+      blocks.push(<ul key={`list-${index}`}>{items}</ul>);
+      continue;
+    }
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: ReactNode[] = [];
+      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
+        items.push(<li key={index}>{inlineMessageContent(lines[index].replace(/^\s*\d+[.)]\s+/, ""))}</li>);
+        index += 1;
+      }
+      blocks.push(<ol key={`ordered-${index}`}>{items}</ol>);
+      continue;
+    }
+    if (/^>\s?/.test(line)) {
+      const quoteLines: string[] = [];
+      while (index < lines.length && /^>\s?/.test(lines[index])) {
+        quoteLines.push(lines[index].replace(/^>\s?/, ""));
+        index += 1;
+      }
+      blocks.push(<blockquote key={`quote-${index}`}>{inlineMessageContent(quoteLines.join("\n"))}</blockquote>);
+      continue;
+    }
+
+    const paragraph: string[] = [line.trim()];
+    index += 1;
+    while (
+      index < lines.length &&
+      lines[index].trim() &&
+      !/^(#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^>\s?|^```/.test(lines[index])
+    ) {
+      paragraph.push(lines[index].trim());
+      index += 1;
+    }
+    blocks.push(<p key={`paragraph-${index}`}>{inlineMessageContent(paragraph.join("\n"))}</p>);
+  }
+
+  return <div className="message-body">{blocks}</div>;
+});
+
 function MessageBubble({ message, files, onPreview }: { message: CaseMessage; files: CaseFileNode[]; onPreview: (node: CaseFileNode) => void }) {
   if (message.role === "user") {
     return (
@@ -494,7 +583,7 @@ function MessageBubble({ message, files, onPreview }: { message: CaseMessage; fi
   return (
     <article className="assistant-message">
       <div className="run-time">{isModelDraft ? "模型草稿回复" : "本地输出回复"} · {formatTime(message.createdAt)} &gt;</div>
-      <p>{message.content}</p>
+      <MessageContent content={message.content} />
       {linkedFiles.length > 0 ? (
         <div className="file-chips">
           {linkedFiles.map((node) => {
@@ -514,10 +603,11 @@ function MessageBubble({ message, files, onPreview }: { message: CaseMessage; fi
 }
 
 function DailyChatBubble({ message }: { message: DailyChatMessage }) {
+  const content = readableHistoricalText(message.content, "这条历史记录的字符编码已损坏，无法可靠显示原文。");
   if (message.role === "user") {
     return (
       <div className="user-message">
-        {message.content}
+        {content}
         <time>{formatTime(message.createdAt)}</time>
       </div>
     );
@@ -527,9 +617,9 @@ function DailyChatBubble({ message }: { message: DailyChatMessage }) {
     <article className="assistant-message daily-chat-message">
       <div className="run-time">
         {message.responseMode === "model-failed" ? "模型调用失败" : message.responseMode === "model-success" ? `${message.providerName ?? "模型渠道"} · ${message.modelId}` : "本地记录"}
-        {` · ${formatTime(message.createdAt)} >`}
+        {` · ${formatTime(message.createdAt)}`}
       </div>
-      <p>{message.content}</p>
+      <MessageContent content={content} />
     </article>
   );
 }
@@ -542,8 +632,8 @@ function StreamingTurnBubble({ turn }: { turn: StreamingTurn }) {
         <time>刚刚</time>
       </div>
       <article className="assistant-message streaming-assistant-message" data-streaming-chars={turn.assistantContent.length} aria-live="polite" aria-busy="true">
-        <div className="run-time">{turn.providerName} · {turn.modelId} · 正在回复 &gt;</div>
-        <p>{turn.assistantContent || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p>
+        <div className="run-time">{turn.providerName} · {turn.modelId} · 正在回复</div>
+        <div className="message-body streaming-message-body"><p>{turn.assistantContent || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p></div>
       </article>
     </>
   );
@@ -569,6 +659,7 @@ function App() {
   const [codexAssistEnabled, setCodexAssistEnabled] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
+  const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectSapVersion, setNewProjectSapVersion] = useState<NewProjectSapVersion>("S4");
   const [newProjectSystemLabel, setNewProjectSystemLabel] = useState("Local");
@@ -590,6 +681,11 @@ function App() {
   const workflowContextRef = useRef("");
   const messageDraftsRef = useRef(new Map<string, string>());
   const modelSelectionsRef = useRef(new Map<string, string>());
+  const conversationFlowRef = useRef<HTMLDivElement>(null);
+  const conversationEndRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const pendingStreamRef = useRef<{ scope: StreamingTurn["scope"]; contextKey: string; delta: string; providerName?: string; modelId?: string } | null>(null);
+  const streamFrameRef = useRef<number | null>(null);
 
   const bridge = window.workbench;
   const project = activeProject(state);
@@ -598,6 +694,8 @@ function App() {
   const activeConversationKey = activeView === "chat"
     ? `chat:${activeChat?.id ?? "new"}`
     : `case:${project?.id ?? ""}:${currentCase?.id ?? ""}`;
+  const activeConversationKeyRef = useRef(activeConversationKey);
+  activeConversationKeyRef.current = activeConversationKey;
   const visibleProjects = useMemo(() => {
     return (state?.projects ?? [])
       .filter((item) => item.isVisible !== false)
@@ -613,6 +711,7 @@ function App() {
     if (nextView === activeView) return;
     if (!canLeaveCurrentCenter()) return;
     setCenterDraftDirty(false);
+    setNotice("");
     setActiveView(nextView);
   }
   const hiddenProjects = useMemo(() => (state?.projects ?? []).filter((item) => item.isVisible === false), [state]);
@@ -1050,17 +1149,90 @@ function App() {
     }
   }
 
+  function scrollConversationToLatest(force = false) {
+    if (force) followLatestRef.current = true;
+    if (!force && !followLatestRef.current) return;
+    window.requestAnimationFrame(() => {
+      if (!force && !followLatestRef.current) return;
+      const flow = conversationFlowRef.current;
+      if (!flow) return;
+      flow.scrollTop = flow.scrollHeight;
+      setShowScrollToLatest(false);
+    });
+  }
+
+  function handleConversationScroll() {
+    const flow = conversationFlowRef.current;
+    if (!flow) return;
+    const nearBottom = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 96;
+    followLatestRef.current = nearBottom;
+    setShowScrollToLatest(!nearBottom);
+  }
+
+  function finishStreamingTurn() {
+    if (streamFrameRef.current !== null) window.cancelAnimationFrame(streamFrameRef.current);
+    streamFrameRef.current = null;
+    pendingStreamRef.current = null;
+    setStreamingTurn(null);
+  }
+
+  function restoreSubmittedMessage(contextKey: string, content: string) {
+    messageDraftsRef.current.set(contextKey, content);
+    if (activeConversationKeyRef.current !== contextKey) return;
+    setMessage((current) => {
+      const restored = current || content;
+      messageDraftsRef.current.set(contextKey, restored);
+      return restored;
+    });
+  }
+
   function receiveStreamEvent(event: AiConversationStreamEvent, expectedContextKey: string) {
     if (event.phase !== "delta" || !event.delta) return;
-    setStreamingTurn((current) => current && current.scope === event.scope && current.contextKey === expectedContextKey
+    const pending = pendingStreamRef.current;
+    pendingStreamRef.current = pending && pending.scope === event.scope && pending.contextKey === expectedContextKey
       ? {
-          ...current,
-          assistantContent: current.assistantContent + event.delta,
-          providerName: event.providerName ?? current.providerName,
-          modelId: event.modelId ?? current.modelId
+          ...pending,
+          delta: pending.delta + event.delta,
+          providerName: event.providerName ?? pending.providerName,
+          modelId: event.modelId ?? pending.modelId
         }
-      : current);
+      : {
+          scope: event.scope,
+          contextKey: expectedContextKey,
+          delta: event.delta,
+          providerName: event.providerName,
+          modelId: event.modelId
+        };
+    if (streamFrameRef.current !== null) return;
+    streamFrameRef.current = window.requestAnimationFrame(() => {
+      streamFrameRef.current = null;
+      const update = pendingStreamRef.current;
+      pendingStreamRef.current = null;
+      if (!update) return;
+      setStreamingTurn((current) => current && current.scope === update.scope && current.contextKey === expectedContextKey && update.contextKey === expectedContextKey
+        ? {
+            ...current,
+            assistantContent: current.assistantContent + update.delta,
+            providerName: update.providerName ?? current.providerName,
+            modelId: update.modelId ?? current.modelId
+          }
+        : current);
+    });
   }
+
+  useEffect(() => {
+    followLatestRef.current = true;
+    setShowScrollToLatest(false);
+    scrollConversationToLatest(true);
+  }, [activeConversationKey]);
+
+  useEffect(() => {
+    scrollConversationToLatest();
+  }, [activeChat?.messages.length, currentCase?.messages.length, streamingTurn?.assistantContent.length, streamingTurn?.contextKey]);
+
+  useEffect(() => () => {
+    if (streamFrameRef.current !== null) window.cancelAnimationFrame(streamFrameRef.current);
+  }, []);
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -1078,33 +1250,41 @@ function App() {
       setNotice(activeView === "chat" ? "请输入日常对话内容。" : "请输入案件问题或补充说明。");
       return;
     }
+    if (activeView !== "chat" && (!project || !currentCase)) {
+      setNotice("请先选择一个 Project 和工作文件夹。");
+      return;
+    }
+    const submittedMessage = message;
+    const submittedContextKey = activeConversationKey;
+    setMessage("");
+    messageDraftsRef.current.set(submittedContextKey, "");
+    followLatestRef.current = true;
+    setShowScrollToLatest(false);
     setSendingMessage(true);
     try {
       if (activeView === "chat") {
         const streamContextKey = `chat:${activeChat?.id ?? "new"}`;
         const chatInput: AppendDailyChatMessageInput = {
           threadId: activeChat?.id,
-          content: message,
+          content: submittedMessage,
           projectId: selectedSafeDraftModel ? project?.id : undefined,
           providerId: selectedSafeDraftModel?.provider.id,
           modelId: selectedSafeDraftModel?.model.id ?? "local-chat"
         };
-        if (selectedSafeDraftModel) {
-          setStreamingTurn({
-            scope: "daily-chat",
-            contextKey: streamContextKey,
-            userContent: message,
-            assistantContent: "",
-            providerName: selectedSafeDraftModel.provider.name,
-            modelId: selectedSafeDraftModel.model.id
-          });
-        }
+        setStreamingTurn({
+          scope: "daily-chat",
+          contextKey: streamContextKey,
+          userContent: submittedMessage,
+          assistantContent: "",
+          providerName: selectedSafeDraftModel?.provider.name ?? "本地工作台",
+          modelId: selectedSafeDraftModel?.model.id ?? "本地记录"
+        });
+        scrollConversationToLatest(true);
         const response = selectedSafeDraftModel
           ? await bridge.appendDailyChatMessageStreaming(chatInput, (event) => receiveStreamEvent(event, streamContextKey))
           : await bridge.appendDailyChatMessage(chatInput);
         if (response.ok) {
           setState(response.data);
-          setMessage("");
           const thread = response.data.chatThreads.find((item) => item.id === response.data.activeChatThreadId);
           const reply = thread?.messages[thread.messages.length - 1];
           const usedFallbackModel = reply?.responseMode === "model-success" && selectedSafeDraftModel && reply.modelId !== selectedSafeDraftModel.model.id;
@@ -1117,20 +1297,17 @@ function App() {
               : "日常对话已保存为本地记录；未写入 Project 或案件文件。");
         } else {
           setNotice(response.error);
+          restoreSubmittedMessage(submittedContextKey, submittedMessage);
         }
-        setStreamingTurn(null);
         return;
       }
-      if (!project || !currentCase) {
-        setNotice("请先选择一个 Project 和工作文件夹。");
-        return;
-      }
+      if (!project || !currentCase) return;
       const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
       const streamContextKey = `case:${target.projectId}:${target.caseId}`;
       const caseInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
-        content: message,
+        content: submittedMessage,
         taskMode: "problem-analysis",
         modelId: selectedSafeDraftModel?.model.id ?? "local-workflow",
         actionId: null,
@@ -1138,27 +1315,30 @@ function App() {
         providerId: selectedSafeDraftModel?.provider.id,
         codexAssistEnabled: false
       };
-      if (selectedSafeDraftModel) {
-        setStreamingTurn({
-          scope: "case",
-          contextKey: streamContextKey,
-          userContent: message,
-          assistantContent: "",
-          providerName: selectedSafeDraftModel.provider.name,
-          modelId: selectedSafeDraftModel.model.id
-        });
-      }
+      setStreamingTurn({
+        scope: "case",
+        contextKey: streamContextKey,
+        userContent: submittedMessage,
+        assistantContent: "",
+        providerName: selectedSafeDraftModel?.provider.name ?? "本地工作台",
+        modelId: selectedSafeDraftModel?.model.id ?? "本地处理"
+      });
+      scrollConversationToLatest(true);
       const sent = await applyCaseWorkflowResponse(
         selectedSafeDraftModel
           ? bridge.appendMessageStreaming(caseInput, (event) => receiveStreamEvent(event, streamContextKey))
           : bridge.appendMessage(caseInput),
         target
       );
-      setStreamingTurn(null);
-      if (!sent) return;
-      if (sent === "active") setMessage("");
+      if (!sent) {
+        restoreSubmittedMessage(submittedContextKey, submittedMessage);
+        return;
+      }
+    } catch {
+      restoreSubmittedMessage(submittedContextKey, submittedMessage);
+      setNotice("发送失败：桌面通信暂时中断，原消息已恢复，请稍后重试。");
     } finally {
-      setStreamingTurn(null);
+      finishStreamingTurn();
       setSendingMessage(false);
     }
   }
@@ -1705,7 +1885,7 @@ function App() {
       <header className="topbar">
         <div className="topbar-context">
           <span>{activeView === "chat" ? "Chat" : "Work"}</span>
-          <strong>{activeView === "chat" ? activeChat?.title ?? "日常对话" : project?.name ?? "未选择项目"}</strong>
+          <strong>{activeView === "chat" ? readableHistoricalText(activeChat?.title ?? "日常对话", "历史对话（编码异常）") : project?.name ?? "未选择项目"}</strong>
           {activeView !== "chat" ? <><span>/</span><em>{activeView === "case" ? currentCase?.title ?? "当前工作文件夹" : activeView === "config" ? "配置中心" : activeView === "standards" ? "规范中心" : "知识库"}</em></> : null}
         </div>
         <div className="topbar-status">
@@ -1789,7 +1969,7 @@ function App() {
                   {group.threads.map((thread) => (
                     <button type="button" onClick={() => void switchDailyChat(thread.id)} className={thread.id === state?.activeChatThreadId && activeView === "chat" ? "conversation-row active" : "conversation-row"} key={thread.id} title="打开独立日常对话">
                       <MessageSquare size={15} />
-                      <span>{thread.title}</span>
+                      <span>{readableHistoricalText(thread.title, "历史对话（编码异常）")}</span>
                       <small>独立对话 · 无文件夹</small>
                     </button>
                   ))}
@@ -2025,7 +2205,7 @@ function App() {
           <section className="conversation-panel daily-chat-panel">
             <div className="case-heading">
               <div>
-                <h1>{activeChat?.title ?? "日常对话"}</h1>
+                <h1>{readableHistoricalText(activeChat?.title ?? "日常对话", "历史对话（编码异常）")}</h1>
                 <p>独立保存 · 可临时使用当前 Project 的已授权模型渠道，内容不进入案件</p>
               </div>
             </div>
@@ -2036,17 +2216,21 @@ function App() {
               <button type="button" onClick={() => setNotice("")} aria-label="关闭提示"><X size={15} /></button>
             </div> : null}
 
-            <div className="conversation-flow">
-              {(activeChat?.messages ?? []).map((item) => (
-                <DailyChatBubble message={item} key={item.id} />
-              ))}
-              {streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
-              {!activeChat?.messages.length && !(streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}`) ? (
-                <article className="assistant-message daily-chat-empty">
-                  <div className="run-time">独立对话 &gt;</div>
-                  <p>直接输入日常问题即可。选择模型时只借用当前 Project 的授权渠道，不读取案件内容，也不写入案件文件。</p>
-                </article>
-              ) : null}
+            <div className="conversation-flow" ref={conversationFlowRef} onScroll={handleConversationScroll}>
+              <div className="conversation-content">
+                {(activeChat?.messages ?? []).map((item) => (
+                  <DailyChatBubble message={item} key={item.id} />
+                ))}
+                {streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+                {!activeChat?.messages.length && !(streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}`) ? (
+                  <article className="assistant-message daily-chat-empty">
+                    <div className="run-time">独立对话 &gt;</div>
+                    <div className="message-body"><p>直接输入日常问题即可。选择模型时只借用当前 Project 的授权渠道，不读取案件内容，也不写入案件文件。</p></div>
+                  </article>
+                ) : null}
+                <div className="conversation-end" ref={conversationEndRef} aria-hidden="true" />
+              </div>
+              {showScrollToLatest ? <button type="button" className="scroll-latest-button" onClick={() => scrollConversationToLatest(true)} aria-label="回到最新消息" title="回到最新消息"><ArrowDown size={17} /></button> : null}
             </div>
 
             <form className="composer daily-chat-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
@@ -2080,12 +2264,15 @@ function App() {
             <button type="button" onClick={() => setNotice("")} aria-label="关闭提示"><X size={15} /></button>
           </div> : null}
 
-          <div className="conversation-flow">
-            {(currentCase?.messages ?? []).map((item) => (
-              <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
-            ))}
-            {streamingTurn?.scope === "case" && streamingTurn.contextKey === `case:${project?.id ?? ""}:${currentCase?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
-
+          <div className="conversation-flow" ref={conversationFlowRef} onScroll={handleConversationScroll}>
+            <div className="conversation-content">
+              {(currentCase?.messages ?? []).map((item) => (
+                <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
+              ))}
+              {streamingTurn?.scope === "case" && streamingTurn.contextKey === `case:${project?.id ?? ""}:${currentCase?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+              <div className="conversation-end" ref={conversationEndRef} aria-hidden="true" />
+            </div>
+            {showScrollToLatest ? <button type="button" className="scroll-latest-button" onClick={() => scrollConversationToLatest(true)} aria-label="回到最新消息" title="回到最新消息"><ArrowDown size={17} /></button> : null}
           </div>
 
           <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
