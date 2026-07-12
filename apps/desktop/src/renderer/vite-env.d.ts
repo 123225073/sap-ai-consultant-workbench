@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, AiConversationStreamEvent, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -16,11 +16,13 @@ interface WorkbenchBridge {
   createDailyChatThread: (input?: CreateDailyChatThreadInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchDailyChatThread: (input: SwitchDailyChatThreadInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   appendDailyChatMessage: (input: AppendDailyChatMessageInput | string) => Promise<WorkbenchResponse<WorkbenchState>>;
+  appendDailyChatMessageStreaming: (input: AppendDailyChatMessageInput, onEvent: (event: AiConversationStreamEvent) => void) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchProject: (input: SwitchProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   hideProjectFromSidebar: (input: HideProjectFromSidebarInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   restoreProjectToSidebar: (input: RestoreProjectToSidebarInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchCase: (input: SwitchCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   appendMessage: (input: CaseWorkflowInput | string) => Promise<WorkbenchResponse<WorkbenchState>>;
+  appendMessageStreaming: (input: CaseWorkflowInput, onEvent: (event: AiConversationStreamEvent) => void) => Promise<WorkbenchResponse<WorkbenchState>>;
   getCaseFiles: () => Promise<WorkbenchResponse<CaseFileNode[]>>;
   previewCurrentCaseFile: (input: CaseFilePreviewInput) => Promise<WorkbenchResponse<CaseFilePreview>>;
   search: (query: string) => Promise<WorkbenchResponse<SearchResult[]>>;

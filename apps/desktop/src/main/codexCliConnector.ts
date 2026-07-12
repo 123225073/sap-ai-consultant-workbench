@@ -210,6 +210,33 @@ function commandLooksMissing(code: string | number | null): boolean {
   return code === "ENOENT" || code === 9009 || code === "9009";
 }
 
+function readonlyProbeFailure(result: CommandResult): { detail: string; suggestion: string } {
+  const { output: commandText } = result;
+  const output = commandText.toLowerCase();
+  if (output.includes("requires a newer version of codex")) {
+    return {
+      detail: "Codex 当前默认模型与本机 CLI 版本不兼容，工程试跑未完成。",
+      suggestion: "请更新 Codex CLI，或在 Codex 配置中改用当前版本支持的模型后重试；这不会影响工作台核心 AI 对话。"
+    };
+  }
+  if (output.includes("websocket") && (output.includes("refused") || output.includes("积极拒绝") || output.includes("10061"))) {
+    return {
+      detail: "Codex 工程试跑无法建立网络连接，可能仍在使用失效的本机代理端口。",
+      suggestion: "请检查 Codex 的代理配置和网络连接后重试；这不会影响工作台已配置的模型渠道。"
+    };
+  }
+  if (result.errorCode === "TIMEOUT") {
+    return {
+      detail: "Codex 工程试跑等待超时。",
+      suggestion: "请检查 Codex 当前模型、CLI 版本与网络状态后重试；这不会影响工作台核心 AI 对话。"
+    };
+  }
+  return {
+    detail: "Codex 工程试跑没有返回预期确认结果。",
+    suggestion: "请检查 Codex 当前模型、CLI 版本与网络状态后重试；配置页不会保存本次原始输出。"
+  };
+}
+
 function error(code: CodexVerificationErrorCode, message: string, suggestion: string): CodexVerificationError {
   return { code, message, suggestion };
 }
@@ -350,7 +377,7 @@ function buildReport(
   const loginPassed = steps.some((item) => item.id === "login" && item.status === "passed");
   const readonlyPassed = steps.some((item) => item.id === "readonly-task" && item.status === "passed");
   return {
-    ok: cliPassed && loginPassed && readonlyPassed,
+    ok: cliPassed && loginPassed,
     checkedAt,
     mode: "cli",
     cli: cliInfo(input, executable, version),
@@ -428,14 +455,13 @@ export class RealCodexCliConnector implements CodexCliConnector {
     const readonlyProbeOk = probe.ok && probe.output.includes(READONLY_PROBE_MARKER);
     const capabilities = capabilitiesFromHelp(help.output, readonlyProbeOk);
     if (!readonlyProbeOk) {
-      const kind = probe.errorCode === "TIMEOUT" ? "timeout" : "execution";
-      const copy = externalConnectorUserError("Codex CLI", kind);
-      steps.push(step("readonly-task", "只读试跑", "failed", "Codex 只读任务没有返回预期确认结果。", checkedAt));
-      errors.push(error("readonly-task-failed", copy.reason, `${copy.suggestion} 配置页不会保存本次原始输出。`));
+      const failure = readonlyProbeFailure(probe);
+      steps.push(step("readonly-task", "工程试跑（可选）", "failed", failure.detail, checkedAt));
+      errors.push(error("readonly-task-failed", failure.detail, failure.suggestion));
       return buildReport(input, executable, version, steps, errors, capabilities, checkedAt);
     }
 
-    steps.push(step("readonly-task", "只读试跑", "passed", "已完成一次临时只读任务；本次不读取 Codex 历史聊天，不写入项目文件。", checkedAt));
+    steps.push(step("readonly-task", "工程试跑（可选）", "passed", "已完成一次临时只读任务；本次不读取 Codex 历史聊天，不写入项目文件。", checkedAt));
     return buildReport(input, executable, version, steps, errors, capabilities, checkedAt);
   }
 

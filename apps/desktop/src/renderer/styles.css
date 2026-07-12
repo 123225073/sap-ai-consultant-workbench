@@ -885,6 +885,26 @@ button {
 
 .assistant-message p {
   margin: 18px 0 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.streaming-assistant-message {
+  min-height: 72px;
+}
+
+.streaming-cursor {
+  display: inline-block;
+  width: 2px;
+  height: 1em;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: #2563eb;
+  animation: streaming-cursor-blink 900ms steps(1) infinite;
+}
+
+@keyframes streaming-cursor-blink {
+  50% { opacity: 0; }
 }
 
 .assistant-message ul {

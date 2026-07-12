@@ -1928,7 +1928,6 @@ export class WorkspaceStore {
         item.credential.state === "set-in-secure-store" &&
         item.modelSyncStatus === "verified" &&
         item.chatTestStatus === "verified" &&
-        item.verifiedModelIds.length > 0 &&
         item.models.length > 0 &&
         (realEligible || fakeEligible)
       );
@@ -1936,8 +1935,8 @@ export class WorkspaceStore {
     const provider = workflowInput.providerId
       ? eligibleProviders.find((item) => item.id === workflowInput.providerId)
       : eligibleProviders[0];
-    const requestedModelId = workflowInput.modelId === "local-workflow" ? provider?.lastVerifiedModelId ?? provider?.verifiedModelIds[0] : workflowInput.modelId;
-    const model = provider && requestedModelId && provider.verifiedModelIds.includes(requestedModelId)
+    const requestedModelId = workflowInput.modelId === "local-workflow" ? provider?.lastVerifiedModelId ?? provider?.models[0]?.id : workflowInput.modelId;
+    const model = provider && requestedModelId
       ? provider.models.find((item) => item.id === requestedModelId) ?? null
       : null;
     if (!provider || !model) return null;
@@ -1995,10 +1994,9 @@ export class WorkspaceStore {
     if (
       codexConfig.integrationType !== "cli" ||
       codexConfig.cliStatus !== "verified" ||
-      codexConfig.loginStatus !== "verified" ||
-      codexConfig.readonlyTaskStatus !== "verified"
+      codexConfig.loginStatus !== "verified"
     ) {
-      throw new Error("Codex 还没有通过配置中心测试。请先到配置中心点击“测试 Codex”，通过后再开启工程辅助。");
+      throw new Error("Codex CLI 尚未完成安装与登录检查。请先到配置中心验证本机 Codex；工程试跑结果会在实际执行时单独提示。");
     }
 
     return {

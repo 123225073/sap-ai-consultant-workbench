@@ -632,7 +632,7 @@ function CodexVerificationReportView({ config, report }: { config: ProjectConfig
   ];
   const firstError = report?.errors[0];
   const capabilities = report?.capabilities ?? [];
-  const codexReady = config.codex.cliStatus === "verified" && config.codex.loginStatus === "verified" && config.codex.readonlyTaskStatus === "verified";
+  const codexReady = config.codex.cliStatus === "verified" && config.codex.loginStatus === "verified";
 
   return (
     <div className="adt-verification-report codex-verification-report">
@@ -669,7 +669,7 @@ function CodexVerificationReportView({ config, report }: { config: ProjectConfig
         </div>
         <div>
           <dt>验证结论</dt>
-          <dd>{report ? (report.ok ? "已确认 Codex CLI 可执行、当前登录状态检查通过，且固定临时只读回复任务通过；未验证 MCP、插件或 Skills 的实际能力。" : "固定 Codex CLI 检查未通过，不能据此判断工程任务可用。") : codexReady ? "上次固定临时只读回复任务通过；其他能力未单独验证。" : "尚未完成 Codex 固定只读试跑。"}</dd>
+          <dd>{report ? (report.ok ? (config.codex.readonlyTaskStatus === "verified" ? "Codex CLI 已安装并登录，固定临时只读任务也已通过。" : "Codex CLI 已安装并登录；工程试跑受当前模型、CLI 版本或网络影响，实际使用时会单独提示。") : "Codex CLI 安装或登录检查未通过。") : codexReady ? "Codex CLI 已安装并登录；工程试跑是可选诊断，不影响核心 AI 对话。" : "尚未完成 Codex CLI 安装与登录检查。"}</dd>
         </div>
       </dl>
 
@@ -1378,8 +1378,8 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const feishuVerificationOk = feishuReport?.ok === true;
   const shouldShowFeishuProfileResult = Boolean(feishuProfileResult && (feishuProfileResult.ok || (!feishuReady && !feishuVerificationOk)));
   const visibleFeishuProfileResult = shouldShowFeishuProfileResult ? feishuProfileResult : null;
-  const codexReady = !hasUnsavedCodexConfig && draft.codex.cliStatus === "verified" && draft.codex.loginStatus === "verified" && draft.codex.readonlyTaskStatus === "verified";
-  const codexFailed = !hasUnsavedCodexConfig && (draft.codex.cliStatus === "failed" || draft.codex.loginStatus === "failed" || draft.codex.readonlyTaskStatus === "failed");
+  const codexReady = !hasUnsavedCodexConfig && draft.codex.cliStatus === "verified" && draft.codex.loginStatus === "verified";
+  const codexFailed = !hasUnsavedCodexConfig && (draft.codex.cliStatus === "failed" || draft.codex.loginStatus === "failed");
   const codexDiscovery = localAiScan?.capabilities.find((item) => item.capabilityId === "codex-cli") ?? null;
   const savingAnyConfig = savingAdt || savingModel || savingFeishu || savingCodex;
   const configTabOrder: ConfigTabId[] = sapProject
@@ -1480,7 +1480,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
                 <span>SAP GUI 地址 / ADT 地址</span>
                 <input value={draft.adt.url} onChange={(event) => updateAdt("url", event.target.value)} placeholder="例如：sap-dev.example.com 或 https://sap-host:44300" />
               </label>
-              <div className="config-fields two-columns compact-fields">
+              <div className="config-fields compact-fields">
                 <label>
                   <span>Client</span>
                   <input value={draft.adt.client} onChange={(event) => updateAdt("client", event.target.value)} placeholder="例如：800" />
@@ -1514,7 +1514,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
 
             <details className="setup-advanced-details phase27-advanced-details">
               <summary>高级设置</summary>
-              <div className="config-fields two-columns">
+              <div className="config-fields">
                 <label>
                   <span>语言</span>
                   <input value={draft.adt.language} onChange={(event) => updateAdt("language", event.target.value)} />
@@ -1719,7 +1719,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
             </div>
           </div>
 
-          <div className="config-fields two-columns optional-fields">
+          <div className="config-fields optional-fields">
             <label>
               <span>CLI 路径</span>
               <input value={draft.feishu.cliPath} onChange={(event) => updateFeishu("cliPath", event.target.value)} placeholder="自动识别 lark-cli" />
@@ -1793,7 +1793,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
               <h2>本机 AI 增强能力</h2>
               <p>核心对话使用已配置的 AI 模型；Codex 仅用于可选的工程执行增强。</p>
             </div>
-            <span className={`setup-state setup-${codexReady ? "green" : codexFailed ? "orange" : "neutral"}`}>{codexReady ? "Codex 可用" : "不影响核心功能"}</span>
+            <span className={`setup-state setup-${codexReady ? "green" : codexFailed ? "orange" : "neutral"}`}>{codexReady ? "Codex 已连接" : "不影响核心功能"}</span>
           </div>
           <div className="local-capability-summary">
             <div>
@@ -1811,7 +1811,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
             <button type="button" onClick={() => void scanLocalAi()} disabled={scanningLocalAi || installingLocalAi}><RefreshCw size={16} />{scanningLocalAi ? "扫描中" : "重新扫描"}</button>
             {codexDiscovery && !codexDiscovery.installed ? <button type="button" onClick={() => void installLocalAi()} disabled={installingLocalAi || scanningLocalAi}><Download size={16} />{installingLocalAi ? "安装中" : "安装 Codex CLI"}</button> : null}
           </div>
-          <div className="config-fields two-columns">
+          <div className="config-fields">
             <label>
               <span>增强方式</span>
               <select value={draft.codex.integrationType} onChange={(event) => updateCodex("integrationType", event.target.value)}>
@@ -1831,7 +1831,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
               <div className="readonly-row"><ConfigStatusPill status={visibleCodexConfig.codex.loginStatus} /></div>
             </label>
             <label>
-              <span>工程任务状态</span>
+              <span>工程试跑（可选）</span>
               <div className="readonly-row"><ConfigStatusPill status={visibleCodexConfig.codex.readonlyTaskStatus} /></div>
             </label>
             <label>

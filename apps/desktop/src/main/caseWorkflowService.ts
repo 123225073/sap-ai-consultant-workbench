@@ -667,16 +667,15 @@ export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: 
   const actionLine = input.actionId ? `案件动作：${CASE_ACTION_LABELS[input.actionId]}。执行偏好：${ACTION_PERMISSION_LABELS[input.permissionMode]}。` : "";
   if (modelDraft?.status === "success") {
     return [
-      `已用已验证模型「${modelDraft.modelId}」生成 ${CASE_OUTPUT_PHASE} 安全本地草稿。`,
+      modelDraft.content,
       "",
       actionLine,
       hasCodexAssist
-        ? "本次调用已验证模型生成安全草稿，并按用户开启的选项运行 Codex 工程辅助；未执行外部系统写入或发布。"
-        : "本次只调用模型生成本地草稿；未执行外部系统写入或发布。",
+        ? "已同步生成本地成果和 Codex 工程辅助文件；未执行外部系统写入或发布。"
+        : "已同步生成本地成果文件；未执行外部系统写入或发布。",
       codexLine,
-      "",
       resultLine
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
   if (modelDraft?.status === "failed") {
     return [

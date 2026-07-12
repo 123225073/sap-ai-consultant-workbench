@@ -1,5 +1,22 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AdtVerificationResult, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, AiConversationStreamEvent, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+
+const AI_STREAM_EVENT_CHANNEL = "workbench:ai-conversation-stream";
+
+function invokeWithAiStream(
+  channel: "workbench:append-daily-chat-message-stream" | "workbench:append-message-stream",
+  input: AppendDailyChatMessageInput | CaseWorkflowInput,
+  onEvent: (event: AiConversationStreamEvent) => void
+): Promise<WorkbenchResponse<WorkbenchState>> {
+  const requestId = crypto.randomUUID();
+  const listener = (_event: Electron.IpcRendererEvent, payload: AiConversationStreamEvent) => {
+    if (payload?.requestId === requestId) onEvent(payload);
+  };
+  ipcRenderer.on(AI_STREAM_EVENT_CHANNEL, listener);
+  return ipcRenderer.invoke(channel, requestId, input).finally(() => {
+    ipcRenderer.removeListener(AI_STREAM_EVENT_CHANNEL, listener);
+  });
+}
 
 contextBridge.exposeInMainWorld("workbench", {
   getAppInfo: () => ({
@@ -15,11 +32,13 @@ contextBridge.exposeInMainWorld("workbench", {
   createDailyChatThread: (input: CreateDailyChatThreadInput = {}): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-daily-chat-thread", input),
   switchDailyChatThread: (input: SwitchDailyChatThreadInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:switch-daily-chat-thread", input),
   appendDailyChatMessage: (input: AppendDailyChatMessageInput | string): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:append-daily-chat-message", input),
+  appendDailyChatMessageStreaming: (input: AppendDailyChatMessageInput, onEvent: (event: AiConversationStreamEvent) => void): Promise<WorkbenchResponse<WorkbenchState>> => invokeWithAiStream("workbench:append-daily-chat-message-stream", input, onEvent),
   switchProject: (input: SwitchProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:switch-project", input),
   hideProjectFromSidebar: (input: HideProjectFromSidebarInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:hide-project-from-sidebar", input),
   restoreProjectToSidebar: (input: RestoreProjectToSidebarInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:restore-project-to-sidebar", input),
   switchCase: (input: SwitchCaseInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:switch-case", input),
   appendMessage: (input: CaseWorkflowInput | string): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:append-message", input),
+  appendMessageStreaming: (input: CaseWorkflowInput, onEvent: (event: AiConversationStreamEvent) => void): Promise<WorkbenchResponse<WorkbenchState>> => invokeWithAiStream("workbench:append-message-stream", input, onEvent),
   getCaseFiles: (): Promise<WorkbenchResponse<CaseFileNode[]>> => ipcRenderer.invoke("workbench:get-case-files"),
   previewCurrentCaseFile: (input: CaseFilePreviewInput): Promise<WorkbenchResponse<CaseFilePreview>> => ipcRenderer.invoke("workbench:preview-current-case-file", input),
   search: (query: string): Promise<WorkbenchResponse<SearchResult[]>> => ipcRenderer.invoke("workbench:search", query),

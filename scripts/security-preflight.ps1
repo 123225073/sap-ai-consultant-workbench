@@ -123,11 +123,13 @@ $allowedIpc = @(
   "workbench:create-daily-chat-thread",
   "workbench:switch-daily-chat-thread",
   "workbench:append-daily-chat-message",
+  "workbench:append-daily-chat-message-stream",
   "workbench:switch-project",
   "workbench:hide-project-from-sidebar",
   "workbench:restore-project-to-sidebar",
   "workbench:switch-case",
   "workbench:append-message",
+  "workbench:append-message-stream",
   "workbench:get-case-files",
   "workbench:preview-current-case-file",
   "workbench:search",
@@ -226,7 +228,7 @@ $phase18Markers = @(
   @{ Pattern = "lastVerifiedModelId"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "safeDraftModelOptions"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = 'item.credential.state === "set-in-secure-store"'; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "verifiedModelIds"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "provider.models.map"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "model-picker-panel"; Path = "apps/desktop/src/renderer/styles.css" },
   @{ Pattern = "phase18-composer-model-selector-probe"; Path = "scripts/phase18-composer-model-selector-probe.mjs" }
@@ -1618,7 +1620,6 @@ $codexCaseAssistMarkers = @(
   @{ Pattern = "prepareCodexCaseAssistRequest"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "codexConfig.cliStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "codexConfig.loginStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
-  @{ Pattern = "codexConfig.readonlyTaskStatus !== `"verified`""; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "runCaseAssist"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "wantsCodexCaseAssist"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "CODEX_ASSIST_BOUNDARY"; Path = "apps/desktop/src/main/caseWorkflowService.ts" },
@@ -1803,10 +1804,10 @@ if ($LASTEXITCODE -eq 0) {
   throw "Safe model draft service boundary scan failed."
 }
 
-$unsafeModelRequestHits = rg -n -- "tools\s*:|functions\s*:|web_search|response_format|stream\s*:\s*true" apps/desktop/src/main/modelProviderConnector.ts
+$unsafeModelRequestHits = rg -n -- "tools\s*:|functions\s*:|web_search|response_format" apps/desktop/src/main/modelProviderConnector.ts
 if ($LASTEXITCODE -eq 0) {
   $unsafeModelRequestHits | ForEach-Object { Write-Host $_ }
-  throw "Safe model draft request must not enable tools, functions, web search, or streaming."
+  throw "Safe model draft request must not enable tools, functions, web search, or response-format expansion."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Safe model draft request scan failed."
 }
@@ -1835,6 +1836,10 @@ if ($LASTEXITCODE -eq 0) {
     }
     if ($line -match 'messages:\s*dailyChatMessages\(input\)') {
       Write-Host "OK bounded daily chat history messages: $line"
+      continue
+    }
+    if ($line -match 'messages:\s*promptMessages') {
+      Write-Host "OK prebuilt bounded streaming messages: $line"
       continue
     }
     if (($line -match 'messages:\s*\[') -and $hasDailyChatMarkers) {
@@ -1940,7 +1945,7 @@ if ($LASTEXITCODE -eq 0) {
 Write-Section "Phase 39 product realignment and model channel safety scan"
 $phase39Markers = @(
   @{ Pattern = "phase39-multi-provider-registry"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
-  @{ Pattern = "provider.verifiedModelIds.flatMap"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "provider.models.map"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "preserveMainOwnedVerification(previousConfig, nextConfig)"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "parseAppendDailyChatMessageInput(input)"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "autoHideMenuBar: true"; Path = "apps/desktop/src/main/main.ts" },

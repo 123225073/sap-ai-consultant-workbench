@@ -744,6 +744,18 @@ export interface AppendDailyChatMessageInput {
   modelId?: string;
 }
 
+export type AiConversationStreamScope = "daily-chat" | "case";
+export type AiConversationStreamPhase = "started" | "delta" | "completed";
+
+export interface AiConversationStreamEvent {
+  requestId: string;
+  scope: AiConversationStreamScope;
+  phase: AiConversationStreamPhase;
+  delta?: string;
+  providerName?: string;
+  modelId?: string;
+}
+
 export interface SwitchProjectInput {
   projectId: string;
 }

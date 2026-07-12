@@ -25,7 +25,7 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { ActionPermissionMode, AdtVerificationReport, ApiProviderConfig, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CodexVerificationReport, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { ActionPermissionMode, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseWorkflowInput, CodexVerificationReport, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = ProjectSummary["sapVersion"];
 
@@ -211,6 +211,14 @@ type ComposerModelOption = {
   model: ModelSummary;
 };
 
+type StreamingTurn = {
+  scope: "daily-chat" | "case";
+  userContent: string;
+  assistantContent: string;
+  providerName: string;
+  modelId: string;
+};
+
 const selectableCapabilities: Exclude<ModelCapability, "chat">[] = ["vision", "reasoning", "tools", "web", "free"];
 
 const capabilityLabels: Record<ModelCapability, string> = {
@@ -233,7 +241,6 @@ function isProviderSafeForDraft(item: ApiProviderConfig): boolean {
     item.modelSyncStatus === "verified" &&
     item.chatTestStatus === "verified" &&
     item.lastVerificationMode === "http" &&
-    item.verifiedModelIds.length > 0 &&
     item.models.length > 0
   );
 }
@@ -247,19 +254,14 @@ function providerModelStatus(provider: ApiProviderConfig): string | null {
   if (provider.chatTestStatus === "failed") return "最小对话测试失败，请到配置中心检查";
   if (provider.modelSyncStatus !== "verified") return "模型列表尚未验证";
   if (provider.chatTestStatus !== "verified") return "最小对话尚未验证";
-  if (provider.verifiedModelIds.length === 0) return "没有单独测试通过的模型，请到配置中心选择模型并测试";
   if (provider.models.length === 0) return "未获取到可用模型";
-  if (provider.verifiedModelIds.some((modelId) => !provider.models.some((model) => model.id === modelId))) return "已验证模型不在当前模型列表，请重新验证";
   return null;
 }
 
 function safeDraftModelOptions(project: ProjectSummary | undefined): ComposerModelOption[] {
   return (project?.config.apiProviders ?? []).flatMap((provider) => {
     if (!isProviderSafeForDraft(provider)) return [];
-    return provider.verifiedModelIds.flatMap((modelId) => {
-      const model = provider.models.find((item) => item.id === modelId);
-      return model ? [{ key: modelOptionKey(provider.id, model.id), provider, model }] : [];
-    });
+    return provider.models.map((model) => ({ key: modelOptionKey(provider.id, model.id), provider, model }));
   });
 }
 
@@ -370,6 +372,21 @@ function DailyChatBubble({ message }: { message: DailyChatMessage }) {
   );
 }
 
+function StreamingTurnBubble({ turn }: { turn: StreamingTurn }) {
+  return (
+    <>
+      <div className="user-message streaming-user-message">
+        {turn.userContent}
+        <time>刚刚</time>
+      </div>
+      <article className="assistant-message streaming-assistant-message" data-streaming-chars={turn.assistantContent.length} aria-live="polite" aria-busy="true">
+        <div className="run-time">{turn.providerName} · {turn.modelId} · 正在回复 &gt;</div>
+        <p>{turn.assistantContent || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p>
+      </article>
+    </>
+  );
+}
+
 function App() {
   const [state, setState] = useState<WorkbenchState | null>(null);
   const [message, setMessage] = useState("");
@@ -389,6 +406,7 @@ function App() {
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [codexAssistEnabled, setCodexAssistEnabled] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [modelSearchQuery, setModelSearchQuery] = useState("");
   const [modelCapabilityFilters, setModelCapabilityFilters] = useState<ModelCapability[]>([]);
@@ -486,12 +504,11 @@ function App() {
   const codexAssistAvailable = Boolean(
     project?.config.codex.integrationType === "cli" &&
     project.config.codex.cliStatus === "verified" &&
-    project.config.codex.loginStatus === "verified" &&
-    project.config.codex.readonlyTaskStatus === "verified"
+    project.config.codex.loginStatus === "verified"
   );
   const codexAssistTitle = codexAssistAvailable
     ? "开启后，本次发送会让 Codex 生成一份工程辅助分析并保存到当前案件文件"
-    : "Codex 还未通过配置中心测试；先到配置中心点击测试 Codex";
+    : "Codex CLI 尚未完成安装与登录检查；工程试跑状态不会影响核心 AI 对话";
   const selectedCaseAction = caseActions.find((item) => item.id === selectedCaseActionId) ?? caseActions[0];
   const currentPermissionMode = permissionModes.find((item) => item.id === actionPermissionMode) ?? permissionModes[0];
   const flatFiles = useMemo(() => flattenFiles(state?.activeCaseFiles ?? []), [state]);
@@ -878,6 +895,18 @@ function App() {
     ));
   }
 
+  function receiveStreamEvent(event: AiConversationStreamEvent) {
+    if (event.phase !== "delta" || !event.delta) return;
+    setStreamingTurn((current) => current && current.scope === event.scope
+      ? {
+          ...current,
+          assistantContent: current.assistantContent + event.delta,
+          providerName: event.providerName ?? current.providerName,
+          modelId: event.modelId ?? current.modelId
+        }
+      : current);
+  }
+
   async function sendMessage() {
     if (sendingMessage) return;
     if (!bridge) {
@@ -891,13 +920,25 @@ function App() {
     setSendingMessage(true);
     try {
       if (activeView === "chat") {
-        const response = await bridge.appendDailyChatMessage({
+        const chatInput: AppendDailyChatMessageInput = {
           threadId: activeChat?.id,
           content: message,
           projectId: selectedSafeDraftModel ? project?.id : undefined,
           providerId: selectedSafeDraftModel?.provider.id,
           modelId: selectedSafeDraftModel?.model.id ?? "local-chat"
-        });
+        };
+        if (selectedSafeDraftModel) {
+          setStreamingTurn({
+            scope: "daily-chat",
+            userContent: message,
+            assistantContent: "",
+            providerName: selectedSafeDraftModel.provider.name,
+            modelId: selectedSafeDraftModel.model.id
+          });
+        }
+        const response = selectedSafeDraftModel
+          ? await bridge.appendDailyChatMessageStreaming(chatInput, receiveStreamEvent)
+          : await bridge.appendDailyChatMessage(chatInput);
         if (response.ok) {
           setState(response.data);
           setMessage("");
@@ -911,6 +952,7 @@ function App() {
         } else {
           setNotice(response.error);
         }
+        setStreamingTurn(null);
         return;
       }
       if (!project || !currentCase) {
@@ -918,7 +960,7 @@ function App() {
         return;
       }
       const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
-      const sent = await applyCaseWorkflowResponse(bridge.appendMessage({
+      const caseInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
         content: message,
@@ -928,13 +970,30 @@ function App() {
         permissionMode: actionPermissionMode,
         providerId: selectedSafeDraftModel?.provider.id,
         codexAssistEnabled: codexAssistEnabled && codexAssistAvailable
-      }), target);
+      };
+      if (selectedSafeDraftModel) {
+        setStreamingTurn({
+          scope: "case",
+          userContent: message,
+          assistantContent: "",
+          providerName: selectedSafeDraftModel.provider.name,
+          modelId: selectedSafeDraftModel.model.id
+        });
+      }
+      const sent = await applyCaseWorkflowResponse(
+        selectedSafeDraftModel
+          ? bridge.appendMessageStreaming(caseInput, receiveStreamEvent)
+          : bridge.appendMessage(caseInput),
+        target
+      );
+      setStreamingTurn(null);
       if (!sent) return;
       if (sent === "active") setMessage("");
       if (sent === "active" && codexAssistEnabled && codexAssistAvailable) {
         setNotice("当前案件已更新，Codex 工程辅助分析会出现在右侧 outputs 文件里。");
       }
     } finally {
+      setStreamingTurn(null);
       setSendingMessage(false);
     }
   }
@@ -960,7 +1019,7 @@ function App() {
         `当前权限：${currentPermissionMode.label}。${currentPermissionMode.summary}`,
         message.trim() ? `用户补充：${message.trim()}` : "用户补充：无，请基于当前案件上下文沉淀结果。"
       ].join("\n");
-      const sent = await applyCaseWorkflowResponse(bridge.appendMessage({
+      const actionInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
         content,
@@ -970,7 +1029,23 @@ function App() {
         permissionMode: actionPermissionMode,
         providerId: selectedSafeDraftModel?.provider.id,
         codexAssistEnabled: codexAssistEnabled && codexAssistAvailable
-      }), target);
+      };
+      if (selectedSafeDraftModel) {
+        setStreamingTurn({
+          scope: "case",
+          userContent: message.trim() || `生成${selectedCaseAction.label}`,
+          assistantContent: "",
+          providerName: selectedSafeDraftModel.provider.name,
+          modelId: selectedSafeDraftModel.model.id
+        });
+      }
+      const sent = await applyCaseWorkflowResponse(
+        selectedSafeDraftModel
+          ? bridge.appendMessageStreaming(actionInput, receiveStreamEvent)
+          : bridge.appendMessage(actionInput),
+        target
+      );
+      setStreamingTurn(null);
       if (!sent) return;
       if (sent === "active") {
         setMessage("");
@@ -978,6 +1053,7 @@ function App() {
         setNotice(`已执行「${selectedCaseAction.label}」，结果已保存到当前工作文件夹。`);
       }
     } finally {
+      setStreamingTurn(null);
       setSendingMessage(false);
     }
   }
@@ -1796,7 +1872,8 @@ function App() {
               {(activeChat?.messages ?? []).map((item) => (
                 <DailyChatBubble message={item} key={item.id} />
               ))}
-              {!activeChat?.messages.length ? (
+              {streamingTurn?.scope === "daily-chat" ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+              {!activeChat?.messages.length && streamingTurn?.scope !== "daily-chat" ? (
                 <article className="assistant-message daily-chat-empty">
                   <div className="run-time">独立对话 &gt;</div>
                   <p>直接输入日常问题即可。选择模型时只借用当前 Project 的授权渠道，不读取案件内容，也不写入案件文件。</p>
@@ -1848,6 +1925,7 @@ function App() {
             {(currentCase?.messages ?? []).map((item) => (
               <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
             ))}
+            {streamingTurn?.scope === "case" ? <StreamingTurnBubble turn={streamingTurn} /> : null}
 
           </div>
 

@@ -66,7 +66,12 @@ async function openCdp(webSocketDebuggerUrl) {
   return {
     evaluate: async (expression) => {
       const response = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
-      if (response.result.exceptionDetails) throw new Error("Electron UI 自动化执行失败。");
+      if (response.result.exceptionDetails) {
+        const detail = response.result.exceptionDetails.exception?.description
+          ?? response.result.exceptionDetails.text
+          ?? "未知页面异常";
+        throw new Error(`Electron UI 自动化执行失败：${detail}`);
+      }
       return response.result.result.value;
     },
     fire: (method, params = {}) => ws.send(JSON.stringify({ id: ++commandId, method, params })),

@@ -166,8 +166,8 @@ const fetchedModelRequest = await store.prepareSafeModelDraftRequest({
   providerId: "provider-a",
   modelId: "unique-a"
 }, { allowFakeModelExecution: true });
-assert(fetchedModelRequest === null, "an untested model from the fetched catalog should not prepare a model draft");
-pass("untestedFetchedModelRejected");
+assert(fetchedModelRequest?.providerId === "provider-a" && fetchedModelRequest.modelId === "unique-a", "a listed model from a verified provider should be selectable even when it was not the health-check model");
+pass("fullFetchedCatalogSelectable");
 
 const disabledProviderRequest = await store.prepareSafeModelDraftRequest({
   content: "请生成一份安全本地草稿。",

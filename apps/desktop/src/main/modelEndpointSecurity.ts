@@ -76,6 +76,18 @@ export type SecureModelJsonRequester = (
   timeoutMs?: number
 ) => Promise<unknown>;
 
+export interface SecureModelStreamResponse {
+  contentType: string;
+}
+
+export type SecureModelStreamRequester = (
+  url: string,
+  apiLabel: string,
+  options: SecureModelJsonRequestOptions,
+  onChunk: (chunk: string) => void,
+  timeoutMs?: number
+) => Promise<SecureModelStreamResponse>;
+
 export type ModelHttpsRequestFactory = (
   url: URL,
   options: RequestOptions,
@@ -167,3 +179,87 @@ export function createSecureModelJsonRequester(
 }
 
 export const secureModelJsonRequest = createSecureModelJsonRequester();
+
+export function createSecureModelStreamRequester(
+  resolver: ModelAddressResolver = resolveModelAddresses,
+  requestFactory: ModelHttpsRequestFactory = httpsRequest
+): SecureModelStreamRequester {
+  return async (url, apiLabel, options, onChunk, timeoutMs = 120000) => {
+    const parsed = new URL(url);
+    const addresses = await resolvePublicModelAddresses(parsed.origin, resolver);
+    const selected = addresses[0];
+    if (!selected) {
+      throw new Error(`${apiLabel} 不能使用演示地址执行真实网络请求。`);
+    }
+
+    return new Promise<SecureModelStreamResponse>((resolve, reject) => {
+      let settled = false;
+      let totalBytes = 0;
+      const finishReject = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      const request = requestFactory(parsed, {
+        method: options.method ?? "GET",
+        headers: options.headers,
+        servername: parsed.hostname,
+        lookup: ((_hostname: string, lookupOptions: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
+          const family = selected.family ?? isIP(selected.address);
+          if (lookupOptions?.all) {
+            callback(null, [{ address: selected.address, family }]);
+            return;
+          }
+          callback(null, selected.address, family);
+        }) as never
+      }, (response) => {
+        const statusCode = response.statusCode ?? 0;
+        if (statusCode >= 300 && statusCode < 400) {
+          response.resume();
+          finishReject(new Error(`${apiLabel} 返回了重定向，已阻止跳转。`));
+          return;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+          response.resume();
+          finishReject(new Error(`HTTP ${statusCode}：${apiLabel} 请求失败。`));
+          return;
+        }
+
+        const contentType = String(response.headers["content-type"] ?? "");
+        response.setEncoding("utf8");
+        response.on("data", (chunk: string) => {
+          totalBytes += Buffer.byteLength(chunk);
+          if (totalBytes > MAX_MODEL_RESPONSE_BYTES) {
+            request.destroy(new Error(`${apiLabel} 返回内容超过 2 MB，已停止读取。`));
+            return;
+          }
+          try {
+            onChunk(chunk);
+          } catch (caught) {
+            const message = caught instanceof Error && caught.message ? caught.message : `${apiLabel} 流式响应处理失败。`;
+            request.destroy(new Error(message));
+          }
+        });
+        response.on("end", () => {
+          if (settled) return;
+          settled = true;
+          resolve({ contentType });
+        });
+      });
+
+      request.setTimeout(timeoutMs, () => {
+        request.destroy(new Error(`${apiLabel} 流式请求超时（${timeoutMs}ms）。`));
+      });
+      request.on("error", (caught) => {
+        const message = caught instanceof Error ? caught.message : "";
+        finishReject(message.startsWith(apiLabel) || message.startsWith("HTTP ")
+          ? new Error(message)
+          : new Error(`${apiLabel} 流式网络连接失败。`));
+      });
+      if (options.body) request.write(options.body);
+      request.end();
+    });
+  };
+}
+
+export const secureModelStreamRequest = createSecureModelStreamRequester();

@@ -58,7 +58,7 @@ pass("connectorBoundary");
 assert(workspaceStoreSource.includes("prepareCodexCaseAssistRequest"), "Workspace store must prepare bounded Codex context");
 assert(workspaceStoreSource.includes('codexConfig.cliStatus !== "verified"'), "Codex case assist must require verified CLI status");
 assert(workspaceStoreSource.includes('codexConfig.loginStatus !== "verified"'), "Codex case assist must require verified login");
-assert(workspaceStoreSource.includes('codexConfig.readonlyTaskStatus !== "verified"'), "Codex case assist must require verified readonly task");
+assert(!workspaceStoreSource.includes('codexConfig.readonlyTaskStatus !== "verified"'), "optional Codex engineering probe must not block an installed and logged-in CLI");
 assert(workspaceStoreSource.includes("standardsSummaryForTask(project.standards, workflowInput.taskMode)"), "Codex context should include task-relevant standards summary");
 assert(!/prepareCodexCaseAssistRequest[\s\S]{0,2200}readCaseTree/.test(workspaceStoreSource), "Codex case assist must not read case files for prompt context");
 pass("contextBoundary");

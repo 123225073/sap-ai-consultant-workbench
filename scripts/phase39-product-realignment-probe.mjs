@@ -106,8 +106,8 @@ const alternateRequest = await store.prepareSafeModelDraftRequest({
   modelId: "alternate-chat",
   permissionMode: "approve_for_me"
 });
-assert(alternateRequest === null, "an untested model must not be selectable for Work");
-pass("untestedModelSelectionBlocked");
+assert(alternateRequest?.modelId === "alternate-chat", "every model in a verified provider catalog must be selectable for Work");
+pass("verifiedProviderCatalogSelectable");
 
 project = activeProject(state);
 const forgedConfig = JSON.parse(JSON.stringify(project.config));
@@ -186,13 +186,13 @@ assert(configSource.includes("phase39-multi-provider-registry") && configSource.
 assert(configSource.includes("removeModelProvider") && configSource.includes("移除当前模型渠道"), "multi-provider removal UI missing");
 assert(mainSource.includes('kind: "api-key", providerId: removedProviders[0].id'), "removed provider API key cleanup missing");
 assert(appSource.includes("await previewCaseFile(matchedFile)"), "file search result must open the matched local preview");
-assert(appSource.includes("provider.verifiedModelIds.flatMap"), "composer must expose every model that individually passed the minimum chat test");
+assert(appSource.includes("provider.models.map"), "composer must expose the complete catalog from a verified provider");
 assert(appSource.includes("permissionMode: actionPermissionMode"), "ordinary case messages must use the current permission mode");
 assert(appSource.includes('useState<"chat" | "case" | "config" | "standards" | "knowledge">("case")'), "Work must be the default view");
 assert(!appSource.includes("window-actions") && !appSource.includes("添加附件暂不可用"), "fake topbar or unfinished composer controls remain visible");
 assert(storeSource.includes("preserveMainOwnedVerification(previousConfig, nextConfig)"), "main-owned verification preservation missing");
 assert(mainSource.includes("const parsedInput = parseAppendDailyChatMessageInput(input);"), "daily chat must parse before network preparation");
-assert(mainSource.includes("!provider.verifiedModelIds.includes(modelId)"), "daily chat must reject models that did not pass the minimum chat test");
+assert(mainSource.includes("provider.models.some((model) => model.id === modelId)"), "daily chat must accept only models in the verified provider catalog");
 assert(appSource.includes("projectId: selectedSafeDraftModel ? project?.id : undefined") && appSource.includes("providerId: selectedSafeDraftModel?.provider.id"), "daily chat must send the selected channel and model through the narrow IPC input");
 assert(!mainSource.includes('ipcMain.handle("workbench:reveal-project-secret"') && !preloadSource.includes("revealProjectSecret") && !rendererTypes.includes("revealProjectSecret"), "saved secret reveal surface still exists");
 assert(mainSource.includes("autoHideMenuBar: true"), "native menu bar should be hidden in the workbench window");

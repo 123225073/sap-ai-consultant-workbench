@@ -20,7 +20,7 @@ import { createAppLifecycleLogger } from "./appLifecycleLogger";
 import { installLocalAiCapability, parseLocalAiInstallInput, scanLocalAiCapabilities } from "./localAiCapabilityService";
 import { assertPublicModelEndpoint, isDemoModelHost, isUnsafeModelHost } from "./modelEndpointSecurity";
 import { createWorkspaceBackup, importWorkspace } from "./workspaceTransferService";
-import type { AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -40,6 +40,34 @@ const SENSITIVE_ERROR_PATTERNS = [
 const FEISHU_DEVELOPER_CONSOLE_URL = "https://open.feishu.cn/app";
 const FEISHU_AUTHORIZATION_HOST_SUFFIXES = ["feishu.cn", "larksuite.com", "larkoffice.com"] as const;
 const caseWorkflowQueues = new Map<string, Promise<void>>();
+const AI_STREAM_EVENT_CHANNEL = "workbench:ai-conversation-stream";
+
+type ModelDeltaHandler = (delta: string, providerName: string, modelId: string) => void;
+
+function validStreamRequestId(value: unknown): string {
+  if (typeof value !== "string" || !/^[a-f0-9-]{36}$/i.test(value)) {
+    throw new Error("AI 流式请求标识无效，请重新发送。");
+  }
+  return value;
+}
+
+function streamEventSender(event: IpcMainInvokeEvent, requestId: string, scope: AiConversationStreamScope): ModelDeltaHandler & { complete: () => void } {
+  let started = false;
+  const send = (payload: Omit<AiConversationStreamEvent, "requestId" | "scope">) => {
+    if (!event.sender.isDestroyed()) event.sender.send(AI_STREAM_EVENT_CHANNEL, { requestId, scope, ...payload } satisfies AiConversationStreamEvent);
+  };
+  const handler = ((delta: string, providerName: string, modelId: string) => {
+    if (!started) {
+      started = true;
+      send({ phase: "started", providerName, modelId });
+    }
+    send({ phase: "delta", delta, providerName, modelId });
+  }) as ModelDeltaHandler & { complete: () => void };
+  handler.complete = () => {
+    if (started) send({ phase: "completed" });
+  };
+  return handler;
+}
 
 async function runCaseWorkflowExclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
   const previous = caseWorkflowQueues.get(key) ?? Promise.resolve();
@@ -726,7 +754,7 @@ async function verifyCodexCli(store: WorkspaceStore, projectId: unknown): Promis
   return { report, state };
 }
 
-async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<WorkbenchState> {
+async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown, onDelta?: ModelDeltaHandler): Promise<WorkbenchState> {
   const targetedInput = await store.bindCaseWorkflowTarget(input);
   const workflowKey = `${targetedInput.projectId}:${targetedInput.caseId}`;
   return runCaseWorkflowExclusive(workflowKey, async () => {
@@ -751,7 +779,8 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         baseUrl: prepared.baseUrl,
         apiKey,
         modelId: prepared.modelId,
-        context: prepared.context
+        context: prepared.context,
+        onDelta: onDelta ? (delta) => onDelta(delta, prepared.providerName, prepared.modelId) : undefined
       });
       modelDraft = {
         status: "success",
@@ -800,19 +829,18 @@ function isProviderReadyForDailyChat(provider: ApiProviderConfig): boolean {
     provider.modelSyncStatus === "verified" &&
     provider.chatTestStatus === "verified" &&
     provider.lastVerificationMode === "http" &&
-    provider.verifiedModelIds.length > 0 &&
-    provider.verifiedModelIds.every((modelId) => provider.models.some((model) => model.id === modelId))
+    provider.models.length > 0
   );
 }
 
-async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore: SecureSecretStore, request: AppendDailyChatMessageInput): Promise<DailyChatAssistantReply | undefined> {
+async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore: SecureSecretStore, request: AppendDailyChatMessageInput, onDelta?: ModelDeltaHandler): Promise<DailyChatAssistantReply | undefined> {
   if (!request.projectId || !request.providerId || !request.content.trim()) return undefined;
   try {
     const config = await store.getProjectConfig(request.projectId);
     const provider = config.apiProviders.find((item) => item.id === request.providerId);
     if (!provider || !isProviderReadyForDailyChat(provider)) return undefined;
-    const modelId = request.modelId ?? provider.lastVerifiedModelId ?? provider.verifiedModelIds[0];
-    if (!modelId || !provider.verifiedModelIds.includes(modelId) || !provider.models.some((model) => model.id === modelId)) return undefined;
+    const modelId = request.modelId ?? provider.lastVerifiedModelId ?? provider.models[0]?.id;
+    if (!modelId || !provider.models.some((model) => model.id === modelId)) return undefined;
     await assertPublicModelEndpoint(provider.baseUrl);
     const apiKey = await secretStore.resolveProjectSecret(request.projectId, { kind: "api-key", providerId: provider.id });
     const connector = createModelProviderConnector(provider.baseUrl, provider.providerType);
@@ -822,7 +850,8 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
       apiKey,
       modelId,
       content: request.content,
-      history
+      history,
+      onDelta: onDelta ? (delta) => onDelta(delta, provider.name, modelId) : undefined
     });
     return {
       content: result.content,
@@ -844,9 +873,9 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
   }
 }
 
-async function appendDailyChatMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<WorkbenchState> {
+async function appendDailyChatMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown, onDelta?: ModelDeltaHandler): Promise<WorkbenchState> {
   const parsedInput = parseAppendDailyChatMessageInput(input);
-  const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, parsedInput);
+  const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, parsedInput, onDelta);
   return store.appendDailyChatMessage(parsedInput, assistantReply);
 }
 
@@ -965,11 +994,23 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
   ipcMain.handle("workbench:switch-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchDailyChatThread(input)));
   ipcMain.handle("workbench:append-daily-chat-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendDailyChatMessage(store, secretStore, input)));
+  ipcMain.handle("workbench:append-daily-chat-message-stream", (event, requestId: unknown, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const stream = streamEventSender(event, validStreamRequestId(requestId), "daily-chat");
+    const state = await appendDailyChatMessage(store, secretStore, input, stream);
+    stream.complete();
+    return state;
+  }));
   ipcMain.handle("workbench:switch-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchProject(input)));
   ipcMain.handle("workbench:hide-project-from-sidebar", (event, input: unknown) => trustedResponse(event, appRoot, () => store.hideProjectFromSidebar(input)));
   ipcMain.handle("workbench:restore-project-to-sidebar", (event, input: unknown) => trustedResponse(event, appRoot, () => store.restoreProjectToSidebar(input)));
   ipcMain.handle("workbench:switch-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchCase(input)));
   ipcMain.handle("workbench:append-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendCaseMessage(store, secretStore, input)));
+  ipcMain.handle("workbench:append-message-stream", (event, requestId: unknown, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const stream = streamEventSender(event, validStreamRequestId(requestId), "case");
+    const state = await appendCaseMessage(store, secretStore, input, stream);
+    stream.complete();
+    return state;
+  }));
   ipcMain.handle("workbench:get-case-files", (event) => trustedResponse(event, appRoot, () => store.getCaseFiles()));
   ipcMain.handle("workbench:preview-current-case-file", (event, input: unknown) => trustedResponse(event, appRoot, () => store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (event, query: string) => trustedResponse(event, appRoot, () => store.search(query)));

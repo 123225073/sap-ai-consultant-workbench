@@ -9,7 +9,12 @@ import type {
   ModelSummary
 } from "../shared/workbenchTypes";
 import { assertSafeModelDraftResponseText, type SafeModelDraftContext } from "./safeModelCaseDraftService";
-import { secureModelJsonRequest, type SecureModelJsonRequester } from "./modelEndpointSecurity";
+import {
+  secureModelJsonRequest,
+  secureModelStreamRequest,
+  type SecureModelJsonRequester,
+  type SecureModelStreamRequester
+} from "./modelEndpointSecurity";
 
 export interface ModelProviderConnectorInput {
   id: string;
@@ -25,12 +30,14 @@ export interface ModelProviderConnectorInput {
 export interface SafeModelDraftConnectorInput extends ModelProviderConnectorInput {
   modelId: string;
   context: SafeModelDraftContext;
+  onDelta?: (delta: string) => void;
 }
 
 export interface DailyChatConnectorInput extends ModelProviderConnectorInput {
   modelId: string;
   content: string;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
+  onDelta?: (delta: string) => void;
 }
 
 export interface SafeModelDraftConnectorResult {
@@ -67,11 +74,24 @@ interface ChatCompletionResponse {
   }>;
 }
 
+interface OpenAiStreamPayload {
+  choices?: Array<{
+    delta?: { content?: unknown };
+    text?: unknown;
+  }>;
+}
+
+interface AnthropicStreamPayload {
+  delta?: { text?: unknown };
+  content_block?: { text?: unknown };
+}
+
 interface AnthropicMessageResponse {
   content?: Array<{ type?: unknown; text?: unknown }>;
 }
 
 type ChatMessagePayload = { role: "system" | "user" | "assistant"; content: string };
+const SAFE_DRAFT_STREAM_HOLD_CHARS = 256;
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -217,6 +237,26 @@ function dailyChatResult(input: DailyChatConnectorInput, content: string): Daily
     modelId: input.modelId,
     content: assertSafeDailyChatResponseText(content),
     generatedAt: nowIso()
+  };
+}
+
+function guardedSafeDraftDeltaHandler(onDelta: (delta: string) => void): { push: (delta: string) => void; flush: () => void } {
+  let accumulated = "";
+  let emittedChars = 0;
+  return {
+    push(delta) {
+      accumulated += delta;
+      assertSafeModelDraftResponseText(accumulated);
+      const safeEnd = Math.max(0, accumulated.length - SAFE_DRAFT_STREAM_HOLD_CHARS);
+      if (safeEnd > emittedChars) {
+        onDelta(accumulated.slice(emittedChars, safeEnd));
+        emittedChars = safeEnd;
+      }
+    },
+    flush() {
+      assertSafeModelDraftResponseText(accumulated);
+      if (emittedChars < accumulated.length) onDelta(accumulated.slice(emittedChars));
+    }
   };
 }
 
@@ -393,6 +433,101 @@ async function invokeChat(
   return extractVerifiedOpenAiChatContent(payload);
 }
 
+function streamPayloadText(payload: unknown, protocol: HttpModelProtocol): string {
+  if (!payload || typeof payload !== "object") return "";
+  if (protocol === "anthropic") {
+    const anthropic = payload as AnthropicStreamPayload;
+    if (typeof anthropic.delta?.text === "string") return anthropic.delta.text;
+    return typeof anthropic.content_block?.text === "string" ? anthropic.content_block.text : "";
+  }
+  const openAi = payload as OpenAiStreamPayload;
+  const choice = openAi.choices?.[0];
+  if (typeof choice?.delta?.content === "string") return choice.delta.content;
+  return typeof choice?.text === "string" ? choice.text : "";
+}
+
+async function invokeChatStream(
+  input: ModelProviderConnectorInput & { modelId: string },
+  protocol: HttpModelProtocol,
+  promptMessages: ChatMessagePayload[],
+  maxTokens: number,
+  temperature: number | undefined,
+  requester: SecureModelStreamRequester,
+  onDelta: (delta: string) => void
+): Promise<string> {
+  const anthropicPayload = protocol === "anthropic" ? anthropicMessages(promptMessages) : null;
+  const requestBody = protocol === "anthropic"
+    ? {
+        model: input.modelId,
+        max_tokens: maxTokens,
+        ...anthropicPayload,
+        stream: true
+      }
+    : {
+        model: input.modelId,
+        messages: promptMessages,
+        max_tokens: maxTokens,
+        ...(typeof temperature === "number" ? { temperature } : {}),
+        stream: true
+      };
+  const apiPath = protocol === "anthropic" ? "/messages" : "/chat/completions";
+  const apiLabel = `${protocol === "anthropic" ? "Anthropic API" : "OpenAI API"} ${apiPath}`;
+  let pending = "";
+  let fallbackResponseText = "";
+  let content = "";
+
+  const emit = (delta: string) => {
+    const safeDelta = delta.replace(/\u0000/g, "");
+    if (!safeDelta) return;
+    content += safeDelta;
+    onDelta(safeDelta);
+  };
+  const consumeEvent = (eventText: string) => {
+    const data = eventText
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") return;
+    try {
+      emit(streamPayloadText(JSON.parse(data) as unknown, protocol));
+    } catch {
+      throw new Error(`${apiLabel} 返回了无法解析的流式数据。`);
+    }
+  };
+
+  const response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
+    method: "POST",
+    headers: {
+      ...protocolHeaders(protocol, input.apiKey, true),
+      Accept: "text/event-stream"
+    },
+    body: JSON.stringify(requestBody)
+  }, (chunk) => {
+    fallbackResponseText += chunk;
+    pending += chunk;
+    const events = pending.split(/\r?\n\r?\n/);
+    pending = events.pop() ?? "";
+    for (const eventText of events) consumeEvent(eventText);
+  });
+  if (pending.trim()) consumeEvent(pending);
+
+  if (!content.trim() && !response.contentType.toLowerCase().includes("text/event-stream")) {
+    try {
+      const payload = JSON.parse(fallbackResponseText) as unknown;
+      content = protocol === "anthropic"
+        ? extractAnthropicContent(payload as AnthropicMessageResponse)
+        : extractVerifiedOpenAiChatContent(payload as ChatCompletionResponse);
+      onDelta(content);
+    } catch (caught) {
+      throw new Error(caughtMessage(caught, `${apiLabel} 没有返回可读取的文本。`));
+    }
+  }
+  if (!content.trim()) throw new Error(`${apiLabel} 没有返回可读取的流式文本。`);
+  return content;
+}
+
 async function verifyHttpProvider(input: ModelProviderConnectorInput, protocol: HttpModelProtocol, requester: SecureModelJsonRequester): Promise<ModelProviderVerificationReport> {
   const checkedAt = nowIso();
   const steps: ModelProviderVerificationStep[] = [];
@@ -453,32 +588,48 @@ async function verifyHttpProvider(input: ModelProviderConnectorInput, protocol: 
 }
 
 abstract class HttpModelProviderConnector implements ModelProviderConnector {
-  constructor(private readonly protocol: HttpModelProtocol, private readonly requester: SecureModelJsonRequester) {}
+  constructor(
+    private readonly protocol: HttpModelProtocol,
+    private readonly requester: SecureModelJsonRequester,
+    private readonly streamRequester: SecureModelStreamRequester
+  ) {}
 
   verify(input: ModelProviderConnectorInput): Promise<ModelProviderVerificationReport> {
     return verifyHttpProvider(input, this.protocol, this.requester);
   }
 
   async generateSafeDraft(input: SafeModelDraftConnectorInput): Promise<SafeModelDraftConnectorResult> {
-    const content = await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);
+    const guarded = input.onDelta ? guardedSafeDraftDeltaHandler(input.onDelta) : null;
+    const content = guarded
+      ? await invokeChatStream(input, this.protocol, input.context.messages, 900, 0.2, this.streamRequester, guarded.push)
+      : await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);
+    guarded?.flush();
     return connectorResult(input, content);
   }
 
   async generateDailyChat(input: DailyChatConnectorInput): Promise<DailyChatConnectorResult> {
-    const content = await invokeChat(input, this.protocol, dailyChatMessages(input), 900, 0.4, this.requester);
+    const content = input.onDelta
+      ? await invokeChatStream(input, this.protocol, dailyChatMessages(input), 900, 0.4, this.streamRequester, input.onDelta)
+      : await invokeChat(input, this.protocol, dailyChatMessages(input), 900, 0.4, this.requester);
     return dailyChatResult(input, content);
   }
 }
 
 export class OpenAiCompatibleModelProviderConnector extends HttpModelProviderConnector {
-  constructor(requester: SecureModelJsonRequester = secureModelJsonRequest) {
-    super("openai", requester);
+  constructor(
+    requester: SecureModelJsonRequester = secureModelJsonRequest,
+    streamRequester: SecureModelStreamRequester = secureModelStreamRequest
+  ) {
+    super("openai", requester, streamRequester);
   }
 }
 
 export class AnthropicCompatibleModelProviderConnector extends HttpModelProviderConnector {
-  constructor(requester: SecureModelJsonRequester = secureModelJsonRequest) {
-    super("anthropic", requester);
+  constructor(
+    requester: SecureModelJsonRequester = secureModelJsonRequest,
+    streamRequester: SecureModelStreamRequester = secureModelStreamRequest
+  ) {
+    super("anthropic", requester, streamRequester);
   }
 }
 
