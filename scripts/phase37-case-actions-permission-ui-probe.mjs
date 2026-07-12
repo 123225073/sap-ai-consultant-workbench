@@ -57,7 +57,7 @@ const workComposerRegion = appSource.match(/<form className="composer"[\s\S]*?<\
 assert(workComposerRegion.includes("case-action-control"), "work composer must render the on-demand case action selector");
 assert(workComposerRegion.includes("case-action-run-button"), "work composer must render the case action command");
 assert(workComposerRegion.includes("permission-mode-control"), "work composer must render the execution preference inside the action panel");
-assert(workComposerRegion.includes("workComposerPlaceholder"), "work composer must keep free conversation as the default");
+assert(workComposerRegion.includes("handleComposerKeyDown") && workComposerRegion.includes("Enter 发送"), "work composer must keep free conversation as the default");
 assert(!workComposerRegion.includes('aria-label="任务模式"'), "work composer must not render the old task mode tablist");
 assert(!workComposerRegion.includes("setSelectedTaskMode"), "work composer must not ask the user to select taskMode before chatting");
 assert(!/问题分析[\s\S]{0,120}ABAP开发[\s\S]{0,120}文档生成/.test(workComposerRegion), "old task mode labels must not remain as composer tabs");

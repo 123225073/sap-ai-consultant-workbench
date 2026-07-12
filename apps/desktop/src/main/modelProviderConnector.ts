@@ -62,7 +62,12 @@ export interface ModelProviderConnector {
 
 interface OpenAiModelListResponse {
   data?: Array<{ id?: unknown; object?: unknown }>;
+  has_more?: unknown;
+  last_id?: unknown;
 }
+
+const MAX_MODEL_CATALOG_ITEMS = 50_000;
+const MAX_MODEL_CATALOG_PAGES = 100;
 
 interface ChatCompletionResponse {
   id?: unknown;
@@ -125,7 +130,8 @@ function step(id: ModelProviderVerificationStep["id"], title: string, status: Mo
 
 function inferCapabilities(modelId: string): ModelCapability[] {
   const lower = modelId.toLowerCase();
-  const capabilities = new Set<ModelCapability>(["chat"]);
+  const nonChatPattern = /(embedding|embed|rerank|moderation|image|imagine|video|sora|nano-banana|tts|speech|audio|whisper)/i;
+  const capabilities = new Set<ModelCapability>(nonChatPattern.test(lower) ? [] : ["chat"]);
   if (lower.includes("vision") || lower.includes("vl") || lower.includes("image") || lower.includes("omni")) capabilities.add("vision");
   if (lower.includes("reason") || lower.includes("r1") || lower.includes("o1") || lower.includes("o3") || lower.includes("thinking")) capabilities.add("reasoning");
   if (lower.includes("tool") || lower.includes("function")) capabilities.add("tools");
@@ -163,14 +169,14 @@ function isFakeProvider(baseUrl: string): boolean {
 function safeModelId(value: string): string | null {
   const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return null;
-  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key/i.test(trimmed)) return null;
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9_-]{16,}|api[_-]?key/i.test(trimmed)) return null;
   return trimmed;
 }
 
 function chooseTestModel(models: ModelSummary[], preferredModelId = ""): string | null {
   const preferred = safeModelId(preferredModelId);
   if (preferred && models.some((model) => model.id === preferred)) return preferred;
-  const nonChatPattern = /(embedding|embed|rerank|moderation|image|vision-only|tts|speech|audio|whisper)/i;
+  const nonChatPattern = /(embedding|embed|rerank|moderation|image|imagine|video|sora|nano-banana|vision-only|tts|speech|audio|whisper)/i;
   const likelyChatPattern = /(chat|instruct|gpt|deepseek|claude|gemini|qwen|glm|llama|mistral|command)/i;
   return models.find((model) => likelyChatPattern.test(model.id) && !nonChatPattern.test(model.id))?.id
     ?? models.find((model) => !nonChatPattern.test(model.id))?.id
@@ -182,7 +188,11 @@ function manualModelIds(input: ModelProviderConnectorInput): string[] {
   const configured = [...(input.manualModelIds ?? []), input.testModelId ?? ""]
     .map((item) => safeModelId(item))
     .filter((item): item is string => item !== null);
-  return Array.from(new Set(configured)).slice(0, 200);
+  return Array.from(new Set(configured));
+}
+
+function activeCatalogMode(): NonNullable<ApiProviderConfig["catalogMode"]> {
+  return "remote-with-manual-fallback";
 }
 
 function mergeModels(remoteModels: ModelSummary[], input: ModelProviderConnectorInput, checkedAt: string): ModelSummary[] {
@@ -190,7 +200,7 @@ function mergeModels(remoteModels: ModelSummary[], input: ModelProviderConnector
   for (const id of manualModelIds(input)) {
     if (!merged.has(id)) merged.set(id, modelSummary(id, checkedAt));
   }
-  return Array.from(merged.values()).slice(0, 200);
+  return Array.from(merged.values());
 }
 
 function caughtMessage(caught: unknown, fallback: string): string {
@@ -385,15 +395,31 @@ function protocolHeaders(protocol: HttpModelProtocol, apiKey: string, includeCon
 }
 
 async function fetchRemoteModels(input: ModelProviderConnectorInput, protocol: HttpModelProtocol, checkedAt: string, requester: SecureModelJsonRequester): Promise<ModelSummary[]> {
-  const payload = await requester(endpoint(input.baseUrl, "/models"), `${protocol === "anthropic" ? "Anthropic API" : "OpenAI API"} /models`, {
-    method: "GET",
-    headers: protocolHeaders(protocol, input.apiKey)
-  }) as OpenAiModelListResponse;
-  return (payload.data ?? [])
-    .map((item) => typeof item.id === "string" ? safeModelId(item.id) : null)
-    .filter((id): id is string => id !== null)
-    .slice(0, 200)
-    .map((id) => modelSummary(id, checkedAt));
+  const models = new Map<string, ModelSummary>();
+  let nextUrl = endpoint(input.baseUrl, "/models");
+  const seenCursors = new Set<string>();
+  for (let page = 0; page < MAX_MODEL_CATALOG_PAGES; page += 1) {
+    const payload = await requester(nextUrl, `${protocol === "anthropic" ? "Anthropic API" : "OpenAI API"} /models`, {
+      method: "GET",
+      headers: protocolHeaders(protocol, input.apiKey)
+    }) as OpenAiModelListResponse;
+    for (const item of payload.data ?? []) {
+      const id = typeof item.id === "string" ? safeModelId(item.id) : null;
+      if (id) models.set(id, modelSummary(id, checkedAt));
+      if (models.size > MAX_MODEL_CATALOG_ITEMS) {
+        throw new Error(`模型目录超过 ${MAX_MODEL_CATALOG_ITEMS} 项安全预算，已停止读取；请联系渠道管理员缩小目录范围。`);
+      }
+    }
+    if (protocol !== "anthropic" || payload.has_more !== true) return Array.from(models.values());
+    const cursor = typeof payload.last_id === "string" ? safeModelId(payload.last_id) : null;
+    if (!cursor || seenCursors.has(cursor)) throw new Error("Anthropic API /models 分页游标无效，已停止读取以避免重复请求。");
+    seenCursors.add(cursor);
+    const pageUrl = new URL(endpoint(input.baseUrl, "/models"));
+    pageUrl.searchParams.set("after_id", cursor);
+    pageUrl.searchParams.set("limit", "1000");
+    nextUrl = pageUrl.toString();
+  }
+  throw new Error(`Anthropic API /models 分页超过 ${MAX_MODEL_CATALOG_PAGES} 页安全预算，已停止读取；请检查渠道是否返回了重复分页。`);
 }
 
 async function invokeChat(
@@ -532,7 +558,7 @@ async function verifyHttpProvider(input: ModelProviderConnectorInput, protocol: 
   const checkedAt = nowIso();
   const steps: ModelProviderVerificationStep[] = [];
   const errors: ModelProviderVerificationError[] = [];
-  const catalogMode = input.catalogMode ?? "remote";
+  const catalogMode = activeCatalogMode();
   let remoteModels: ModelSummary[] = [];
   let remoteFailure = "";
 

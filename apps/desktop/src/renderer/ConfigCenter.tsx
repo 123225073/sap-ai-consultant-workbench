@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Archive, ArrowLeft, Database, Download, ExternalLink, Eye, EyeOff, FolderInput, KeyRound, PlugZap, Plus, RefreshCw, Save, ShieldCheck, Terminal, Trash2, Workflow } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent, type Ref } from "react";
+import { Archive, ArrowLeft, ChevronDown, Database, Download, ExternalLink, Eye, EyeOff, FolderInput, KeyRound, PlugZap, Plus, RefreshCw, Save, Search, ShieldCheck, Terminal, Trash2, Workflow } from "lucide-react";
 import type { AdtConfig, AdtVerificationReport, ApiProviderConfig, CodexCapabilitySummary, CodexVerificationReport, ConfigStatus, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuCliProfileSummary, FeishuVerificationReport, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 
 const statusLabels: Record<ConfigStatus, string> = {
@@ -119,6 +119,8 @@ function SecretInput({
   id,
   label,
   value,
+  hasValue,
+  inputRef,
   saved,
   show,
   onChange,
@@ -129,7 +131,9 @@ function SecretInput({
 }: {
   id: string;
   label: string;
-  value: string;
+  value?: string;
+  hasValue?: boolean;
+  inputRef?: Ref<HTMLInputElement>;
   saved: boolean;
   show: boolean;
   onChange: (value: string) => void;
@@ -138,7 +142,8 @@ function SecretInput({
   revealLabel: string;
   hideLabel: string;
 }) {
-  const toggleLabel = value
+  const containsValue = value !== undefined ? value.length > 0 : hasValue === true;
+  const toggleLabel = containsValue
     ? show ? hideLabel : revealLabel
     : saved ? "已保存密钥不可回显；输入新值后可显示" : revealLabel;
   return (
@@ -147,17 +152,39 @@ function SecretInput({
       <div className="secret-input-wrap phase27-secret-eye-toggle">
         <input
           id={id}
+          ref={inputRef}
           type={show ? "text" : "password"}
-          value={value}
+          {...(value === undefined ? {} : { value })}
           onChange={(event) => onChange(event.target.value)}
           placeholder={saved ? "********" : placeholder}
           autoComplete="new-password"
         />
-        <button type="button" className="secret-toggle-button" onClick={onToggle} disabled={!value} aria-label={toggleLabel} title={toggleLabel}>
+        <button type="button" className="secret-toggle-button" onClick={onToggle} disabled={!containsValue} aria-label={toggleLabel} title={toggleLabel}>
           {show ? <Eye size={16} /> : <EyeOff size={16} />}
         </button>
       </div>
     </label>
+  );
+}
+
+function EditableModelSelect({ value, options, onChange, listId }: { value: string; options: string[]; onChange: (value: string) => void; listId: string }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  return (
+    <div className="editable-model-select">
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder="留空时自动选择，也可以直接输入模型 ID"
+        list={listId}
+      />
+      <button type="button" onClick={() => inputRef.current?.showPicker()} disabled={options.length === 0} title={options.length > 0 ? "打开已获取的模型列表" : "测试渠道后可下拉选择模型"} aria-label="打开模型列表">
+        <ChevronDown size={16} />
+      </button>
+      <datalist id={listId}>
+        {options.map((modelId) => <option value={modelId} key={modelId} />)}
+      </datalist>
+    </div>
   );
 }
 
@@ -230,6 +257,7 @@ function reportModeLabel(mode: "fake" | "cli" | "http" | "adt" | null | undefine
 }
 
 function modelProviderStatusLabel(provider: ApiProviderConfig): string {
+  if (!provider.enabled) return "已停用";
   if (!provider.name.trim() || !provider.baseUrl.trim()) return "待填写";
   if (provider.modelSyncStatus === "failed" || provider.chatTestStatus === "failed") return "测试失败";
   if (provider.lastVerificationMode === "http" && provider.modelSyncStatus === "verified" && provider.chatTestStatus === "verified") {
@@ -581,9 +609,9 @@ function ModelProviderReportView({ provider, report }: { provider: ApiProviderCo
       {models.length > 0 ? (
         <div className="model-list">
           <div className="model-list-note">
-            <span>仅显示前 {Math.min(models.length, 8)} 个模型；标签来自模型名称推断，不代表能力已验证。</span>
+            <span>共 {models.length} 个模型，以下为渠道返回的完整目录；标签来自模型名称推断，不代表扩展能力已验证。</span>
           </div>
-          {models.slice(0, 8).map((model) => (
+          {models.map((model) => (
             <div className="model-row" key={model.id}>
               <strong title={model.id}>{model.displayName}</strong>
               <span>
@@ -730,7 +758,8 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const [adtEntry, setAdtEntry] = useState("");
   const [selectedAdtConnectionId, setSelectedAdtConnectionId] = useState(project?.config.activeAdtConnectionId ?? project?.config.adt.id ?? "");
   const [selectedProviderId, setSelectedProviderId] = useState(project?.config.apiProviders[0]?.id ?? "");
-  const [apiEntries, setApiEntries] = useState<Record<string, string>>({});
+  const [providerSearchQuery, setProviderSearchQuery] = useState("");
+  const apiInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const [feishuSecretEntry, setFeishuSecretEntry] = useState("");
   const [showAdtSecret, setShowAdtSecret] = useState(false);
   const [showApiSecrets, setShowApiSecrets] = useState<Record<string, boolean>>({});
@@ -795,7 +824,8 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
       : project?.config.activeAdtConnectionId ?? project?.config.adt.id ?? "");
     if (projectChanged) {
       setAdtEntry("");
-      setApiEntries({});
+      Object.values(apiInputRefs.current).forEach((input) => { if (input) input.value = ""; });
+      apiInputRefs.current = {};
       setFeishuSecretEntry("");
       setShowAdtSecret(false);
       setShowApiSecrets({});
@@ -881,12 +911,12 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   }
 
   const provider = draft.apiProviders.find((item) => item.id === selectedProviderId) ?? draft.apiProviders[0];
+  const filteredProviders = draft.apiProviders.filter((item) => item.name.toLowerCase().includes(providerSearchQuery.trim().toLowerCase()));
   const adtConnections = draft.adtConnections.length > 0 ? draft.adtConnections : [draft.adt];
   const adtConnection = adtConnections.find((item) => item.id === selectedAdtConnectionId)
     ?? adtConnections.find((item) => item.id === draft.activeAdtConnectionId)
     ?? adtConnections[0];
   const sapProject = project.sapVersion !== "UNKNOWN";
-  const apiEntry = apiEntries[provider.id] ?? "";
   const showApiSecret = showApiSecrets[provider.id] === true;
   const apiSecretDirty = apiSecretDirtyByProvider[provider.id] === true;
   const modelReport = modelReports[provider.id] ?? null;
@@ -1069,7 +1099,14 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   }
 
   function addModelProvider() {
-    if (!draft || draft.apiProviders.length >= 6) return;
+    if (!draft) return;
+    if (apiSecretDirty && !window.confirm("当前渠道的新 API Key 尚未保存。添加新渠道会清空这次输入，确定继续吗？")) return;
+    if (apiSecretDirty) {
+      const input = apiInputRefs.current[provider.id];
+      if (input) input.value = "";
+      setApiSecretDirtyByProvider((current) => ({ ...current, [provider.id]: false }));
+      setShowApiSecrets((current) => ({ ...current, [provider.id]: false }));
+    }
     const nextProvider = createModelProvider(draft.apiProviders.length + 1);
     updateDraft((current) => ({ ...current, apiProviders: [...current.apiProviders, nextProvider] }));
     setSelectedProviderId(nextProvider.id);
@@ -1085,7 +1122,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
     const remaining = draft.apiProviders.filter((item) => item.id !== provider.id);
     const next = remaining[Math.min(currentIndex, remaining.length - 1)];
     setSelectedProviderId(next.id);
-    setApiEntries((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== provider.id)));
+    apiInputRefs.current = Object.fromEntries(Object.entries(apiInputRefs.current).filter(([id]) => id !== provider.id));
     setApiSecretDirtyByProvider((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== provider.id)));
     setShowApiSecrets((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== provider.id)));
     setModelReports((current) => Object.fromEntries(Object.entries(current).filter(([id]) => id !== provider.id)));
@@ -1093,9 +1130,20 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   }
 
   function setCurrentApiEntry(value: string) {
-    setApiEntries((current) => ({ ...current, [provider.id]: value }));
     setApiSecretDirtyByProvider((current) => ({ ...current, [provider.id]: value.length > 0 }));
     setModelReports((current) => ({ ...current, [provider.id]: null }));
+  }
+
+  function selectModelProvider(providerId: string) {
+    if (providerId === provider.id) return;
+    if (apiSecretDirty && !window.confirm("当前渠道的新 API Key 尚未保存。切换渠道会清空这次输入，确定继续吗？")) return;
+    if (apiSecretDirty) {
+      const input = apiInputRefs.current[provider.id];
+      if (input) input.value = "";
+      setApiSecretDirtyByProvider((current) => ({ ...current, [provider.id]: false }));
+      setShowApiSecrets((current) => ({ ...current, [provider.id]: false }));
+    }
+    setSelectedProviderId(providerId);
   }
 
   async function saveAdtSettings() {
@@ -1136,7 +1184,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
 
   async function saveModelSettings() {
     if (!project || !draft || savingModel) return;
-    const secretValue = apiEntry;
+    const secretValue = apiInputRefs.current[provider.id]?.value ?? "";
     const providerId = provider.id;
     const savesApiKey = secretValue.length > 0 && apiSecretDirty;
     const hasOtherPendingApiSecrets = Object.entries(apiSecretDirtyByProvider).some(([id, dirty]) => id !== providerId && dirty);
@@ -1149,7 +1197,8 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
         const saved = await onSaveSecret(project.id, { target: { kind: "api-key", providerId }, value: secretValue });
         if (!saved) return;
         setApiSecretDirtyByProvider((current) => ({ ...current, [providerId]: false }));
-        setApiEntries((current) => ({ ...current, [providerId]: "" }));
+        const input = apiInputRefs.current[providerId];
+        if (input) input.value = "";
         setShowApiSecrets((current) => ({ ...current, [providerId]: false }));
       }
       const otherSecretNote = hasOtherPendingApiSecrets ? " 其他模型渠道的新 API Key 输入仍未提交。" : "";
@@ -1562,22 +1611,30 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
               <div className="model-channel-toolbar">
                 <div>
                   <strong>模型渠道</strong>
-                  <span>{draft.apiProviders.length} / 6</span>
+                  <span>{draft.apiProviders.length} 个</span>
                 </div>
                 <div className="model-channel-actions">
-                  <button type="button" onClick={addModelProvider} disabled={draft.apiProviders.length >= 6 || savingAnyConfig} title={draft.apiProviders.length >= 6 ? "当前项目最多配置 6 个渠道" : "添加一个新的模型渠道"}>
+                  <label className="model-channel-enabled" title="关闭后，此渠道的模型不会出现在 Chat 或 Work 的模型选择器中">
+                    <input type="checkbox" checked={provider.enabled} onChange={(event) => updateProvider("enabled", event.target.checked)} />
+                    <span>{provider.enabled ? "已启用" : "已停用"}</span>
+                  </label>
+                  <button type="button" onClick={addModelProvider} disabled={savingAnyConfig} title="添加一个新的模型渠道">
                     <Plus size={15} />添加渠道
                   </button>
                   <button className="icon-button danger-icon-button" type="button" onClick={removeModelProvider} disabled={draft.apiProviders.length <= 1 || savingAnyConfig} title="移除当前模型渠道" aria-label="移除当前模型渠道"><Trash2 size={16} /></button>
                 </div>
               </div>
+              {draft.apiProviders.length > 5 ? <label className="model-channel-search">
+                <Search size={14} />
+                <input value={providerSearchQuery} onChange={(event) => setProviderSearchQuery(event.target.value)} placeholder="搜索模型渠道" aria-label="搜索模型渠道" />
+              </label> : null}
               <div className="model-channel-list" role="group" aria-label="模型渠道">
-                {draft.apiProviders.map((item) => (
+                {filteredProviders.map((item) => (
                   <button
                     type="button"
                     aria-pressed={item.id === provider.id}
                     className={item.id === provider.id ? "active" : ""}
-                    onClick={() => setSelectedProviderId(item.id)}
+                    onClick={() => selectModelProvider(item.id)}
                     key={item.id}
                     title={`编辑 ${item.name || "未命名渠道"}`}
                   >
@@ -1585,71 +1642,44 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
                     <small>{modelProviderStatusLabel(item)}</small>
                   </button>
                 ))}
+                {filteredProviders.length === 0 ? <p className="model-channel-empty">没有匹配的模型渠道。</p> : null}
               </div>
             </div>
 
-            <div className="config-fields">
-              <label>
-                <span>渠道名称</span>
-                <input value={provider.name} onChange={(event) => updateProvider("name", event.target.value)} />
-              </label>
-              <label>
-                <span>接口协议</span>
-                <select value={provider.providerType} onChange={(event) => updateProvider("providerType", event.target.value)}>
-                  <option value="openai-compatible">OpenAI Compatible</option>
-                  <option value="anthropic-compatible">Anthropic Compatible</option>
-                  <option value="deepseek">DeepSeek（OpenAI 协议）</option>
-                  <option value="custom">自定义 OpenAI 协议</option>
-                </select>
-              </label>
-              <label>
-                <span>Base URL</span>
-                <input value={provider.baseUrl} onChange={(event) => updateProvider("baseUrl", event.target.value)} placeholder="例如：https://api.example.com/v1" />
-              </label>
-              <label>
-                <span>模型目录方式</span>
-                <select value={provider.catalogMode ?? "remote-with-manual-fallback"} onChange={(event) => updateProvider("catalogMode", event.target.value)}>
-                  <option value="remote-with-manual-fallback">自动获取，失败时使用手工模型</option>
-                  <option value="remote">仅自动获取模型</option>
-                  <option value="manual">仅使用手工模型</option>
-                </select>
-              </label>
-              {(provider.catalogMode ?? "remote-with-manual-fallback") !== "remote" ? <label>
-                <span>手工模型 ID</span>
-                <textarea
-                  value={(provider.manualModelIds ?? []).join("\n")}
-                  onChange={(event) => updateProvider("manualModelIds", event.target.value.split(/[\n,]/).map((item) => item.trim()).filter(Boolean))}
-                  placeholder="每行一个模型，例如 claude-sonnet-4-6"
-                  rows={3}
+            <div className="model-core-fields">
+              <div className="config-fields">
+                <label>
+                  <span>渠道名称</span>
+                  <input value={provider.name} onChange={(event) => updateProvider("name", event.target.value)} placeholder="例如：公司 OpenAI 中转" />
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <input value={provider.baseUrl} onChange={(event) => updateProvider("baseUrl", event.target.value)} placeholder="例如：https://api.example.com/v1" />
+                </label>
+                <SecretInput
+                  key={provider.id}
+                  id={`api-key-input-${provider.id}`}
+                  label="API Key"
+                  hasValue={apiSecretDirty}
+                  inputRef={(element) => { apiInputRefs.current[provider.id] = element; }}
+                  saved={modelCredentialSaved}
+                  show={showApiSecret}
+                  onChange={setCurrentApiEntry}
+                  onToggle={() => setShowApiSecrets((current) => ({ ...current, [provider.id]: !showApiSecret }))}
+                  placeholder="请输入 API Key"
+                  revealLabel="显示 API Key"
+                  hideLabel="隐藏 API Key"
                 />
-              </label> : null}
+              </div>
               <label>
                 <span>测试模型</span>
-                <input
+                <EditableModelSelect
                   value={provider.testModelId ?? ""}
-                  onChange={(event) => updateProvider("testModelId", event.target.value)}
-                  placeholder="可手工输入；留空时自动选择"
-                  list={`test-model-options-${provider.id}`}
+                  onChange={(value) => updateProvider("testModelId", value)}
+                  listId={`test-model-options-${provider.id}`}
+                  options={[...new Set([...(provider.manualModelIds ?? []), ...provider.models.map((model) => model.id)])]}
                 />
-                <datalist id={`test-model-options-${provider.id}`}>
-                  {[...new Set([...(provider.manualModelIds ?? []), ...provider.models.map((model) => model.id)])].map((modelId) => <option value={modelId} key={modelId} />)}
-                </datalist>
-              </label>
-              <SecretInput
-                id={`api-key-input-${provider.id}`}
-                label="API Key"
-                value={apiEntry}
-                saved={modelCredentialSaved}
-                show={showApiSecret}
-                onChange={setCurrentApiEntry}
-                onToggle={() => setShowApiSecrets((current) => ({ ...current, [provider.id]: !showApiSecret }))}
-                placeholder="请输入 API Key"
-                revealLabel="显示 API Key"
-                hideLabel="隐藏 API Key"
-              />
-              <label className="checkbox-row setup-checkbox">
-                <span>通过验证后用于案件</span>
-                <input type="checkbox" checked={provider.enabled} onChange={(event) => updateProvider("enabled", event.target.checked)} />
+                <small>自动读取模型列表后可下拉选择；也可以直接输入列表中没有的模型 ID。</small>
               </label>
               <div className="secret-state-line">
                 <span>API Key 状态</span>
@@ -1665,6 +1695,19 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
             <details className="setup-advanced-details phase27-advanced-details">
               <summary>高级设置</summary>
               <div className="config-fields">
+                <label>
+                  <span>接口协议</span>
+                  <select value={provider.providerType} onChange={(event) => updateProvider("providerType", event.target.value)}>
+                    <option value="openai-compatible">OpenAI Compatible</option>
+                    <option value="anthropic-compatible">Anthropic Compatible</option>
+                    <option value="deepseek">DeepSeek（OpenAI 协议）</option>
+                    <option value="custom">自定义 OpenAI 协议</option>
+                  </select>
+                </label>
+                <label>
+                  <span>模型目录</span>
+                  <input value="自动读取 /models；测试模型允许手工输入" readOnly />
+                </label>
                 <label>
                   <span>密钥保存时间</span>
                   <input value={formatSavedAt(provider.credential.updatedAt)} readOnly />
@@ -1809,7 +1852,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
           </div>
           <div className="feishu-action-bar local-capability-actions">
             <button type="button" onClick={() => void scanLocalAi()} disabled={scanningLocalAi || installingLocalAi}><RefreshCw size={16} />{scanningLocalAi ? "扫描中" : "重新扫描"}</button>
-            {codexDiscovery && !codexDiscovery.installed ? <button type="button" onClick={() => void installLocalAi()} disabled={installingLocalAi || scanningLocalAi}><Download size={16} />{installingLocalAi ? "安装中" : "安装 Codex CLI"}</button> : null}
+            <button type="button" onClick={() => void installLocalAi()} disabled={installingLocalAi || scanningLocalAi}><Download size={16} />{installingLocalAi ? "处理中" : codexDiscovery?.installed ? "修复或更新 Codex CLI" : "安装 Codex CLI"}</button>
           </div>
           <div className="config-fields">
             <label>

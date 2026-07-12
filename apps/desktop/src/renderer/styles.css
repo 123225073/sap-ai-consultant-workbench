@@ -1326,9 +1326,14 @@ button {
 }
 
 .model-select.ready {
-  border-color: #a7d8bf;
-  background: #f0fdf4;
-  color: #166534;
+  border-color: #cbd5e1;
+  background: #ffffff;
+  color: #1f2937;
+}
+
+.model-select.ready:hover {
+  border-color: #8bb6ff;
+  background: #f4f8ff;
 }
 
 .model-picker-panel {
@@ -1466,6 +1471,13 @@ button {
   background: #f4f8ff;
 }
 
+.model-picker-list button:disabled {
+  border-color: #e5e9f0;
+  background: #f8fafc;
+  opacity: 0.62;
+  cursor: not-allowed;
+}
+
 .model-picker-list button span {
   min-width: 0;
   overflow: hidden;
@@ -1498,6 +1510,16 @@ button {
   display: flex;
   gap: 8px;
   align-items: center;
+}
+
+.composer-model-actions {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.composer-model-actions .model-picker-panel {
+  right: 0;
+  left: auto;
 }
 
 .icon-button {
@@ -2463,6 +2485,91 @@ button {
   gap: 6px;
 }
 
+.model-channel-enabled {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-right: 1px solid #d8dee8;
+  padding-right: 12px;
+  color: #374151;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.model-channel-enabled input {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+}
+
+.model-core-fields {
+  display: grid;
+  gap: 14px;
+  border-top: 1px solid #e5e9f0;
+  border-bottom: 1px solid #e5e9f0;
+  padding: 18px 0;
+}
+
+.model-core-fields > label {
+  display: grid;
+  gap: 7px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.model-core-fields > label input {
+  width: 100%;
+  min-width: 0;
+  height: 38px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 10px;
+  background: #ffffff;
+  color: #111827;
+  outline: none;
+}
+
+.model-core-fields > label small {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.editable-model-select {
+  position: relative;
+  min-width: 0;
+}
+
+.editable-model-select input {
+  padding-right: 42px;
+}
+
+.editable-model-select button {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  border: 0;
+  border-radius: 6px;
+  padding: 0;
+  background: transparent;
+  color: #64748b;
+}
+
+.editable-model-select button:hover:not(:disabled) {
+  background: #eef2f7;
+  color: #1d4ed8;
+}
+
+.editable-model-select button:disabled {
+  color: #cbd5e1;
+  cursor: not-allowed;
+}
+
 .model-channel-toolbar .danger-icon-button {
   width: 30px;
   min-width: 30px;
@@ -2512,6 +2619,35 @@ button {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: 6px;
+  max-height: 236px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.model-channel-search {
+  min-height: 36px;
+  margin-top: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #d8dee8;
+  border-radius: 7px;
+  padding: 0 10px;
+  color: #94a3b8;
+}
+
+.model-channel-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+}
+
+.model-channel-empty {
+  margin: 4px 0;
+  color: #6b7280;
+  font-size: 12px;
 }
 
 .model-channel-list button {
@@ -4467,6 +4603,17 @@ select:focus-visible,
 .model-select {
   max-width: min(360px, 42vw);
   padding: 0 9px;
+}
+
+.model-select.ready {
+  border-color: #cbd5e1;
+  background: #ffffff;
+  color: #111827;
+}
+
+.model-select.ready:hover {
+  border-color: #8bb6ff;
+  background: #f8fbff;
 }
 
 .model-select > span,

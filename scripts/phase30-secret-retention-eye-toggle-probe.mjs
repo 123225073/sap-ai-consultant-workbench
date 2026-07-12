@@ -28,7 +28,7 @@ pass("dirtyFlagsGateVerification");
 assert(source.includes("show ? <Eye size={16} /> : <EyeOff size={16} />"), "secret eye icon should represent current visibility state");
 assert(source.includes('type={show ? "text" : "password"}'), "secret field type should still follow visibility state");
 assert(source.includes("aria-label={toggleLabel}"), "secret eye button should keep action-oriented accessibility labels");
-assert(source.includes("disabled={!value}"), "saved secrets must not be revealable when the field has no new input");
+assert(source.includes("disabled={!containsValue}"), "saved secrets must not be revealable when the field has no new input");
 pass("eyeIconMatchesCurrentState");
 
 const saveAdtStart = source.indexOf("async function saveAdtSettings");
@@ -50,7 +50,7 @@ assert(saveModelStart > 0 && saveModelEnd > saveModelStart, "saveModelSettings b
 assert(saveModelBlock.includes("apiSecretDirty"), "saveModelSettings should only save changed API key");
 assert(saveModelBlock.includes('const configSaved = await saveCurrentSection("models");'), "saveModelSettings should capture the model section save result");
 assert(saveModelBlock.includes("if (!configSaved) return;"), "saveModelSettings must not save API key when config save fails");
-assert(saveModelBlock.includes('setApiEntries((current) => ({ ...current, [providerId]: "" }))'), "saveModelSettings must clear the selected API key after saving");
+assert(saveModelBlock.includes('if (input) input.value = ""'), "saveModelSettings must clear the selected API key after saving");
 assert(saveModelBlock.includes("setShowApiSecrets"), "saveModelSettings must hide the selected API key after saving");
 assert(saveModelBlock.includes("setApiSecretDirtyByProvider"), "saveModelSettings should mark the selected API key clean after saving");
 pass("apiKeyClearedAfterSave");
@@ -64,7 +64,7 @@ const effectEnd = source.indexOf("}, [project?.id", effectStart);
 const projectEffectBlock = source.slice(effectStart, effectEnd);
 assert(projectEffectBlock.includes("projectChanged"), "secret clearing should be limited to project changes");
 assert(projectEffectBlock.includes('setAdtEntry("")'), "project change should clear SAP password field");
-assert(projectEffectBlock.includes("setApiEntries({});"), "project change should clear API key fields");
+assert(projectEffectBlock.includes("apiInputRefs.current = {};"), "project change should clear API key fields");
 pass("projectChangeStillClearsSecrets");
 
 assert(appSource.includes("输入框已清空"), "save notice should explain immediate secret clearing");

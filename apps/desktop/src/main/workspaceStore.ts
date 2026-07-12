@@ -97,6 +97,7 @@ const STARTER_PROJECT_ID = "local-workspace";
 const STARTER_CASE_ID = "inbox";
 const DEFAULT_CHAT_THREAD_ID = "daily-chat-default";
 const SCHEMA_VERSION = 2;
+const MAX_PROJECT_CONFIG_BYTES = 16 * 1024 * 1024;
 
 class IncompatibleStateVersionError extends Error {
   constructor(readonly foundVersion: number) {
@@ -905,7 +906,7 @@ function safeMessageModelId(value: unknown): string {
   if (typeof value !== "string") return "local-workflow";
   const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(trimmed)) return "local-workflow";
-  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password|secure-store|https?:\/\//i.test(trimmed)) {
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9_-]{16,}|api[_-]?key|token|secret|password|secure-store|https?:\/\//i.test(trimmed)) {
     return "local-workflow";
   }
   return trimmed;
@@ -920,20 +921,26 @@ function providerType(value: unknown): ProjectConfig["apiProviders"][number]["pr
 }
 
 function modelCatalogMode(value: unknown): NonNullable<ProjectConfig["apiProviders"][number]["catalogMode"]> {
-  return value === "manual" || value === "remote-with-manual-fallback" ? value : "remote";
+  void value;
+  return "remote-with-manual-fallback";
+}
+
+export function isChatCapableModel(model: ModelSummary | undefined): boolean {
+  if (!model?.capabilities.includes("chat")) return false;
+  return !/(embedding|embed|rerank|moderation|image|imagine|video|sora|nano-banana|tts|speech|audio|whisper)/i.test(model.id);
 }
 
 function normalizedManualModelId(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().replace(/[\u0000-\u001f\u007f]/g, "");
   if (!/^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,119}$/.test(normalized)) return null;
-  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|api[_-]?key|token|secret|password/i.test(normalized)) return null;
+  if (/bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9_-]{16,}|api[_-]?key|token|secret|password/i.test(normalized)) return null;
   return normalized;
 }
 
 function normalizeManualModelIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
-  return Array.from(new Set(value.map(normalizedManualModelId).filter((item): item is string => item !== null))).slice(0, 200);
+  return Array.from(new Set(value.map(normalizedManualModelId).filter((item): item is string => item !== null)));
 }
 
 function modelVerificationMode(value: unknown): ProjectConfig["apiProviders"][number]["lastVerificationMode"] {
@@ -1206,7 +1213,7 @@ function normalizeSecretHandle(value: unknown, kind: SecretKind): SecretHandle {
 
 function normalizeModels(value: unknown): ModelSummary[] {
   if (!Array.isArray(value)) return [];
-  return value.slice(0, 200).flatMap((item) => {
+  return value.flatMap((item) => {
     if (!item || typeof item !== "object") return [];
     const candidate = item as Partial<ModelSummary>;
     const id = text(candidate.id);
@@ -1251,6 +1258,7 @@ function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | nul
     content: text(candidate.content),
     taskMode: normalizeTaskMode(candidate.taskMode),
     modelId: safeMessageModelId(candidate.modelId),
+    providerId: typeof candidate.providerId === "string" ? safeId(candidate.providerId, "") || undefined : undefined,
     actionId: normalizeCaseActionId(candidate.actionId),
     permissionModeUsed: normalizeActionPermissionMode(candidate.permissionModeUsed),
     linkedFileIds,
@@ -1599,15 +1607,20 @@ export class WorkspaceStore {
         state.chatThreads.unshift(thread);
       }
       const hadUserMessages = thread.messages.some((item) => item.role === "user");
+      const actualModelId = assistantReply?.responseMode === "model-success"
+        ? assistantReply.modelId
+        : chatInput.modelId ?? "local-chat";
+      const actualProjectId = assistantReply?.responseMode === "model-success" ? assistantReply.projectId : chatInput.projectId;
+      const actualProviderId = assistantReply?.responseMode === "model-success" ? assistantReply.providerId : chatInput.providerId;
       const userMessage = createDailyChatMessage(
         "user",
         thread.id,
         chatInput.content,
-        chatInput.modelId ?? "local-chat",
-        chatInput.projectId && chatInput.providerId
+        actualModelId,
+        actualProjectId && actualProviderId
           ? {
-              projectId: chatInput.projectId,
-              providerId: chatInput.providerId,
+              projectId: actualProjectId,
+              providerId: actualProviderId,
               providerName: assistantReply?.providerName
             }
           : { responseMode: "local-record" }
@@ -1819,10 +1832,11 @@ export class WorkspaceStore {
     const runtimeContext = { existingFiles };
     syncProjectLocalStorage(project, currentCase);
     const persistedModelId = safeModelDraft ? safeMessageModelId(safeModelDraft.modelId) : "local-workflow";
+    const persistedProviderId = safeModelDraft ? workflowInput.providerId : undefined;
     const persistedModelDraft = safeModelDraft ? { ...safeModelDraft, modelId: persistedModelId } : undefined;
     const persistedInput = { ...workflowInput, modelId: persistedModelId };
     const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft, codexAssist, runtimeContext).generatedFiles;
-    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId, [], persistedInput.actionId ?? null, persistedInput.permissionMode);
+    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId, [], persistedInput.actionId ?? null, persistedInput.permissionMode, persistedProviderId);
     const assistantMessage = createCaseMessage(
       "assistant",
       currentCase.id,
@@ -1831,7 +1845,8 @@ export class WorkspaceStore {
       persistedModelId,
       previewFiles.map((file) => file.relativePath),
       persistedInput.actionId ?? null,
-      persistedInput.permissionMode
+      persistedInput.permissionMode,
+      persistedProviderId
     );
 
     currentCase.messages.push(userMessage, assistantMessage);
@@ -1939,7 +1954,7 @@ export class WorkspaceStore {
     const model = provider && requestedModelId
       ? provider.models.find((item) => item.id === requestedModelId) ?? null
       : null;
-    if (!provider || !model) return null;
+    if (!provider || !model || !isChatCapableModel(model)) return null;
 
     const files = await this.readCaseTreeForCase(project, currentCase);
     const safeOutputSummaries = await this.readSafeOutputSummariesForCase(project, currentCase, files);
@@ -2021,6 +2036,9 @@ export class WorkspaceStore {
 
   async saveProjectConfig(projectId: string, config: unknown): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
+    if (Buffer.byteLength(JSON.stringify(config), "utf8") > MAX_PROJECT_CONFIG_BYTES) {
+      throw new Error("项目配置超过 16 MB 安全预算，已停止保存；请减少异常模型目录或渠道数据后重试。");
+    }
     this.assertNoRawSecretFields(config);
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === projectId);
@@ -2948,7 +2966,7 @@ export class WorkspaceStore {
       "cookie",
       "secretvalue"
     ]);
-    const riskyValuePattern = /(bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9]{20,}|ghp_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{20,}|akia[0-9a-z]{16})/i;
+    const riskyValuePattern = /(bearer\s+[a-z0-9._-]{12,}|sk-[a-z0-9_-]{16,}|ghp_[a-z0-9]{20,}|github_pat_[a-z0-9_]{20,}|xox[baprs]-[a-z0-9-]{20,}|akia[0-9a-z]{16})/i;
 
     const visit = (current: unknown): void => {
       if (Array.isArray(current)) {
@@ -3071,10 +3089,24 @@ export class WorkspaceStore {
         docPermissionStatus: preserveVerification ? normalizeConfigStatus(feishu.docPermissionStatus, "pending-verification") : "pending-verification",
         lastCheckedAt: preserveVerification ? nullableIso(feishu.lastCheckedAt) : null
       },
-      apiProviders: providers.slice(0, 6).map((provider, index) => {
+      apiProviders: providers.map((provider, index) => {
         const id = uniqueSecretTargetId(provider.id, `provider-${index + 1}`, providerIds);
         const name = text(provider.name, `API 渠道 ${index + 1}`);
         const baseUrl = text(provider.baseUrl);
+        if (baseUrl) {
+          let parsedBaseUrl: URL;
+          try {
+            parsedBaseUrl = new URL(baseUrl);
+          } catch {
+            throw new Error(`模型渠道“${name}”的 Base URL 格式无效。`);
+          }
+          if (parsedBaseUrl.protocol !== "https:") {
+            throw new Error(`模型渠道“${name}”的 Base URL 必须使用 HTTPS。`);
+          }
+          if (parsedBaseUrl.username || parsedBaseUrl.password || parsedBaseUrl.search || parsedBaseUrl.hash) {
+            throw new Error(`模型渠道“${name}”的 Base URL 不能包含账号、密码、查询参数或片段。`);
+          }
+        }
         const existingProvider = existingConfig?.apiProviders?.find((item) => item.id === id);
         const models = preserveVerification ? normalizeModels(provider.models) : [];
         const lastVerifiedModelId = preserveVerification && typeof provider.lastVerifiedModelId === "string" && models.some((model) => model.id === provider.lastVerifiedModelId)

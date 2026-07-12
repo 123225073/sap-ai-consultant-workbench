@@ -222,7 +222,7 @@ try {
   state = await store.saveProjectConfig(project.id, config);
   project = state.projects.find((item) => item.id === state.activeProjectId);
   let savedProvider = project.config.apiProviders[0];
-  assert(savedProvider.catalogMode === "manual", "catalogMode was not saved");
+  assert(savedProvider.catalogMode === "remote-with-manual-fallback", "legacy catalogMode was not migrated to automatic catalog with manual fallback");
   assert(JSON.stringify(savedProvider.manualModelIds) === JSON.stringify(["claude-manual", "claude-second"]), "manual model IDs were not normalized");
   assert(savedProvider.testModelId === "claude-manual", "testModelId was not saved");
 

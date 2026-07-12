@@ -69,7 +69,7 @@ assert(modelConnector.includes("generateDailyChat"), "model connector daily chat
 assert(modelConnector.includes("input.history ?? []") && mainSource.includes("getDailyChatModelHistory"), "daily chat must send bounded thread history to the selected model");
 assert(workspaceStore.includes("slice(-12)") && workspaceStore.includes("totalLength + content.length > 12000"), "daily chat history bounds are missing");
 assert(workspaceStore.includes("message.projectId === projectId") && workspaceStore.includes("message.providerId === providerId") && workspaceStore.includes("message.modelId === modelId"), "daily chat history must be isolated by project, provider, and model");
-assert(mainSource.includes("request.threadId, request.projectId, provider.id, modelId"), "daily chat history isolation keys are not passed from main");
+assert(mainSource.includes("request.threadId, projectId, provider.id, activeModelId"), "daily chat history isolation keys are not passed from main");
 assert(modelConnector.includes("不要声称已读取本机文件、SAP、飞书或案件资料"), "daily chat system boundary prompt missing");
 assert(preloadSource.includes("createDailyChatThread") && preloadSource.includes("appendDailyChatMessage"), "preload daily chat bridge missing");
 assert(rendererTypes.includes("switchDailyChatThread") && rendererTypes.includes("AppendDailyChatMessageInput"), "renderer daily chat bridge type missing");

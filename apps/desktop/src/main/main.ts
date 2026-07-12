@@ -6,7 +6,7 @@ import { createFeishuCliConnector, createFeishuValidationFailureReport, discover
 import { createCodexCliConnector, createCodexValidationFailureReport, type CodexCliConnectorInput } from "./codexCliConnector";
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
-import { parseAppendDailyChatMessageInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
+import { isChatCapableModel, parseAppendDailyChatMessageInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { readControlledKnowledgeTextFile } from "./controlledTextFileImportService";
 import {
@@ -28,7 +28,7 @@ const SENSITIVE_ERROR_PATTERNS = [
   /cookie:\s*[^\s]+/gi,
   /x-csrf-token:\s*[^\s]+/gi,
   /secure-store:sec_[a-f0-9]{32}/gi,
-  /sk-[a-z0-9]{20,}/gi,
+  /sk-[a-z0-9_-]{16,}/gi,
   /api[_-]?key\s*[:=]\s*[^\s]+/gi,
   /app[_-]?secret\s*[:=]\s*[^\s]+/gi,
   /appsecret\s*[:=]\s*[^\s]+/gi,
@@ -89,6 +89,11 @@ async function runCaseWorkflowExclusive<T>(key: string, operation: () => Promise
 function safeErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : "本地工作台操作失败。";
   return SENSITIVE_ERROR_PATTERNS.reduce((message, pattern) => message.replace(pattern, "[已脱敏]"), raw);
+}
+
+function mayRetryWithVerifiedModel(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /HTTP (?:429|500|502|503|504)\b|超时|连接重置|ECONNRESET|ETIMEDOUT/i.test(message);
 }
 
 function lifecycleErrorCode(error: unknown): string {
@@ -185,7 +190,7 @@ function modelProviderInputWithoutKey(provider: ApiProviderConfig): Omit<ModelPr
     name: provider.name,
     providerType: provider.providerType,
     baseUrl: provider.baseUrl,
-    catalogMode: provider.catalogMode ?? "remote",
+    catalogMode: "remote-with-manual-fallback",
     testModelId: provider.testModelId ?? "",
     manualModelIds: provider.manualModelIds ?? []
   };
@@ -664,10 +669,10 @@ async function installLocalAiCapabilityWithConsent(event: IpcMainInvokeEvent, in
   const parsed = parseLocalAiInstallInput(input);
   const options = {
     type: "question" as const,
-    title: "确认安装 Codex CLI",
-    message: "是否允许工作台在本机安装 Codex CLI？",
-    detail: "确认后将通过官方 npm install -g @openai/codex 安装。取消不会报错，也不会影响 Work、Chat、SAP、模型、规范或知识库等核心功能。",
-    buttons: ["取消", "确认安装"],
+    title: "确认修复或更新 Codex CLI",
+    message: "是否允许工作台安装、修复或更新 Codex CLI？",
+    detail: "确认后将通过官方 npm install -g @openai/codex 安装最新可用版本。取消不会报错，也不会影响 Work、Chat、SAP、模型、规范或知识库等核心功能。",
+    buttons: ["取消", "确认修复或更新"],
     defaultId: 1,
     cancelId: 0,
     noLink: true
@@ -772,16 +777,33 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         providerId: prepared.providerId
       });
       const connector = createModelProviderConnector(prepared.baseUrl, prepared.providerType);
-      const draft = await connector.generateSafeDraft({
+      let emittedDelta = false;
+      const generate = (modelId: string) => connector.generateSafeDraft({
         id: prepared.providerId,
         name: prepared.providerName,
         providerType: prepared.providerType,
         baseUrl: prepared.baseUrl,
         apiKey,
-        modelId: prepared.modelId,
+        modelId,
         context: prepared.context,
-        onDelta: onDelta ? (delta) => onDelta(delta, prepared.providerName, prepared.modelId) : undefined
+        onDelta: onDelta ? (delta) => {
+          emittedDelta = true;
+          onDelta(delta, prepared.providerName, modelId);
+        } : undefined
       });
+      let draft: Awaited<ReturnType<typeof generate>>;
+      try {
+        draft = await generate(prepared.modelId);
+      } catch (error) {
+        const config = await store.getProjectConfig(prepared.projectId);
+        const provider = config.apiProviders.find((item) => item.id === prepared.providerId);
+        const fallbackModelId = provider?.lastVerifiedModelId;
+        if (!emittedDelta && fallbackModelId && fallbackModelId !== prepared.modelId && mayRetryWithVerifiedModel(error)) {
+          draft = await generate(fallbackModelId);
+        } else {
+          throw error;
+        }
+      }
       modelDraft = {
         status: "success",
         providerName: safeModelDraftDisplayValue("模型渠道", prepared.providerName, "已验证模型渠道"),
@@ -836,28 +858,47 @@ function isProviderReadyForDailyChat(provider: ApiProviderConfig): boolean {
 async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore: SecureSecretStore, request: AppendDailyChatMessageInput, onDelta?: ModelDeltaHandler): Promise<DailyChatAssistantReply | undefined> {
   if (!request.projectId || !request.providerId || !request.content.trim()) return undefined;
   try {
-    const config = await store.getProjectConfig(request.projectId);
+    const projectId = request.projectId;
+    const config = await store.getProjectConfig(projectId);
     const provider = config.apiProviders.find((item) => item.id === request.providerId);
     if (!provider || !isProviderReadyForDailyChat(provider)) return undefined;
-    const modelId = request.modelId ?? provider.lastVerifiedModelId ?? provider.models[0]?.id;
-    if (!modelId || !provider.models.some((model) => model.id === modelId)) return undefined;
+    const modelId = request.modelId ?? provider.lastVerifiedModelId ?? provider.models.find(isChatCapableModel)?.id;
+    const selectedModel = provider.models.find((model) => model.id === modelId);
+    if (!modelId || !isChatCapableModel(selectedModel)) return undefined;
     await assertPublicModelEndpoint(provider.baseUrl);
-    const apiKey = await secretStore.resolveProjectSecret(request.projectId, { kind: "api-key", providerId: provider.id });
+    const apiKey = await secretStore.resolveProjectSecret(projectId, { kind: "api-key", providerId: provider.id });
     const connector = createModelProviderConnector(provider.baseUrl, provider.providerType);
-    const history = await store.getDailyChatModelHistory(request.threadId, request.projectId, provider.id, modelId);
-    const result = await connector.generateDailyChat({
-      ...modelProviderInputWithoutKey(provider),
-      apiKey,
-      modelId,
-      content: request.content,
-      history,
-      onDelta: onDelta ? (delta) => onDelta(delta, provider.name, modelId) : undefined
-    });
+    let emittedDelta = false;
+    const generate = async (activeModelId: string) => {
+      const history = await store.getDailyChatModelHistory(request.threadId, projectId, provider.id, activeModelId);
+      return connector.generateDailyChat({
+        ...modelProviderInputWithoutKey(provider),
+        apiKey,
+        modelId: activeModelId,
+        content: request.content,
+        history,
+        onDelta: onDelta ? (delta) => {
+          emittedDelta = true;
+          onDelta(delta, provider.name, activeModelId);
+        } : undefined
+      });
+    };
+    let result: Awaited<ReturnType<typeof generate>>;
+    try {
+      result = await generate(modelId);
+    } catch (error) {
+      const fallbackModelId = provider.lastVerifiedModelId;
+      if (!emittedDelta && fallbackModelId && fallbackModelId !== modelId && mayRetryWithVerifiedModel(error)) {
+        result = await generate(fallbackModelId);
+      } else {
+        throw error;
+      }
+    }
     return {
       content: result.content,
       modelId: result.modelId,
       responseMode: "model-success",
-      projectId: request.projectId,
+      projectId,
       providerId: provider.id,
       providerName: provider.name
     };
@@ -875,8 +916,11 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
 
 async function appendDailyChatMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown, onDelta?: ModelDeltaHandler): Promise<WorkbenchState> {
   const parsedInput = parseAppendDailyChatMessageInput(input);
-  const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, parsedInput, onDelta);
-  return store.appendDailyChatMessage(parsedInput, assistantReply);
+  const workflowKey = `daily-chat:${parsedInput.threadId ?? "active"}`;
+  return runCaseWorkflowExclusive(workflowKey, async () => {
+    const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, parsedInput, onDelta);
+    return store.appendDailyChatMessage(parsedInput, assistantReply);
+  });
 }
 
 async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<SapObjectEvidenceResult> {

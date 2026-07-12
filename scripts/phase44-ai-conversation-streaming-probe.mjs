@@ -140,9 +140,10 @@ try {
     readFile("apps/desktop/src/main/caseWorkflowService.ts", "utf8")
   ]);
 
-  assert.match(app, /return provider\.models\.map\(\(model\)/, "会话模型选择器没有展示渠道的完整模型列表");
+  assert.match(app, /function enabledCatalogModelOptions[\s\S]*provider\.models\.map/, "会话模型选择器没有展示渠道完整模型目录");
+  assert.match(app, /disabled=\{!isChatModel\(option\.model\)\}/, "非文本模型没有在会话选择器中禁用");
   assert.doesNotMatch(app.slice(app.indexOf("function safeDraftModelOptions"), app.indexOf("function providerErrorStates")), /verifiedModelIds/, "模型选择器仍受单个测试模型白名单限制");
-  assert.match(main, /provider\.models\.some\(\(model\) => model\.id === modelId\)/, "main process 没有校验所选模型属于已获取列表");
+  assert.match(main, /isChatCapableModel\(selectedModel\)/, "main process 没有拒绝非文本对话模型");
   assert.doesNotMatch(main.slice(main.indexOf("function isProviderReadyForDailyChat"), main.indexOf("async function prepareDailyChatAssistantReply")), /verifiedModelIds/, "Daily Chat 仍把健康检查模型当作唯一白名单");
   assert.match(connector, /stream:\s*true/, "模型连接器没有开启真实流式协议");
   assert.match(security, /createSecureModelStreamRequester/, "流式请求没有复用受控 DNS 与 HTTPS 边界");
@@ -150,6 +151,7 @@ try {
   assert.match(rendererTypes, /appendDailyChatMessageStreaming/, "renderer 类型桥缺少 Daily Chat 流式方法");
   assert.match(rendererTypes, /appendMessageStreaming/, "renderer 类型桥缺少 Work 流式方法");
   assert.match(app, /StreamingTurnBubble/, "会话区缺少渐进式回复状态");
+  assert.match(app, /current\.contextKey === expectedContextKey/, "流式事件没有绑定到具体对话或案件");
   assert.match(caseWorkflow, /modelDraft\.content/, "Work 最终回复没有保留真实模型正文");
   assert.match(codex, /ok:\s*cliPassed\s*&&\s*loginPassed/, "Codex 本机可用状态仍错误依赖可选工程试跑");
   console.log("fullCatalogSelectionAndOptionalCodexProbe=ok");

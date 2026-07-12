@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import {
   Archive,
   BookOpen,
@@ -213,6 +213,7 @@ type ComposerModelOption = {
 
 type StreamingTurn = {
   scope: "daily-chat" | "case";
+  contextKey: string;
   userContent: string;
   assistantContent: string;
   providerName: string;
@@ -258,11 +259,20 @@ function providerModelStatus(provider: ApiProviderConfig): string | null {
   return null;
 }
 
-function safeDraftModelOptions(project: ProjectSummary | undefined): ComposerModelOption[] {
+function isChatModel(model: ModelSummary): boolean {
+  const nonChatModel = /(embedding|embed|rerank|moderation|image|imagine|video|sora|nano-banana|tts|speech|audio|whisper)/i;
+  return model.capabilities.includes("chat") && !nonChatModel.test(model.id);
+}
+
+function enabledCatalogModelOptions(project: ProjectSummary | undefined): ComposerModelOption[] {
   return (project?.config.apiProviders ?? []).flatMap((provider) => {
     if (!isProviderSafeForDraft(provider)) return [];
     return provider.models.map((model) => ({ key: modelOptionKey(provider.id, model.id), provider, model }));
   });
+}
+
+function safeDraftModelOptions(project: ProjectSummary | undefined): ComposerModelOption[] {
+  return enabledCatalogModelOptions(project).filter((option) => isChatModel(option.model));
 }
 
 function providerErrorStates(project: ProjectSummary | undefined): { provider: ApiProviderConfig; reason: string }[] {
@@ -270,6 +280,158 @@ function providerErrorStates(project: ProjectSummary | undefined): { provider: A
     const reason = providerModelStatus(provider);
     return reason ? [{ provider, reason }] : [];
   });
+}
+
+function ComposerModelPicker({
+  options,
+  providerErrors,
+  selected,
+  onSelect
+}: {
+  options: ComposerModelOption[];
+  providerErrors: { provider: ApiProviderConfig; reason: string }[];
+  selected: ComposerModelOption | null;
+  onSelect: (key: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [capabilityFilters, setCapabilityFilters] = useState<Exclude<ModelCapability, "chat">[]>([]);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const panelId = `model-picker-${selected?.provider.id ?? "none"}`;
+  const filteredOptions = useMemo(() => {
+    const normalized = searchQuery.trim().toLowerCase();
+    return options.filter((option) => {
+      const textMatched = !normalized || [
+        option.provider.name,
+        option.model.id,
+        option.model.displayName,
+        ...option.model.capabilities.map((capability) => capabilityLabels[capability])
+      ].join(" ").toLowerCase().includes(normalized);
+      const capabilityMatched = capabilityFilters.every((capability) => option.model.capabilities.includes(capability));
+      return textMatched && capabilityMatched;
+    });
+  }, [options, searchQuery, capabilityFilters]);
+  const groups = useMemo(() => {
+    const providerIds = [...new Set(filteredOptions.map((option) => option.provider.id))];
+    return providerIds.map((providerId) => ({
+      provider: filteredOptions.find((option) => option.provider.id === providerId)!.provider,
+      options: filteredOptions.filter((option) => option.provider.id === providerId)
+    }));
+  }, [filteredOptions]);
+
+  useEffect(() => {
+    if (!open) return;
+    searchRef.current?.focus();
+    const closePicker = (event: KeyboardEvent | PointerEvent) => {
+      if (event instanceof KeyboardEvent && event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event instanceof PointerEvent && !panelRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closePicker);
+    window.addEventListener("pointerdown", closePicker);
+    return () => {
+      window.removeEventListener("keydown", closePicker);
+      window.removeEventListener("pointerdown", closePicker);
+    };
+  }, [open]);
+
+  function toggleCapability(capability: Exclude<ModelCapability, "chat">) {
+    setCapabilityFilters((filters) => filters.includes(capability)
+      ? filters.filter((item) => item !== capability)
+      : [...filters, capability]);
+  }
+
+  return (
+    <div className="model-picker">
+      <button
+        ref={triggerRef}
+        type="button"
+        className={`model-select ${selected ? "ready" : "disabled"}`}
+        title={selected ? `${selected.provider.name} / ${selected.model.id}` : "没有已启用且验证通过的对话模型"}
+        aria-expanded={open}
+        aria-controls={panelId}
+        aria-haspopup="dialog"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <Bot size={16} />
+        <strong>{selected?.model.displayName ?? "选择模型"}</strong>
+        {selected ? <em>{selected.provider.name}</em> : null}
+        <ChevronDown size={15} />
+      </button>
+      {open ? (
+        <div ref={panelRef} id={panelId} className="model-picker-panel" role="dialog" aria-label="选择模型">
+          <div className="model-picker-search">
+            <Search size={15} />
+            <input
+              ref={searchRef}
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") event.preventDefault(); }}
+              placeholder="搜索模型或渠道"
+              aria-label="搜索模型"
+            />
+          </div>
+          <div className="model-filter-row" aria-label="按能力筛选">
+            {selectableCapabilities.map((capability) => (
+              <button type="button" className={capabilityFilters.includes(capability) ? "active" : ""} onClick={() => toggleCapability(capability)} key={capability}>
+                {capabilityLabels[capability]}
+              </button>
+            ))}
+          </div>
+          <div className="model-picker-current">
+            <span>当前模型</span>
+            <strong>{selected ? `${selected.provider.name} / ${selected.model.displayName}` : "尚未选择"}</strong>
+          </div>
+          <div className="model-picker-list">
+            {groups.length > 0 ? groups.map((group) => (
+              <section key={group.provider.id}>
+                <header>
+                  <span>{group.provider.name}</span>
+                  <small>{group.options.filter((option) => isChatModel(option.model)).length} 个可对话 / 共 {group.options.length} 个</small>
+                </header>
+                {group.options.map((option) => (
+                  <button
+                    type="button"
+                    className={option.key === selected?.key ? "active" : ""}
+                    onClick={() => {
+                      onSelect(option.key);
+                      setOpen(false);
+                      window.setTimeout(() => triggerRef.current?.focus(), 0);
+                    }}
+                    disabled={!isChatModel(option.model)}
+                    title={isChatModel(option.model) ? `选择 ${option.model.displayName}` : "该模型不支持文本对话，不能在消息输入区使用"}
+                    key={option.key}
+                  >
+                    <span>{option.model.displayName}</span>
+                    <small>{option.model.id}</small>
+                    <em>{isChatModel(option.model) ? option.model.capabilities.map((capability) => capabilityLabels[capability]).join(" / ") : "不可用于文本对话"}</em>
+                  </button>
+                ))}
+              </section>
+            )) : (
+              <div className="model-picker-empty">
+                <strong>没有匹配的可对话模型</strong>
+                <span>请清空筛选，或到配置中心启用并测试模型渠道。</span>
+              </div>
+            )}
+          </div>
+          {providerErrors.length > 0 ? (
+            <div className="model-provider-errors">
+              <strong>未启用或不可用渠道</strong>
+              {providerErrors.map((item) => <span key={item.provider.id}>{item.provider.name}：{item.reason}</span>)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFileNode[]; level?: number; selectedPath: string | null; onPreview: (node: CaseFileNode) => void }) {
@@ -407,9 +569,6 @@ function App() {
   const [codexAssistEnabled, setCodexAssistEnabled] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
-  const [modelPickerOpen, setModelPickerOpen] = useState(false);
-  const [modelSearchQuery, setModelSearchQuery] = useState("");
-  const [modelCapabilityFilters, setModelCapabilityFilters] = useState<ModelCapability[]>([]);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectSapVersion, setNewProjectSapVersion] = useState<NewProjectSapVersion>("S4");
   const [newProjectSystemLabel, setNewProjectSystemLabel] = useState("Local");
@@ -430,11 +589,15 @@ function App() {
   const newCaseInputRef = useRef<HTMLInputElement>(null);
   const workflowContextRef = useRef("");
   const messageDraftsRef = useRef(new Map<string, string>());
+  const modelSelectionsRef = useRef(new Map<string, string>());
 
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
   const activeChat = activeChatThread(state);
+  const activeConversationKey = activeView === "chat"
+    ? `chat:${activeChat?.id ?? "new"}`
+    : `case:${project?.id ?? ""}:${currentCase?.id ?? ""}`;
   const visibleProjects = useMemo(() => {
     return (state?.projects ?? [])
       .filter((item) => item.isVisible !== false)
@@ -463,31 +626,13 @@ function App() {
     [visibleProjects]
   );
   const chatGroups = useMemo(() => groupDailyChatThreads(state?.chatThreads ?? []), [state?.chatThreads]);
+  const catalogModelOptions = useMemo(() => enabledCatalogModelOptions(project), [project]);
   const safeDraftOptions = useMemo(() => safeDraftModelOptions(project), [project]);
+  const safeDraftOptionSignature = safeDraftOptions.map((option) => option.key).join("|");
   const modelProviderErrors = useMemo(() => providerErrorStates(project), [project]);
   const selectedSafeDraftModel = useMemo(() => {
     return safeDraftOptions.find((option) => option.key === selectedModelKey) ?? safeDraftOptions[0] ?? null;
   }, [safeDraftOptions, selectedModelKey]);
-  const filteredModelOptions = useMemo(() => {
-    const normalized = modelSearchQuery.trim().toLowerCase();
-    return safeDraftOptions.filter((option) => {
-      const textMatched = !normalized || [
-        option.provider.name,
-        option.provider.id,
-        option.model.id,
-        option.model.displayName,
-        ...option.model.capabilities.map((capability) => capabilityLabels[capability])
-      ].join(" ").toLowerCase().includes(normalized);
-      const capabilityMatched = modelCapabilityFilters.every((capability) => option.model.capabilities.includes(capability));
-      return textMatched && capabilityMatched;
-    });
-  }, [safeDraftOptions, modelSearchQuery, modelCapabilityFilters]);
-  const groupedModelOptions = useMemo(() => {
-    return project?.config.apiProviders.flatMap((provider) => {
-      const options = filteredModelOptions.filter((option) => option.provider.id === provider.id);
-      return options.length > 0 ? [{ provider, options }] : [];
-    }) ?? [];
-  }, [project, filteredModelOptions]);
   const adtReady = Boolean(
     project?.config.adt.readOnly &&
     project.config.adt.connectionStatus === "verified" &&
@@ -519,9 +664,29 @@ function App() {
   const selectedPreviewNode = useMemo(() => selectedPreviewPath ? flatFiles.find((node) => node.relativePath === selectedPreviewPath) ?? null : null, [flatFiles, selectedPreviewPath]);
 
   useEffect(() => {
-    if (!selectedModelKey || safeDraftOptions.some((option) => option.key === selectedModelKey)) return;
-    setSelectedModelKey(safeDraftOptions[0]?.key ?? "");
-  }, [safeDraftOptions, selectedModelKey]);
+    const rememberedKey = modelSelectionsRef.current.get(activeConversationKey) ?? "";
+    const priorModelKey = activeView === "chat"
+      ? (() => {
+          const lastModelReply = [...(activeChat?.messages ?? [])].reverse().find((item) => item.role === "assistant" && item.responseMode === "model-success");
+          return lastModelReply?.providerId ? modelOptionKey(lastModelReply.providerId, lastModelReply.modelId) : "";
+        })()
+      : (() => {
+          const lastModelReply = [...(currentCase?.messages ?? [])].reverse().find((item) => item.role === "assistant" && item.modelId !== "local-workflow");
+          if (!lastModelReply) return "";
+          return lastModelReply.providerId
+            ? modelOptionKey(lastModelReply.providerId, lastModelReply.modelId)
+            : safeDraftOptions.find((option) => option.model.id === lastModelReply.modelId)?.key ?? "";
+        })();
+    const preferredKey = safeDraftOptions.some((option) => option.key === rememberedKey) ? rememberedKey : priorModelKey;
+    setSelectedModelKey(safeDraftOptions.some((option) => option.key === preferredKey)
+      ? preferredKey
+      : safeDraftOptions[0]?.key ?? "");
+  }, [activeConversationKey, safeDraftOptionSignature]);
+
+  function selectComposerModel(key: string) {
+    modelSelectionsRef.current.set(activeConversationKey, key);
+    setSelectedModelKey(key);
+  }
 
   useEffect(() => {
     if (!codexAssistAvailable && codexAssistEnabled) {
@@ -548,7 +713,6 @@ function App() {
       setSapEvidenceName("");
       setSapEvidenceFunctionGroup("");
       setCodexAssistEnabled(false);
-      setModelPickerOpen(false);
     }
     workflowContextRef.current = contextKey;
   }, [activeView, activeChat?.id, project?.id, currentCase?.id]);
@@ -574,15 +738,6 @@ function App() {
   }, [newCaseProjectId, project?.id, visibleProjects]);
 
   useEffect(() => {
-    if (!modelPickerOpen) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setModelPickerOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [modelPickerOpen]);
-
-  useEffect(() => {
     const collapseContextPanel = () => {
       if (window.innerWidth <= 1180) setFilesPanelVisible(false);
     };
@@ -598,8 +753,16 @@ function App() {
     if (response.ok) {
       setState(response.data);
       const targetStillActive = response.data.activeProjectId === target.projectId && response.data.activeCaseId === target.caseId;
+      const completedProject = response.data.projects.find((item) => item.id === target.projectId);
+      const completedCase = completedProject?.cases.find((item) => item.id === target.caseId);
+      const reply = [...(completedCase?.messages ?? [])].reverse().find((item) => item.role === "assistant");
+      const fallbackModel = selectedSafeDraftModel && reply && reply.modelId !== selectedSafeDraftModel.model.id && reply.modelId !== "local-workflow"
+        ? reply.modelId
+        : null;
       if (targetStillActive) {
-        setNotice("当前工作文件夹及本地输出文件已更新。");
+        setNotice(fallbackModel
+          ? `所选模型暂时不可用，已自动改用同渠道已验证模型 ${fallbackModel}；当前工作文件夹已更新。`
+          : "当前工作文件夹及本地输出文件已更新。");
         return "active";
       }
       setNotice(`请求已完成，结果只写入发送时的工作文件夹「${target.caseTitle}」。`);
@@ -887,17 +1050,9 @@ function App() {
     }
   }
 
-  function toggleModelCapabilityFilter(capability: Exclude<ModelCapability, "chat">) {
-    setModelCapabilityFilters((filters) => (
-      filters.includes(capability)
-        ? filters.filter((item) => item !== capability)
-        : [...filters, capability]
-    ));
-  }
-
-  function receiveStreamEvent(event: AiConversationStreamEvent) {
+  function receiveStreamEvent(event: AiConversationStreamEvent, expectedContextKey: string) {
     if (event.phase !== "delta" || !event.delta) return;
-    setStreamingTurn((current) => current && current.scope === event.scope
+    setStreamingTurn((current) => current && current.scope === event.scope && current.contextKey === expectedContextKey
       ? {
           ...current,
           assistantContent: current.assistantContent + event.delta,
@@ -905,6 +1060,12 @@ function App() {
           modelId: event.modelId ?? current.modelId
         }
       : current);
+  }
+
+  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    event.currentTarget.form?.requestSubmit();
   }
 
   async function sendMessage() {
@@ -920,6 +1081,7 @@ function App() {
     setSendingMessage(true);
     try {
       if (activeView === "chat") {
+        const streamContextKey = `chat:${activeChat?.id ?? "new"}`;
         const chatInput: AppendDailyChatMessageInput = {
           threadId: activeChat?.id,
           content: message,
@@ -930,6 +1092,7 @@ function App() {
         if (selectedSafeDraftModel) {
           setStreamingTurn({
             scope: "daily-chat",
+            contextKey: streamContextKey,
             userContent: message,
             assistantContent: "",
             providerName: selectedSafeDraftModel.provider.name,
@@ -937,15 +1100,18 @@ function App() {
           });
         }
         const response = selectedSafeDraftModel
-          ? await bridge.appendDailyChatMessageStreaming(chatInput, receiveStreamEvent)
+          ? await bridge.appendDailyChatMessageStreaming(chatInput, (event) => receiveStreamEvent(event, streamContextKey))
           : await bridge.appendDailyChatMessage(chatInput);
         if (response.ok) {
           setState(response.data);
           setMessage("");
           const thread = response.data.chatThreads.find((item) => item.id === response.data.activeChatThreadId);
           const reply = thread?.messages[thread.messages.length - 1];
+          const usedFallbackModel = reply?.responseMode === "model-success" && selectedSafeDraftModel && reply.modelId !== selectedSafeDraftModel.model.id;
           setNotice(reply?.responseMode === "model-success"
-            ? `模型回复已保存为独立对话；渠道来自 ${reply.providerName ?? "当前 Project"}，内容未写入案件。`
+            ? usedFallbackModel
+              ? `所选模型暂时不可用，已自动改用同渠道已验证模型 ${reply.modelId}；回复已保存为独立对话。`
+              : `模型回复已保存为独立对话；渠道来自 ${reply.providerName ?? "当前 Project"}，内容未写入案件。`
             : reply?.responseMode === "model-failed"
               ? "模型调用失败；问题和失败原因已保存为本地日常对话记录。"
               : "日常对话已保存为本地记录；未写入 Project 或案件文件。");
@@ -960,6 +1126,7 @@ function App() {
         return;
       }
       const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
+      const streamContextKey = `case:${target.projectId}:${target.caseId}`;
       const caseInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
@@ -969,11 +1136,12 @@ function App() {
         actionId: null,
         permissionMode: actionPermissionMode,
         providerId: selectedSafeDraftModel?.provider.id,
-        codexAssistEnabled: codexAssistEnabled && codexAssistAvailable
+        codexAssistEnabled: false
       };
       if (selectedSafeDraftModel) {
         setStreamingTurn({
           scope: "case",
+          contextKey: streamContextKey,
           userContent: message,
           assistantContent: "",
           providerName: selectedSafeDraftModel.provider.name,
@@ -982,16 +1150,13 @@ function App() {
       }
       const sent = await applyCaseWorkflowResponse(
         selectedSafeDraftModel
-          ? bridge.appendMessageStreaming(caseInput, receiveStreamEvent)
+          ? bridge.appendMessageStreaming(caseInput, (event) => receiveStreamEvent(event, streamContextKey))
           : bridge.appendMessage(caseInput),
         target
       );
       setStreamingTurn(null);
       if (!sent) return;
       if (sent === "active") setMessage("");
-      if (sent === "active" && codexAssistEnabled && codexAssistAvailable) {
-        setNotice("当前案件已更新，Codex 工程辅助分析会出现在右侧 outputs 文件里。");
-      }
     } finally {
       setStreamingTurn(null);
       setSendingMessage(false);
@@ -1009,6 +1174,7 @@ function App() {
       return;
     }
     const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
+    const streamContextKey = `case:${target.projectId}:${target.caseId}`;
     setSendingMessage(true);
     try {
       const content = [
@@ -1033,6 +1199,7 @@ function App() {
       if (selectedSafeDraftModel) {
         setStreamingTurn({
           scope: "case",
+          contextKey: streamContextKey,
           userContent: message.trim() || `生成${selectedCaseAction.label}`,
           assistantContent: "",
           providerName: selectedSafeDraftModel.provider.name,
@@ -1041,7 +1208,7 @@ function App() {
       }
       const sent = await applyCaseWorkflowResponse(
         selectedSafeDraftModel
-          ? bridge.appendMessageStreaming(actionInput, receiveStreamEvent)
+          ? bridge.appendMessageStreaming(actionInput, (event) => receiveStreamEvent(event, streamContextKey))
           : bridge.appendMessage(actionInput),
         target
       );
@@ -1050,6 +1217,7 @@ function App() {
       if (sent === "active") {
         setMessage("");
         setCaseActionConfirmationVisible(false);
+        setCodexAssistEnabled(false);
         setNotice(`已执行「${selectedCaseAction.label}」，结果已保存到当前工作文件夹。`);
       }
     } finally {
@@ -1872,8 +2040,8 @@ function App() {
               {(activeChat?.messages ?? []).map((item) => (
                 <DailyChatBubble message={item} key={item.id} />
               ))}
-              {streamingTurn?.scope === "daily-chat" ? <StreamingTurnBubble turn={streamingTurn} /> : null}
-              {!activeChat?.messages.length && streamingTurn?.scope !== "daily-chat" ? (
+              {streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+              {!activeChat?.messages.length && !(streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}`) ? (
                 <article className="assistant-message daily-chat-empty">
                   <div className="run-time">独立对话 &gt;</div>
                   <p>直接输入日常问题即可。选择模型时只借用当前 Project 的授权渠道，不读取案件内容，也不写入案件文件。</p>
@@ -1882,20 +2050,11 @@ function App() {
             </div>
 
             <form className="composer daily-chat-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-              <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="日常对话输入" placeholder="直接提问，或先把想法记在这里；需要沉淀成果时再新建正式案件。" />
+              <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="日常对话输入" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
               <div className="composer-footer">
-                <div className="composer-tools">
-                  <span className="daily-chat-boundary"><MessageSquare size={15} />独立对话，不进入案件文件夹</span>
-                  {selectedSafeDraftModel ? (
-                    <label className="daily-model-control">
-                      <span>渠道模型</span>
-                      <select value={selectedModelKey || selectedSafeDraftModel.key} onChange={(event) => setSelectedModelKey(event.target.value)} aria-label="日常对话渠道和模型">
-                        {safeDraftOptions.map((option) => <option value={option.key} key={option.key}>{option.provider.name} / {option.model.displayName}</option>)}
-                      </select>
-                    </label>
-                  ) : <span className="daily-chat-boundary">本地记录</span>}
-                </div>
-                <div className="composer-actions">
+                <div className="composer-tools" />
+                <div className="composer-actions composer-model-actions">
+                  <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
                   <button type="submit" aria-label="发送日常对话" className="send-button" disabled={sendingMessage}>{sendingMessage ? <Bot size={18} /> : <Send size={18} />}</button>
                 </div>
               </div>
@@ -1925,7 +2084,7 @@ function App() {
             {(currentCase?.messages ?? []).map((item) => (
               <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
             ))}
-            {streamingTurn?.scope === "case" ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+            {streamingTurn?.scope === "case" && streamingTurn.contextKey === `case:${project?.id ?? ""}:${currentCase?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
 
           </div>
 
@@ -1949,7 +2108,7 @@ function App() {
                 </button>
               </div>
             ) : null}
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} aria-label="继续追问" placeholder={workComposerPlaceholder} />
+            <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="继续追问" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
             {caseActionConfirmationVisible ? (
               <div className="action-confirmation-preview" role="region" aria-label="案件动作确认">
                 <div className="action-confirmation-settings">
@@ -1967,124 +2126,32 @@ function App() {
                   </label>
                   <p>{selectedCaseAction.description}</p>
                 </div>
-                <div className="action-target-line"><span>保存到</span><code>{selectedCaseAction.outputPath}</code></div>
-                <div className="action-confirmation-buttons">
-                  <button type="button" onClick={() => setCaseActionConfirmationVisible(false)}>取消</button>
-                  <button type="button" className="primary" onClick={() => void runCaseAction()} disabled={sendingMessage}>{sendingMessage ? "生成中" : "开始生成"}</button>
-                </div>
-              </div>
-            ) : null}
-            <div className="composer-footer">
-              <div className="composer-tools">
-                <button type="button" className="case-action-run-button" onClick={() => setCaseActionConfirmationVisible((visible) => !visible)} disabled={sendingMessage} aria-expanded={caseActionConfirmationVisible} title="从当前案件生成笔记、说明书、流程图或候选知识">
-                  <WandSparkles size={15} />成果动作<ChevronDown size={14} />
-                </button>
                 {codexAssistAvailable ? <label className={`codex-assist-toggle ${codexAssistEnabled ? "active ready" : "ready"}`} title={codexAssistTitle}>
                   <input
                     type="checkbox"
                     checked={codexAssistEnabled}
                     disabled={sendingMessage}
                     onChange={(event) => setCodexAssistEnabled(event.target.checked)}
-                    aria-label="开启 Codex 工程辅助"
+                    aria-label="使用 Codex 工程辅助"
                   />
                   <Bot size={15} />
-                  <strong>Codex 辅助</strong>
+                  <strong>使用 Codex 工程辅助</strong>
                 </label> : null}
-              <div className="model-picker">
-                <button
-                  type="button"
-                  className={`model-select ${selectedSafeDraftModel ? "ready" : "disabled"}`}
-                  title={selectedSafeDraftModel ? `案件发送会尝试使用 ${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.id} 生成安全本地草稿` : "没有真实 HTTP 验证通过的模型渠道；发送时只生成本地草稿"}
-                  aria-expanded={modelPickerOpen}
-                  onClick={() => setModelPickerOpen((open) => !open)}
-                >
-                  {selectedSafeDraftModel ? (
-                    <>
-                      <span>渠道模型</span>
-                      <strong>{selectedSafeDraftModel.model.displayName}</strong>
-                      <em>{selectedSafeDraftModel.provider.name}</em>
-                    </>
-                  ) : (
-                    <>
-                      <span>未验证模型</span>
-                      <strong>使用本地草稿</strong>
-                    </>
-                  )}
-                  <ChevronDown size={15} />
+                <div className="action-target-line"><span>保存到</span><code>{selectedCaseAction.outputPath}</code></div>
+                <div className="action-confirmation-buttons">
+                  <button type="button" onClick={() => { setCaseActionConfirmationVisible(false); setCodexAssistEnabled(false); }}>取消</button>
+                  <button type="button" className="primary" onClick={() => void runCaseAction()} disabled={sendingMessage}>{sendingMessage ? "生成中" : "开始生成"}</button>
+                </div>
+              </div>
+            ) : null}
+            <div className="composer-footer">
+              <div className="composer-tools">
+                <button type="button" className="case-action-run-button" onClick={() => setCaseActionConfirmationVisible((visible) => { if (visible) setCodexAssistEnabled(false); return !visible; })} disabled={sendingMessage} aria-expanded={caseActionConfirmationVisible} title="从当前案件生成笔记、说明书、流程图或候选知识">
+                  <WandSparkles size={15} />成果动作<ChevronDown size={14} />
                 </button>
-                {modelPickerOpen ? (
-                  <div className="model-picker-panel" role="dialog" aria-label="选择模型">
-                    <div className="model-picker-search">
-                      <Search size={15} />
-                      <input
-                        value={modelSearchQuery}
-                        onChange={(event) => setModelSearchQuery(event.target.value)}
-                        onKeyDown={(event) => {
-                          if (event.key === "Enter") event.preventDefault();
-                        }}
-                        placeholder="搜索模型或渠道"
-                        aria-label="搜索模型"
-                      />
-                    </div>
-                    <div className="model-filter-row" aria-label="按能力筛选">
-                      {selectableCapabilities.map((capability) => (
-                        <button
-                          type="button"
-                          className={modelCapabilityFilters.includes(capability) ? "active" : ""}
-                          onClick={() => toggleModelCapabilityFilter(capability)}
-                          key={capability}
-                        >
-                          {capabilityLabels[capability]}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="model-picker-current">
-                      <span>当前选择</span>
-                      <strong>{selectedSafeDraftModel ? `${selectedSafeDraftModel.provider.name} / ${selectedSafeDraftModel.model.displayName}` : "本地草稿"}</strong>
-                    </div>
-                    <div className="model-picker-list">
-                      {groupedModelOptions.length > 0 ? groupedModelOptions.map((group) => (
-                        <section key={group.provider.id}>
-                          <header>
-                            <span>{group.provider.name}</span>
-                            <small>{group.provider.providerType} · 渠道已验证 · 模型已获取</small>
-                          </header>
-                          {group.options.map((option) => (
-                            <button
-                              type="button"
-                              className={option.key === selectedSafeDraftModel?.key ? "active" : ""}
-                              onClick={() => {
-                                setSelectedModelKey(option.key);
-                                setModelPickerOpen(false);
-                              }}
-                              key={option.key}
-                            >
-                              <span>{option.model.displayName}</span>
-                              <small>{option.model.id}</small>
-                              <em>{option.model.capabilities.map((capability) => capabilityLabels[capability]).join(" / ")}</em>
-                            </button>
-                          ))}
-                        </section>
-                      )) : (
-                        <div className="model-picker-empty">
-                          <strong>没有匹配的已验证模型</strong>
-                          <span>请清空搜索或能力筛选；如果仍没有结果，到配置中心验证 API 渠道。</span>
-                        </div>
-                      )}
-                    </div>
-                    {modelProviderErrors.length > 0 ? (
-                      <div className="model-provider-errors">
-                        <strong>不可用渠道</strong>
-                        {modelProviderErrors.slice(0, 4).map((item) => (
-                          <span key={item.provider.id}>{item.provider.name}：{item.reason}</span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
               </div>
-              </div>
-              <div className="composer-actions">
+              <div className="composer-actions composer-model-actions">
+                <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
                 <button type="submit" aria-label="保存到当前案件" className="send-button" disabled={sendingMessage}>{sendingMessage ? <Bot size={18} /> : <Send size={18} />}</button>
               </div>
             </div>

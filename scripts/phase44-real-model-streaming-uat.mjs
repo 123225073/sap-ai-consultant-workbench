@@ -95,7 +95,13 @@ try {
   await mkdir(outputRoot, { recursive: true });
 
   const state = JSON.parse(await readFile(path.join(sourceWorkspace, "app-state.json"), "utf8"));
-  const project = state.projects.find((item) => item.id === state.activeProjectId);
+  const project = state.projects.find((item) => item.isVisible !== false && item.config.apiProviders.some((provider) => (
+    provider.enabled
+    && provider.lastVerificationMode === "http"
+    && provider.modelSyncStatus === "verified"
+    && provider.chatTestStatus === "verified"
+    && provider.lastVerifiedModelId
+  )));
   const provider = project?.config.apiProviders.find((item) => (
     item.enabled
     && item.lastVerificationMode === "http"
@@ -144,12 +150,21 @@ try {
       element.dispatchEvent(new Event('input', { bubbles: true }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
     };
+    [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Work'))?.click();
+    await until(() => document.querySelector('.project-switch'));
+    const projectButton = [...document.querySelectorAll('.project-switch')].find((item) => item.textContent.includes(${JSON.stringify(project.name)}));
+    if (!projectButton) throw new Error('model-project-not-visible:' + [...document.querySelectorAll('.project-switch')].map((item) => item.textContent.trim()).join('|'));
+    projectButton.click();
+    await until(() => projectButton.closest('.project-card')?.classList.contains('active'));
     [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat'))?.click();
-    await until(() => document.querySelector('[aria-label="日常对话渠道和模型"]'));
-    const select = document.querySelector('[aria-label="日常对话渠道和模型"]');
-    const target = [...select.options].find((option) => option.value.endsWith(${JSON.stringify(`::${modelId}`)}));
-    if (!target) throw new Error('verified-model-not-in-selector');
-    setValue(select, target.value);
+    await until(() => document.querySelector('.daily-chat-composer .model-select'));
+    document.querySelector('.daily-chat-composer .model-select').click();
+    await until(() => document.querySelector('.daily-chat-composer .model-picker-panel'));
+    const modelButtons = [...document.querySelectorAll('.daily-chat-composer .model-picker-list button')];
+    const target = modelButtons.find((button) => button.querySelector('small')?.textContent === ${JSON.stringify(modelId)});
+    if (!target) throw new Error('verified-model-not-in-selector:' + modelButtons.map((button) => button.querySelector('small')?.textContent ?? '').join(','));
+    const selectedLabel = target.textContent;
+    target.click();
     const textarea = document.querySelector('[aria-label="日常对话输入"]');
     setValue(textarea, '请只回复：真实流式回测成功');
     window.__streamUat = { seen: false, maxChars: 0 };
@@ -177,8 +192,8 @@ try {
     const replies = [...document.querySelectorAll('.daily-chat-message')];
     const latest = replies.at(-1);
     return JSON.stringify({
-      optionCount: select.options.length,
-      selectedLabel: target.textContent,
+      optionCount: modelButtons.length,
+      selectedLabel,
       sawStreaming: window.__streamUat.seen,
       streamedChars: window.__streamUat.maxChars,
       finalLabel: latest?.querySelector('.run-time')?.textContent ?? '',

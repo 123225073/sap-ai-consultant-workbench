@@ -96,6 +96,17 @@ export type ModelHttpsRequestFactory = (
 
 const MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024;
 
+function modelHttpError(statusCode: number, apiLabel: string): Error {
+  if (statusCode === 401) return new Error(`HTTP 401：${apiLabel} 认证失败，请检查 API Key。`);
+  if (statusCode === 403) return new Error(`HTTP 403：当前账号无权使用 ${apiLabel} 或所选模型。`);
+  if (statusCode === 404) return new Error(`HTTP 404：${apiLabel} 或所选模型不存在。`);
+  if (statusCode === 429) return new Error(`HTTP 429：${apiLabel} 请求过于频繁或额度不足，请稍后重试。`);
+  if (statusCode === 500 || statusCode === 502 || statusCode === 503 || statusCode === 504) {
+    return new Error(`HTTP ${statusCode}：模型服务暂时不可用，${apiLabel} 请求未完成。`);
+  }
+  return new Error(`HTTP ${statusCode}：${apiLabel} 请求失败。`);
+}
+
 export function createSecureModelJsonRequester(
   resolver: ModelAddressResolver = resolveModelAddresses,
   requestFactory: ModelHttpsRequestFactory = httpsRequest
@@ -149,7 +160,7 @@ export function createSecureModelJsonRequester(
       response.on("end", () => {
         if (settled) return;
         if (statusCode < 200 || statusCode >= 300) {
-          finishReject(new Error(`HTTP ${statusCode}：${apiLabel} 请求失败。`));
+          finishReject(modelHttpError(statusCode, apiLabel));
           return;
         }
         try {
@@ -221,7 +232,7 @@ export function createSecureModelStreamRequester(
         }
         if (statusCode < 200 || statusCode >= 300) {
           response.resume();
-          finishReject(new Error(`HTTP ${statusCode}：${apiLabel} 请求失败。`));
+          finishReject(modelHttpError(statusCode, apiLabel));
           return;
         }
 
@@ -252,9 +263,13 @@ export function createSecureModelStreamRequester(
       });
       request.on("error", (caught) => {
         const message = caught instanceof Error ? caught.message : "";
-        finishReject(message.startsWith(apiLabel) || message.startsWith("HTTP ")
-          ? new Error(message)
-          : new Error(`${apiLabel} 流式网络连接失败。`));
+        const code = caught && typeof caught === "object" && "code" in caught ? String((caught as NodeJS.ErrnoException).code ?? "") : "";
+        const safeNetworkMessage = code === "ECONNRESET"
+          ? `${apiLabel} 流式连接重置。`
+          : code === "ETIMEDOUT"
+            ? `${apiLabel} 流式请求超时。`
+            : `${apiLabel} 流式网络连接失败。`;
+        finishReject(message.startsWith(apiLabel) || message.startsWith("HTTP ") ? new Error(message) : new Error(safeNetworkMessage));
       });
       if (options.body) request.write(options.body);
       request.end();

@@ -91,7 +91,7 @@ async function openCdp(webSocketDebuggerUrl) {
     send,
     evaluate: async (expression) => {
       const response = await send("Runtime.evaluate", {
-        expression,
+        expression: `globalThis.__phase43AwaitedEvaluation = (${expression})`,
         awaitPromise: true,
         returnByValue: true,
         userGesture: true
@@ -273,7 +273,7 @@ try {
   const chatBoundary = await evaluateJson(`({
     filesPanelAbsent: !document.querySelector('.files-panel'),
     heading: document.querySelector('.daily-chat-panel h1')?.textContent,
-    boundaryVisible: document.body.innerText.includes('独立对话，不进入案件文件夹')
+    boundaryVisible: document.querySelector('.daily-chat-panel .case-heading')?.textContent.includes('内容不进入案件')
   })`);
   assert(chatBoundary.filesPanelAbsent && chatBoundary.boundaryVisible, "Chat 不展示案件文件面板且明确保持独立");
   await capture("chat-independent-conversation");
@@ -346,7 +346,7 @@ try {
   const standardsState = await evaluateJson(`({
     heading: document.querySelector('.standards-main h1')?.textContent,
     categoryCount: document.querySelectorAll('.standards-category-list button').length,
-    hasDiff: document.body.innerText.includes('差异')
+    hasDiff: Boolean(document.querySelector('.standards-toolbar')?.textContent.includes('差异'))
   })`);
   assert(standardsState.heading === "规范中心" && standardsState.categoryCount >= 8 && standardsState.hasDiff, "规范中心可编辑、保存并展示差异");
   await capture("standards-saved-diff");

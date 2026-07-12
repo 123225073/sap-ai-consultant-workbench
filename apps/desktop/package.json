@@ -47,13 +47,15 @@
       "node_modules/@sqlite.org/sqlite-wasm/**/*"
     ],
     "directories": {
-      "output": "../../release/0.1.0"
+      "output": "../../release/0.1.0",
+      "buildResources": "build-resources"
     },
     "files": [
       "dist/**/*",
       "package.json"
     ],
     "win": {
+      "icon": "icon.ico",
       "signtoolOptions": {
         "signingHashAlgorithms": [
           "sha256"
@@ -82,6 +84,8 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "deleteAppDataOnUninstall": false,
+      "installerIcon": "icon.ico",
+      "uninstallerIcon": "icon.ico",
       "artifactName": "SAP-AI-Consultant-Workbench-${version}-${arch}-Setup.${ext}"
     },
     "portable": {

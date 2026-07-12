@@ -812,6 +812,7 @@ export interface CaseMessage {
   content: string;
   taskMode: TaskMode;
   modelId: string;
+  providerId?: string;
   actionId?: CaseActionId | null;
   permissionModeUsed?: ActionPermissionMode;
   linkedFileIds: string[];

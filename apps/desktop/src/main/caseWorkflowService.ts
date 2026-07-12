@@ -393,7 +393,8 @@ export function createCaseMessage(
   modelId: string,
   linkedFileIds: string[] = [],
   actionId: CaseActionId | null = null,
-  permissionModeUsed: ActionPermissionMode = "request_approval"
+  permissionModeUsed: ActionPermissionMode = "request_approval",
+  providerId?: string
 ): CaseMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -402,6 +403,7 @@ export function createCaseMessage(
     content,
     taskMode,
     modelId,
+    providerId,
     actionId,
     permissionModeUsed,
     linkedFileIds,

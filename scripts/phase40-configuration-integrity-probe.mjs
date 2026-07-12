@@ -64,7 +64,7 @@ const saveModelBlock = configCenterSource.slice(
 assert(saveModelBlock.includes('const configSaved = await saveCurrentSection("models")'), "model config must save before its API key");
 assert(saveModelBlock.includes("if (!configSaved) return"), "API key save must stop when model section save fails");
 assert(saveModelBlock.includes("setApiSecretDirtyByProvider"), "saved API key must be marked clean");
-assert(saveModelBlock.includes('setApiEntries((current) => ({ ...current, [providerId]: "" }))'), "saved API key input must be cleared");
+assert(saveModelBlock.includes('if (input) input.value = ""'), "saved API key input must be cleared");
 assert(saveModelBlock.includes("setShowApiSecrets"), "saved API key input must be hidden");
 pass("sectionSecretSaveOrdering");
 

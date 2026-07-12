@@ -1339,7 +1339,7 @@ $phase30SecretRetentionMarkers = @(
   @{ Pattern = "previousProjectIdRef"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
   @{ Pattern = "setAdtSecretDirty(false)"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
   @{ Pattern = "setApiSecretDirtyByProvider"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
-  @{ Pattern = "setApiEntries((current)"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
+  @{ Pattern = "apiInputRefs.current"; Path = "apps/desktop/src/renderer/ConfigCenter.tsx" },
   @{ Pattern = "phase30-secret-retention-eye-toggle-probe"; Path = "scripts/phase30-secret-retention-eye-toggle-probe.mjs" }
 )
 foreach ($marker in $phase30SecretRetentionMarkers) {

@@ -43,13 +43,14 @@ console.log("connectionSelectorsAccessible=ok");
 
 for (const marker of [
   'value="anthropic-compatible"',
-  'provider.catalogMode ?? "remote-with-manual-fallback"',
-  'provider.manualModelIds ?? []',
+  'value="自动读取 /models；测试模型允许手工输入"',
+  'className="model-core-fields"',
   'provider.testModelId ?? ""',
   "测试渠道"
 ]) {
   assert.ok(configSource.includes(marker), `模型渠道缺少用户反馈标记: ${marker}`);
 }
+assert.ok(!configSource.includes("<span>模型目录方式</span>"), "模型目录方式不应要求用户决策");
 console.log("selectableModelProtocolAndProbe=ok");
 
 for (const marker of [
