@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { AdtVerificationResult, AiConversationStreamEvent, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AdtVerificationResult, AiConversationStreamEvent, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, LocalTaskFolderSelectionResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapGuiDiscoveryReport, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SelectLocalTaskFolderInput, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 
 interface WorkbenchBridge {
   getAppInfo: () => {
@@ -13,6 +13,7 @@ interface WorkbenchBridge {
   importWorkspace: () => Promise<WorkbenchResponse<WorkspaceImportResult>>;
   createLocalProject: (input: CreateLocalProjectInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   createLocalCase: (input: CreateLocalCaseInput) => Promise<WorkbenchResponse<WorkbenchState>>;
+  selectLocalTaskFolder: (input: SelectLocalTaskFolderInput) => Promise<WorkbenchResponse<LocalTaskFolderSelectionResult>>;
   createWorkThread: (input: CreateWorkThreadInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   switchWorkThread: (input: SwitchWorkThreadInput) => Promise<WorkbenchResponse<WorkbenchState>>;
   updateConversationThreadStatus: (input: UpdateConversationThreadStatusInput) => Promise<WorkbenchResponse<WorkbenchState>>;
@@ -30,6 +31,7 @@ interface WorkbenchBridge {
   previewCurrentCaseFile: (input: CaseFilePreviewInput) => Promise<WorkbenchResponse<CaseFilePreview>>;
   search: (query: string) => Promise<WorkbenchResponse<SearchResult[]>>;
   readSapObjectEvidence: (input: SapObjectEvidenceRequest) => Promise<WorkbenchResponse<SapObjectEvidenceResult>>;
+  discoverSapGuiConnections: () => Promise<WorkbenchResponse<SapGuiDiscoveryReport>>;
   prepareFeishuHandoff: () => Promise<WorkbenchResponse<FeishuHandoffResult>>;
   discoverFeishuCli: () => Promise<WorkbenchResponse<FeishuCliDiscoveryReport>>;
   installFeishuCli: () => Promise<WorkbenchResponse<FeishuCliInstallResult>>;

@@ -41,6 +41,8 @@ for (const [name, marker, source] of [
   ["task dialog", 'aria-label="新建任务"', sources.app],
   ["folder binding modes", "task-folder-mode", sources.app],
   ["existing folder binding", 'setNewTaskFolderMode("existing")', sources.app],
+  ["native local folder picker", "bridge.selectLocalTaskFolder", sources.app],
+  ["native folder IPC", "workbench:select-local-task-folder", sources.main],
   ["active view switch", 'setActiveView("case")', sources.app],
   ["case action style", "case-create button:not(:disabled)", sources.styles],
   ["main IPC", "workbench:create-local-case", sources.main],

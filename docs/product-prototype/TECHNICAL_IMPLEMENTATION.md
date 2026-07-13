@@ -154,10 +154,10 @@ SAPAIWorkbench/
 
 | 用户看到的概念 | 当前实现 | 说明 |
 |---|---|---|
-| SAP 项目 | `Project`，且 `sapVersion` 为 `S4` 或 `ECC` | 管理 SAP 连接、Client、规范、知识和工作文件夹。 |
+| SAP 项目 | `Project`，且 `sapVersion` 为 `S4` 或 `ECC` | 管理一个客户或业务项目下的 SAP landscape、多 Client 登录连接、规范、知识和工作文件夹。 |
 | 其他工作 | `Project`，且 `sapVersion` 为 `UNKNOWN` | 用于非 SAP 或暂不绑定 SAP 配置的本地工作；不触发 ADT 读取。 |
 | 任务 | `WorkThread` | Work 下的独立会话，包含稳定 ID、消息和 active / archived / removed 生命周期，并绑定一个 Case。 |
-| 工作文件夹 | `Case` + `case_folder` | 真实本地成果容器。任务可新建或复用已有 Case；多个 WorkThread 可绑定同一 Case。 |
+| 工作文件夹 | `Case` + `case_folder` + 可选机器本地目录绑定 | 真实本地成果容器。新建模式创建受控 Case；已有模式调用系统目录选择器，同一 Project 下同一路径复用 Case；多个 WorkThread 可绑定同一 Case。 |
 | Chat | `DailyChatThread` | 独立日常对话，不保存到 Project/Case 文件夹，不读取 SAP。 |
 | 案件动作 | `CaseAction` + 绑定的 `SkillPackage` | 固定按钮，用来把当前对话和文件沉淀成笔记、文档、图、候选知识或交付物。 |
 | 权限模式 | `ActionPermissionMode` | 按项目 / 案件生效，不按单个 Skill 生效。 |
@@ -242,6 +242,8 @@ Case
   title
   status: active | solved | archived
   case_folder
+  folder_source: managed | linked-local
+  linked_folder_name: string | null
   permission_mode_override: request_approval | approve_for_me | full_access | null
   current_summary
   current_context_pack_path
@@ -249,6 +251,8 @@ Case
   updated_at
   last_opened_at
 ```
+
+电脑已有文件夹的绝对路径不进入 `Case`、`app-state.json` 或 renderer。main process 把路径写入 `local-data/workbench/local-folder-bindings.json`，以 `project_id + case_id` 关联；该文件不进入工作区备份/导入。选择目录时必须拒绝磁盘根目录、工作台自身或上级目录、符号链接、网络共享和系统/凭据敏感目录。绑定阶段只检查目录节点，不遍历或改写目录内容。
 
 ### 6.6 CaseMessage
 
@@ -626,10 +630,13 @@ DeepSeek 作为独立 Provider 类型，但接口按 OpenAI Compatible 形式适
 
 ### 7.6 多 SAP 连接
 
-- `ProjectConfig.adtConnections` 保存最多 6 套独立只读连接，`activeAdtConnectionId` 指向当前 Work 使用的连接。
-- `ProjectConfig.adt` 是当前连接的兼容视图，供既有只读取证链路使用；保存和验证后必须同步回连接数组。
+- `ProjectConfig.adtConnections` 保存 Project 下独立的 SAP 只读登录连接；每项包含 SID、实例号、环境、Client、用途、路由关键词、独立密码引用和验证状态。UI 不设置固定数量上限，持久层只保留防异常导入的高位安全上限。
+- `activeAdtConnectionId` 是未明确问题上下文时的默认连接；`ProjectConfig.adt` 是当前连接的兼容视图，保存和验证后必须同步回连接数组。
 - SAP 密码安全存储目标由 `Project + connectionId` 唯一确定，不同连接不得共用或误取密码。
-- 自动解析 SAP GUI 主机、实例号或端口时只派生 HTTPS ADT 地址；显式 HTTP 地址不作为自动回退候选。
+- main process 可以只读扫描本机 SAP GUI landscape 文件，并向 renderer 返回经过长度、字符和主机校验的连接摘要；不返回凭据。
+- 自动解析 SAP GUI 主机、实例号或端口时只派生 HTTPS ADT 地址；显式 HTTP 地址不作为自动回退候选。没有本机匹配或用户实例号时返回“需要实例号”，禁止默认实例 `00`。
+- `routeSapConnections` 只在真实 T000 验证通过的连接中，根据当前任务近端对话、SID、Client、环境、用途和关键词评分。单一高置信匹配可直接用于用户主动发起的“SAP 取证”；并列、无明确匹配且存在多个可用连接、或交叉验证意图必须由用户确认。
+- 跨系统取证仍限制为同一明确对象、只读 GET 路径，并在所有连接读取成功后一次性落盘；任一连接失败时不写入不完整批次。
 
 ## 8. Agent、案件动作和权限模式
 
@@ -896,6 +903,8 @@ rightPanelTab
 ### 12.3 右侧文件面板
 
 文件面板从 CaseFile 表和案件目录读取。UI 文案展示为“当前工作文件夹文件”，但底层仍复用当前 Case 文件树。
+
+新建任务选择“已有文件夹”时，renderer 只收到一次性 `folderSelectionToken` 和目录显示名；绝对路径留在 main process，凭证十分钟失效且创建时单次消费。这样既能提供原生目录选择体验，也不会把用户目录暴露给页面或模型。
 
 必须支持：
 

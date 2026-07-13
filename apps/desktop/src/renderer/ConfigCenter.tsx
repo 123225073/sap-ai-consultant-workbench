@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import { Archive, ArrowLeft, ChevronDown, Database, Download, ExternalLink, Eye, EyeOff, FolderInput, KeyRound, PlugZap, Plus, RefreshCw, Save, Search, ShieldCheck, Terminal, Trash2, Workflow } from "lucide-react";
-import type { AdtConfig, AdtVerificationReport, ApiProviderConfig, CodexCapabilitySummary, CodexVerificationReport, ConfigStatus, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuCliProfileSummary, FeishuVerificationReport, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SecretHandle, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationReport, ApiProviderConfig, CodexCapabilitySummary, CodexVerificationReport, ConfigStatus, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuCliProfileSummary, FeishuVerificationReport, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ProjectConfig, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryEntry, SapGuiDiscoveryReport, SapSystemEnvironment, SecretHandle, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import { matchesDiscoveredSapEndpoint } from "../shared/sapConnectionRouting";
 
 const statusLabels: Record<ConfigStatus, string> = {
   "not-configured": "未配置",
@@ -271,11 +272,16 @@ function createAdtConnection(index: number): AdtConfig {
   return {
     id: `adt-${Date.now().toString(36)}-${index}`,
     alias: `SAP 连接 ${index}`,
+    systemId: "",
+    instanceNumber: "",
+    environment: "other",
+    usage: "",
+    routingKeywords: [],
     url: "",
     client: "",
     username: "",
     language: "ZH",
-    sslMode: "strict",
+    sslMode: "skip-certificate",
     readOnly: true,
     credential: {
       kind: "adt-password",
@@ -289,6 +295,26 @@ function createAdtConnection(index: number): AdtConfig {
     lastVerificationMode: null,
     lastCheckedAt: null
   };
+}
+
+function inferSapEnvironment(entry: SapGuiDiscoveryEntry): SapSystemEnvironment {
+  const value = `${entry.systemId} ${entry.description}`.toUpperCase();
+  if (/(^|\W)(PRD|PROD|PS\d|生产)(\W|$)/.test(value)) return "production";
+  if (/(^|\W)(QAS|QA|QS\d|质量|测试)(\W|$)/.test(value)) return "quality";
+  if (/(^|\W)(DEV|DS\d|开发)(\W|$)/.test(value)) return "development";
+  if (/(^|\W)(SBX|SANDBOX|沙箱)(\W|$)/.test(value)) return "sandbox";
+  return "other";
+}
+
+function environmentLabel(environment: SapSystemEnvironment): string {
+  const labels: Record<SapSystemEnvironment, string> = {
+    development: "开发",
+    quality: "质量/测试",
+    production: "生产",
+    sandbox: "沙箱",
+    other: "其他"
+  };
+  return labels[environment];
 }
 
 function createModelProvider(index: number): ApiProviderConfig {
@@ -361,6 +387,18 @@ function AdtVerificationReportView({ config, report }: { config: ProjectConfig; 
         <div>
           <dt>系统别名</dt>
           <dd>{system?.alias || config.adt.alias || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>System ID</dt>
+          <dd>{system?.systemId || config.adt.systemId || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>实例编号</dt>
+          <dd>{system?.instanceNumber || config.adt.instanceNumber || "未填写"}</dd>
+        </div>
+        <div>
+          <dt>环境</dt>
+          <dd>{environmentLabel(system?.environment ?? config.adt.environment)}</dd>
         </div>
         <div>
           <dt>SAP 主机</dt>
@@ -739,6 +777,7 @@ interface ConfigCenterProps {
   onSave: (projectId: string, config: ProjectConfig) => Promise<boolean>;
   onSaveSecret: (projectId: string, input: ProjectSecretInput) => Promise<boolean>;
   onVerifyAdt: (projectId: string) => Promise<AdtVerificationReport | null>;
+  onDiscoverSapGui: () => Promise<SapGuiDiscoveryReport | null>;
   onVerifyFeishu: (projectId: string) => Promise<FeishuVerificationReport | null>;
   onDiscoverFeishu: () => Promise<FeishuCliDiscoveryReport | null>;
   onInstallFeishu: () => Promise<FeishuCliInstallResult | null>;
@@ -752,7 +791,7 @@ interface ConfigCenterProps {
 
 type ConfigTabId = "sap" | "models" | "feishu" | "capabilities" | "storage";
 
-function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspaceBackup, onImportWorkspace, onSave, onSaveSecret, onVerifyAdt, onVerifyFeishu, onDiscoverFeishu, onInstallFeishu, onSetupFeishuProfile, onOpenFeishuDeveloperConsole, onVerifyModelProvider, onVerifyCodex, onScanLocalAi, onInstallLocalAi }: ConfigCenterProps) {
+function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspaceBackup, onImportWorkspace, onSave, onSaveSecret, onVerifyAdt, onDiscoverSapGui, onVerifyFeishu, onDiscoverFeishu, onInstallFeishu, onSetupFeishuProfile, onOpenFeishuDeveloperConsole, onVerifyModelProvider, onVerifyCodex, onScanLocalAi, onInstallLocalAi }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTabId>(project?.sapVersion === "UNKNOWN" ? "models" : "sap");
   const [adtEntry, setAdtEntry] = useState("");
@@ -768,6 +807,8 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const [apiSecretDirtyByProvider, setApiSecretDirtyByProvider] = useState<Record<string, boolean>>({});
   const [feishuSecretDirty, setFeishuSecretDirty] = useState(false);
   const [adtReport, setAdtReport] = useState<AdtVerificationReport | null>(null);
+  const [sapGuiDiscovery, setSapGuiDiscovery] = useState<SapGuiDiscoveryReport | null>(null);
+  const [selectedSapGuiEntryId, setSelectedSapGuiEntryId] = useState("");
   const [feishuReport, setFeishuReport] = useState<FeishuVerificationReport | null>(null);
   const [feishuDiscovery, setFeishuDiscovery] = useState<FeishuCliDiscoveryReport | null>(null);
   const [modelReports, setModelReports] = useState<Record<string, ModelProviderVerificationReport | null>>({});
@@ -783,6 +824,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const [savingModel, setSavingModel] = useState(false);
   const [savingCodex, setSavingCodex] = useState(false);
   const [verifyingAdt, setVerifyingAdt] = useState(false);
+  const [discoveringSapGui, setDiscoveringSapGui] = useState(false);
   const [verifyingFeishu, setVerifyingFeishu] = useState(false);
   const [verifyingModel, setVerifyingModel] = useState(false);
   const [verifyingCodex, setVerifyingCodex] = useState(false);
@@ -838,6 +880,20 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
       setSectionSaveNotice("");
     }
   }, [project?.id, project?.config.updatedAt, project?.config.adt.credential.updatedAt, project?.config.apiProviders.map((provider) => `${provider.id}:${provider.credential.updatedAt ?? ""}`).join("|"), project?.config.feishu.credential.updatedAt]);
+
+  useEffect(() => {
+    if (!project?.id || project.sapVersion === "UNKNOWN") return;
+    let cancelled = false;
+    setDiscoveringSapGui(true);
+    void onDiscoverSapGui()
+      .then((report) => {
+        if (!report || cancelled) return;
+        setSapGuiDiscovery(report);
+        setSelectedSapGuiEntryId((current) => report.entries.some((item) => item.id === current) ? current : report.entries[0]?.id ?? "");
+      })
+      .finally(() => { if (!cancelled) setDiscoveringSapGui(false); });
+    return () => { cancelled = true; };
+  }, [project?.id]);
 
   useEffect(() => {
     if (!project?.id) return;
@@ -916,6 +972,11 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const adtConnection = adtConnections.find((item) => item.id === selectedAdtConnectionId)
     ?? adtConnections.find((item) => item.id === draft.activeAdtConnectionId)
     ?? adtConnections[0];
+  const adtConnectionGroups = Object.entries(adtConnections.reduce<Record<string, AdtConfig[]>>((groups, connection) => {
+    const systemId = connection.systemId.trim().toUpperCase() || "未分组";
+    groups[systemId] = [...(groups[systemId] ?? []), connection];
+    return groups;
+  }, {})).sort(([left], [right]) => left.localeCompare(right, "zh-CN"));
   const sapProject = project.sapVersion !== "UNKNOWN";
   const showApiSecret = showApiSecrets[provider.id] === true;
   const apiSecretDirty = apiSecretDirtyByProvider[provider.id] === true;
@@ -1022,6 +1083,59 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
     });
   }
 
+  function updateAdtKeywords(value: string) {
+    setAdtReport(null);
+    const routingKeywords = value.split(/[，,\n]/).map((item) => item.trim()).filter(Boolean);
+    updateDraft((current) => {
+      const updated = { ...current.adt, routingKeywords };
+      return { ...current, adt: updated, adtConnections: current.adtConnections.map((item) => item.id === updated.id ? { ...updated } : item) };
+    });
+  }
+
+  async function discoverSapGui() {
+    setDiscoveringSapGui(true);
+    try {
+      const report = await onDiscoverSapGui();
+      if (!report) return;
+      setSapGuiDiscovery(report);
+      setSelectedSapGuiEntryId((current) => report.entries.some((item) => item.id === current) ? current : report.entries[0]?.id ?? "");
+    } finally {
+      setDiscoveringSapGui(false);
+    }
+  }
+
+  function importSapGuiEntry() {
+    if (!draft || !sapGuiDiscovery) return;
+    const entry = sapGuiDiscovery.entries.find((item) => item.id === selectedSapGuiEntryId);
+    if (!entry) return;
+    const matchingConnection = draft.adtConnections.find((connection) => matchesDiscoveredSapEndpoint(connection, entry));
+    const isBlank = !adtConnection.alias.trim() && !adtConnection.url.trim() && !adtConnection.client.trim() && !adtConnection.username.trim();
+    const replaceExisting = Boolean(matchingConnection) || isBlank;
+    const base = matchingConnection ?? (isBlank ? adtConnection : createAdtConnection(draft.adtConnections.length + 1));
+    const imported: AdtConfig = {
+      ...base,
+      alias: !base.alias.trim() || /^SAP 连接 \d+$/.test(base.alias.trim()) ? entry.description : base.alias,
+      systemId: entry.systemId || base.systemId,
+      instanceNumber: entry.instanceNumber,
+      environment: inferSapEnvironment(entry),
+      url: entry.host,
+      sslMode: "skip-certificate"
+    };
+    setSelectedAdtConnectionId(imported.id);
+    setAdtEntry("");
+    setAdtSecretDirty(false);
+    setShowAdtSecret(false);
+    setAdtReport(null);
+    updateDraft((current) => ({
+      ...current,
+      adt: imported,
+      activeAdtConnectionId: imported.id,
+      adtConnections: replaceExisting
+        ? current.adtConnections.map((item) => item.id === imported.id ? imported : item)
+        : [...current.adtConnections, imported]
+    }));
+  }
+
   function selectAdtConnection(connectionId: string) {
     if (!draft) return;
     const selected = draft.adtConnections.find((item) => item.id === connectionId);
@@ -1035,7 +1149,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   }
 
   function addAdtConnection() {
-    if (!draft || draft.adtConnections.length >= 6) return;
+    if (!draft) return;
     const nextConnection = createAdtConnection(draft.adtConnections.length + 1);
     setSelectedAdtConnectionId(nextConnection.id);
     setAdtEntry("");
@@ -1492,53 +1606,114 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
               <PlugZap size={18} />
               <div>
                 <h2>SAP 只读连接</h2>
-                <p>可纵向保存多个 SAP 系统；当前选中的连接用于 Work 只读取证。</p>
+                <p>同一 Project 可管理多个 SID 和 Client；Work 会按问题自动建议连接，有歧义时先让你确认。</p>
               </div>
               <span className={`setup-state setup-${adtSummaryTone}`}>{adtSummaryText}</span>
+            </div>
+
+            <div className="sap-gui-discovery">
+              <div className="sap-gui-discovery-heading">
+                <div>
+                  <strong>从本机 SAP Logon 识别系统</strong>
+                  <span>{discoveringSapGui ? "正在扫描" : sapGuiDiscovery ? `发现 ${sapGuiDiscovery.entries.length} 个连接定义 · ${sapGuiDiscovery.filesFound} 个配置文件` : "尚未扫描"}</span>
+                </div>
+                <button type="button" onClick={() => void discoverSapGui()} disabled={discoveringSapGui || savingAnyConfig} title="重新读取本机 SAP GUI Landscape 和 SAP Logon 配置">
+                  <RefreshCw size={15} />{discoveringSapGui ? "扫描中" : "重新扫描"}
+                </button>
+              </div>
+              {sapGuiDiscovery?.entries.length ? <div className="sap-gui-import-row">
+                <label>
+                  <span className="sr-only">选择 SAP Logon 连接</span>
+                  <select value={selectedSapGuiEntryId} onChange={(event) => setSelectedSapGuiEntryId(event.target.value)} aria-label="选择本机 SAP Logon 连接">
+                    {sapGuiDiscovery.entries.map((entry) => <option value={entry.id} key={entry.id}>
+                      {entry.systemId || "需补 SID"} · 实例 {entry.instanceNumber} · {entry.description}
+                    </option>)}
+                  </select>
+                </label>
+                <button type="button" onClick={importSapGuiEntry} disabled={!selectedSapGuiEntryId || savingAnyConfig}><Download size={15} />导入基础信息</button>
+              </div> : <p>未发现可导入的 SAP Logon 连接。仍可在下方手工填写 SID、实例号和主机。</p>}
+              {sapGuiDiscovery?.warnings.map((warning) => <p className="inline-warning" key={warning}>{warning}</p>)}
+              <small>只读取系统名称、SID、实例号和主机；不会读取 SAP 密码，也不会自动登录。旧版 SAP Logon 配置可能不保存 SID，导入后需补填再验证。</small>
             </div>
 
             <div className="model-channel-manager adt-connection-list">
               <div className="model-channel-toolbar">
                 <div>
                   <strong>SAP 连接</strong>
-                  <span>{adtConnections.length} / 6</span>
+                  <span>{adtConnections.length} 个登录连接</span>
                 </div>
                 <div className="model-channel-actions">
-                  <button type="button" onClick={addAdtConnection} disabled={adtConnections.length >= 6 || savingAnyConfig} title="添加一套独立 SAP 只读连接"><Plus size={16} />添加连接</button>
+                  <button type="button" onClick={addAdtConnection} disabled={savingAnyConfig} title="为当前 Project 添加一套 SAP 只读登录连接"><Plus size={16} />添加连接</button>
                   <button className="icon-button danger-icon-button" type="button" onClick={removeAdtConnection} disabled={adtConnections.length <= 1 || savingAnyConfig} title="移除当前 SAP 连接" aria-label="移除当前 SAP 连接"><Trash2 size={16} /></button>
                 </div>
               </div>
-              <div className="model-channel-list" role="group" aria-label="SAP 连接">
-                {adtConnections.map((connection) => {
-                  const verified = connection.connectionStatus === "verified" && connection.minimalReadStatus === "verified" && connection.lastVerificationMode === "adt";
-                  const failed = connection.connectionStatus === "failed" || connection.minimalReadStatus === "failed" || connection.configStatus === "failed";
-                  return <button type="button" aria-pressed={connection.id === adtConnection.id} className={connection.id === adtConnection.id ? "active" : ""} onClick={() => selectAdtConnection(connection.id)} key={connection.id}>
-                    <span>{connection.alias.trim() || "未命名 SAP 连接"}</span>
-                    <small>{verified ? "只读验证通过" : failed ? "验证失败" : connection.credential.state === "set-in-secure-store" ? "已保存，待验证" : "待配置"}</small>
-                  </button>;
-                })}
+              <div className="adt-system-groups" role="group" aria-label="SAP 连接">
+                {adtConnectionGroups.map(([systemId, connections]) => <section className="adt-system-group" key={systemId}>
+                  <header><strong>{systemId === "未分组" ? "未填写 SID" : systemId}</strong><span>{connections.length} 个 Client</span></header>
+                  <div className="model-channel-list">
+                    {connections.map((connection) => {
+                      const verified = connection.connectionStatus === "verified" && connection.minimalReadStatus === "verified" && connection.lastVerificationMode === "adt";
+                      const failed = connection.connectionStatus === "failed" || connection.minimalReadStatus === "failed" || connection.configStatus === "failed";
+                      return <button type="button" aria-pressed={connection.id === adtConnection.id} className={connection.id === adtConnection.id ? "active" : ""} onClick={() => selectAdtConnection(connection.id)} key={connection.id}>
+                        <span>{connection.alias.trim() || `${systemId} / Client ${connection.client || "未填"}`}</span>
+                        <small>{connection.client ? `Client ${connection.client} · ` : ""}{environmentLabel(connection.environment)} · {verified ? "只读验证通过" : failed ? "验证失败" : connection.credential.state === "set-in-secure-store" ? "已保存，待验证" : "待配置"}</small>
+                      </button>;
+                    })}
+                  </div>
+                </section>)}
               </div>
             </div>
 
             <div className="config-fields">
               <label>
                 <span>系统显示名</span>
-                <input value={draft.adt.alias} onChange={(event) => updateAdt("alias", event.target.value)} placeholder="例如：生产 S4HANA" />
-              </label>
-              <label>
-                <span>SAP GUI 地址 / ADT 地址</span>
-                <input value={draft.adt.url} onChange={(event) => updateAdt("url", event.target.value)} placeholder="例如：sap-dev.example.com 或 https://sap-host:44300" />
+                <input value={draft.adt.alias} onChange={(event) => updateAdt("alias", event.target.value)} placeholder="例如：DS4 开发系统 220" />
               </label>
               <div className="config-fields compact-fields">
                 <label>
+                  <span>System ID（SID）</span>
+                  <input value={draft.adt.systemId} onChange={(event) => updateAdt("systemId", event.target.value.toUpperCase())} placeholder="例如：DS4" maxLength={3} />
+                </label>
+                <label>
+                  <span>环境</span>
+                  <select value={draft.adt.environment} onChange={(event) => updateAdt("environment", event.target.value)}>
+                    <option value="development">开发</option>
+                    <option value="quality">质量/测试</option>
+                    <option value="production">生产</option>
+                    <option value="sandbox">沙箱</option>
+                    <option value="other">其他</option>
+                  </select>
+                </label>
+              </div>
+              <div className="config-fields compact-fields sap-endpoint-fields">
+                <label>
+                  <span>应用服务器 / ADT 地址</span>
+                  <input value={draft.adt.url} onChange={(event) => updateAdt("url", event.target.value)} placeholder="例如：saps4d01.example.com" />
+                </label>
+                <label>
+                  <span>实例编号</span>
+                  <input value={draft.adt.instanceNumber} onChange={(event) => updateAdt("instanceNumber", event.target.value.replace(/\D/g, "").slice(0, 2))} placeholder="例如：02" inputMode="numeric" maxLength={2} />
+                </label>
+              </div>
+              <div className="config-fields compact-fields">
+                <label>
                   <span>Client</span>
-                  <input value={draft.adt.client} onChange={(event) => updateAdt("client", event.target.value)} placeholder="例如：800" />
+                  <input value={draft.adt.client} onChange={(event) => updateAdt("client", event.target.value.replace(/\D/g, "").slice(0, 3))} placeholder="例如：220" inputMode="numeric" maxLength={3} />
                 </label>
                 <label>
                   <span>用户名</span>
                   <input value={draft.adt.username} onChange={(event) => updateAdt("username", event.target.value)} />
                 </label>
               </div>
+              <label>
+                <span>用途说明</span>
+                <input value={draft.adt.usage} onChange={(event) => updateAdt("usage", event.target.value)} placeholder="例如：开发、配置核对、接口联调" />
+              </label>
+              <label>
+                <span>自动识别关键词</span>
+                <input value={draft.adt.routingKeywords.join("，")} onChange={(event) => updateAdtKeywords(event.target.value)} placeholder="例如：开发，采购，MM，接口" />
+                <small>AI 只用这些词辅助选择连接；多套系统都可能相关时会先让你确认。</small>
+              </label>
               <SecretInput
                 id="adt-password-input"
                 label="SAP 密码"
@@ -1571,9 +1746,10 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
                 <label>
                   <span>SSL 模式</span>
                   <select value={draft.adt.sslMode} onChange={(event) => updateAdt("sslMode", event.target.value)}>
-                    <option value="strict">严格校验</option>
                     <option value="skip-certificate">跳过证书校验</option>
+                    <option value="strict">严格校验</option>
                   </select>
+                  <small>新连接默认跳过企业内网自签名证书校验；有受信任证书时可改为严格校验。</small>
                 </label>
                 <label>
                   <span>写入模式</span>

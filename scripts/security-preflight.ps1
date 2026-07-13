@@ -120,6 +120,7 @@ $allowedIpc = @(
   "workbench:import-workspace",
   "workbench:create-local-project",
   "workbench:create-local-case",
+  "workbench:select-local-task-folder",
   "workbench:create-work-thread",
   "workbench:switch-work-thread",
   "workbench:update-conversation-thread-status",
@@ -136,6 +137,7 @@ $allowedIpc = @(
   "workbench:get-case-files",
   "workbench:preview-current-case-file",
   "workbench:search",
+  "workbench:sap-gui-discover",
   "workbench:read-sap-object-evidence",
   "workbench:prepare-feishu-handoff",
   "workbench:feishu-discover-cli",
@@ -267,6 +269,7 @@ $lifecycleMarkers = @(
   @{ Pattern = "switchCase"; Path = "apps/desktop/src/preload/preload.ts" },
   @{ Pattern = "workbench:create-local-project"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "workbench:create-local-case"; Path = "apps/desktop/src/main/main.ts" },
+  @{ Pattern = "workbench:select-local-task-folder"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "workbench:switch-project"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "workbench:switch-case"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "legacyStateStorageMigration"; Path = "scripts/phase15-real-project-case-lifecycle-probe.mjs" },
@@ -753,13 +756,20 @@ if ($LASTEXITCODE -eq 0) {
   throw "Knowledge source path scan failed."
 }
 
-$knowledgeDeleteHits = rg -n -- "deleteKnowledge|removeKnowledge|knowledge\.items\s*=\s*.*filter|project\.knowledge\.items\s*=\s*.*filter|unlink|rm\(" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/main/workspaceStore.ts apps/desktop/src/renderer/KnowledgeCenter.tsx
+$knowledgeDeleteHits = rg -n -- "deleteKnowledge|removeKnowledge|knowledge\.items\s*=\s*.*filter|project\.knowledge\.items\s*=\s*.*filter|unlink|rm\(" apps/desktop/src/main/knowledgeService.ts apps/desktop/src/renderer/KnowledgeCenter.tsx
 if ($LASTEXITCODE -eq 0) {
   $knowledgeDeleteHits | ForEach-Object { Write-Host $_ }
   throw "Knowledge center must preserve history and must not delete knowledge items."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Knowledge delete-history scan failed."
 }
+$knowledgeStoreLifecycleBlock = Get-SourceBlock -Path "apps/desktop/src/main/workspaceStore.ts" -StartMarker "async getProjectKnowledge" -EndMarker "async updateAdtVerification"
+foreach ($forbidden in @("deleteKnowledge", "removeKnowledge", "knowledge.items =", "project.knowledge.items =", "unlink", "fs.rm(")) {
+  if ($knowledgeStoreLifecycleBlock.Contains($forbidden)) {
+    throw "Knowledge store lifecycle must preserve history and must not delete knowledge items: $forbidden"
+  }
+}
+Write-Host "OK knowledge store lifecycle contains no deletion capability; transaction cleanup is checked separately."
 
 Write-Section "Phase 20 controlled text file import scan"
 $phase20TextFileImportMarkers = @(
@@ -1213,12 +1223,18 @@ $phase26Sources = @(
   "apps/desktop/src/renderer/vite-env.d.ts",
   "apps/desktop/src/renderer/App.tsx"
 )
-$phase26UnsafeHits = rg -n -- "workbench:delete-project|deleteProject|removeProjectFiles|state\.projects\s*=\s*state\.projects\.filter|\.projects\.splice|shell\.trashItem|fs\.rm|fs\.unlink|feishu-sync|sap-write|transport-release|activateObject" $phase26Sources
+$phase26UnsafeHits = rg -n -- "workbench:delete-project|deleteProject|removeProjectFiles|state\.projects\s*=\s*state\.projects\.filter|\.projects\.splice|shell\.trashItem|feishu-sync|sap-write|transport-release|activateObject" $phase26Sources
 if ($LASTEXITCODE -eq 0) {
   $phase26UnsafeHits | ForEach-Object { Write-Host $_ }
   throw "Phase 26 project visibility must not delete projects, open external surfaces, or add SAP/Feishu write capabilities."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Phase 26 unsafe capability scan failed."
+}
+$phase26StoreVisibilityBlock = Get-SourceBlock -Path "apps/desktop/src/main/workspaceStore.ts" -StartMarker "async hideProjectFromSidebar" -EndMarker "async switchCase"
+foreach ($forbiddenOperation in @("fs.rm", "fs.unlink", "removeProjectFiles", "deleteProject", "shell.trashItem")) {
+  if ($phase26StoreVisibilityBlock.Contains($forbiddenOperation)) {
+    throw "Phase 26 project visibility block contains forbidden destructive operation: $forbiddenOperation"
+  }
 }
 $phase26ExternalSurfaceSources = @(
   "apps/desktop/src/main/workspaceStore.ts",
@@ -1931,18 +1947,33 @@ Write-Section "Desktop delete-operation scan"
 $deleteHits = rg -n --glob "!dist/**" --glob "!node_modules/**" -- "\brm\(|unlink|trashItem|shell\.trashItem|delete.*file|remove.*file" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   $unexpectedDeleteHits = @($deleteHits | Where-Object {
-    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]secureSecretStore\.ts:\d+:\s+await fs\.unlink\(blobPath\);"
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]secureSecretStore\.ts:\d+:\s+await fs\.unlink\(blobPath\);" -and
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]workspaceStore\.ts:\d+:.*fs\.rm\("
   })
   if ($unexpectedDeleteHits.Count -gt 0) {
     $unexpectedDeleteHits | ForEach-Object { Write-Host $_ }
     throw "Desktop code contains an unapproved file delete operation."
   }
-  $deleteHits | ForEach-Object { Write-Host "OK narrow encrypted-secret cleanup: $_" }
+  $deleteHits | ForEach-Object { Write-Host "OK controlled cleanup candidate: $_" }
   $secureCleanupSource = Get-Content -Raw "apps/desktop/src/main/secureSecretStore.ts"
   foreach ($marker in @("removeProjectTarget", "assertInsideSecureRoot", "blob.projectId === normalizedProjectId", "blob.targetId === targetId")) {
     if (-not $secureCleanupSource.Contains($marker)) {
       throw "Encrypted-secret cleanup boundary is missing marker: $marker"
     }
+  }
+  $workspaceStoreSource = Get-Content -Raw -Encoding UTF8 "apps/desktop/src/main/workspaceStore.ts"
+  $workspaceTransactionBlock = Get-SourceBlock -Path "apps/desktop/src/main/workspaceStore.ts" -StartMarker "private transactionDirectory" -EndMarker "private async writeCaseMarkdown"
+  $workspaceStoreWithoutTransaction = $workspaceStoreSource.Replace($workspaceTransactionBlock, "")
+  if ($workspaceStoreWithoutTransaction -match "\brm\(|unlink|trashItem|shell\.trashItem|delete.*file|remove.*file") {
+    throw "Workspace store contains a delete operation outside the controlled transaction-recovery block."
+  }
+  foreach ($marker in @("assertInsideWorkspace", ".txn.tmp", ".txn.bak", 'status: "preparing"', 'journal.status = "committed"', "isSymbolicLink()", "snapshotPath")) {
+    if (-not $workspaceTransactionBlock.Contains($marker)) {
+      throw "Transaction-recovery cleanup boundary is missing marker: $marker"
+    }
+  }
+  if ($workspaceTransactionBlock -match "unlink|trashItem|shell\.trashItem|delete.*file|remove.*file") {
+    throw "Transaction-recovery block contains an unapproved deletion mechanism."
   }
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Delete-operation scan failed."

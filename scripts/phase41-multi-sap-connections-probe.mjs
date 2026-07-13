@@ -96,6 +96,9 @@ state = await store.updateAdtVerification(project.id, firstNormalizedId, adtVeri
   mode: "adt",
   system: {
     alias: "LONG-A",
+    systemId: "DEV",
+    instanceNumber: "00",
+    environment: "development",
     endpointHost: "https://dev.example.com:44300",
     client: "100",
     usernameMasked: "D***R",
@@ -124,7 +127,7 @@ const newerAdtReport = {
   ok: true,
   checkedAt: newerCheckedAt,
   mode: "adt",
-  system: { alias: "LONG-A", endpointHost: "https://dev.example.com:44300", client: "100", usernameMasked: "D***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
+  system: { alias: "LONG-A", systemId: "DEV", instanceNumber: "00", environment: "development", endpointHost: "https://dev.example.com:44300", client: "100", usernameMasked: "D***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
   steps: [{ id: "config", title: "配置检查", status: "passed", detail: "通过", checkedAt: newerCheckedAt }],
   connectionStatus: "verified",
   minimalReadStatus: "verified",
@@ -153,7 +156,7 @@ try {
     ok: true,
     checkedAt: "2026-07-11T12:01:00.000Z",
     mode: "adt",
-    system: { alias: "LONG-A", endpointHost: "https://dev.example.com:44300", client: "100", usernameMasked: "D***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
+    system: { alias: "LONG-A", systemId: "DEV", instanceNumber: "00", environment: "development", endpointHost: "https://dev.example.com:44300", client: "100", usernameMasked: "D***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
     steps: [{ id: "config", title: "配置检查", status: "passed", detail: "通过", checkedAt: "2026-07-11T12:01:00.000Z" }],
     connectionStatus: "verified",
     minimalReadStatus: "verified",
@@ -185,6 +188,55 @@ project = state.projects.find((item) => item.id === state.activeProjectId);
 assert(project.config.adtConnections[0].credential.secretRef === null, "a newly inserted first SAP connection must not inherit another connection's credential");
 const retainedExisting = project.config.adtConnections.find((item) => item.id === existingWithSecret.id);
 assert(retainedExisting?.credential.state === "set-in-secure-store", "existing SAP connection credential status must remain attached to its own ID: " + JSON.stringify(project.config.adtConnections.map((item) => ({ id: item.id, state: item.credential.state }))));
+
+let identityDraft = JSON.parse(JSON.stringify(project.config));
+identityDraft.adtConnections = identityDraft.adtConnections.map((item) => item.id === inserted.id ? { ...item, systemId: "SB1", instanceNumber: "00", url: "sbx.example.com", client: "300", username: "SBX_USER" } : item);
+identityDraft.adt = identityDraft.adtConnections.find((item) => item.id === inserted.id);
+identityDraft.activeAdtConnectionId = inserted.id;
+state = await store.saveProjectConfig(project.id, identityDraft);
+project = state.projects.find((item) => item.id === state.activeProjectId);
+let identityConnection = project.config.adtConnections.find((item) => item.id === inserted.id);
+let identitySequence = store.beginAdtVerification(project.id, inserted.id);
+state = await store.updateAdtVerification(project.id, inserted.id, identitySequence, identityConnection, {
+  ok: true,
+  checkedAt: "2026-07-11T12:03:00.000Z",
+  mode: "adt",
+  system: { alias: identityConnection.alias, systemId: "SB1", instanceNumber: "00", environment: "sandbox", endpointHost: "https://sbx.example.com:44300", client: "300", usernameMasked: "S***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
+  steps: [{ id: "config", title: "配置检查", status: "passed", detail: "通过", checkedAt: "2026-07-11T12:03:00.000Z" }],
+  connectionStatus: "verified",
+  minimalReadStatus: "verified",
+  t000: { objectName: "T000", attempted: true, ok: true, rowCount: 1, sampleClient: "300", source: "adt" },
+  errors: []
+});
+project = state.projects.find((item) => item.id === state.activeProjectId);
+identityDraft = JSON.parse(JSON.stringify(project.config));
+identityDraft.adtConnections = identityDraft.adtConnections.map((item) => item.id === inserted.id ? { ...item, instanceNumber: "02" } : item);
+identityDraft.adt = identityDraft.adtConnections.find((item) => item.id === inserted.id);
+state = await store.saveProjectConfig(project.id, identityDraft);
+project = state.projects.find((item) => item.id === state.activeProjectId);
+identityConnection = project.config.adtConnections.find((item) => item.id === inserted.id);
+assert(identityConnection.connectionStatus === "pending-verification" && identityConnection.lastVerificationMode === null, "changing SAP instance number must invalidate the previous verification");
+
+identitySequence = store.beginAdtVerification(project.id, inserted.id);
+state = await store.updateAdtVerification(project.id, inserted.id, identitySequence, identityConnection, {
+  ok: true,
+  checkedAt: "2026-07-11T12:04:00.000Z",
+  mode: "adt",
+  system: { alias: identityConnection.alias, systemId: "SB1", instanceNumber: "02", environment: "sandbox", endpointHost: "https://sbx.example.com:44302", client: "300", usernameMasked: "S***R", language: "ZH", sslMode: "strict", readOnly: true, transportWriteMode: "disabled" },
+  steps: [{ id: "config", title: "配置检查", status: "passed", detail: "通过", checkedAt: "2026-07-11T12:04:00.000Z" }],
+  connectionStatus: "verified",
+  minimalReadStatus: "verified",
+  t000: { objectName: "T000", attempted: true, ok: true, rowCount: 1, sampleClient: "300", source: "adt" },
+  errors: []
+});
+project = state.projects.find((item) => item.id === state.activeProjectId);
+identityDraft = JSON.parse(JSON.stringify(project.config));
+identityDraft.adtConnections = identityDraft.adtConnections.map((item) => item.id === inserted.id ? { ...item, systemId: "SB2" } : item);
+identityDraft.adt = identityDraft.adtConnections.find((item) => item.id === inserted.id);
+state = await store.saveProjectConfig(project.id, identityDraft);
+project = state.projects.find((item) => item.id === state.activeProjectId);
+identityConnection = project.config.adtConnections.find((item) => item.id === inserted.id);
+assert(identityConnection.connectionStatus === "pending-verification" && identityConnection.lastVerificationMode === null, "changing SAP SID must invalidate the previous verification");
 pass("multipleSapConnectionsPersistedAndIsolated");
 `;
 

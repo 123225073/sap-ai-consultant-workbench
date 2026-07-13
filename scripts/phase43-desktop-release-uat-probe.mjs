@@ -73,8 +73,9 @@ async function openCdp(webSocketDebuggerUrl) {
   ws.onmessage = (event) => {
     const message = JSON.parse(event.data);
     if (!message.id || !pending.has(message.id)) return;
-    const { resolve, reject } = pending.get(message.id);
+    const { resolve, reject, timeout } = pending.get(message.id);
     pending.delete(message.id);
+    clearTimeout(timeout);
     if (message.error) reject(new Error(message.error.message));
     else resolve(message.result ?? {});
   };
@@ -84,9 +85,20 @@ async function openCdp(webSocketDebuggerUrl) {
   });
   const send = (method, params = {}) => new Promise((resolve, reject) => {
     const id = ++commandId;
-    pending.set(id, { resolve, reject });
+    const timeout = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Electron UAT CDP 命令超时：${method}`));
+    }, 30_000);
+    pending.set(id, { resolve, reject, timeout });
     ws.send(JSON.stringify({ id, method, params }));
   });
+  ws.onclose = () => {
+    for (const { reject, timeout } of pending.values()) {
+      clearTimeout(timeout);
+      reject(new Error("Electron UAT CDP 连接提前关闭。"));
+    }
+    pending.clear();
+  };
   return {
     send,
     evaluate: async (expression) => {
@@ -124,6 +136,7 @@ async function capture(name) {
   const filePath = path.join(outputRoot, "screenshots", fileName);
   await writeFile(filePath, buffer);
   screenshotRecords.push({ file: path.relative(outputRoot, filePath).replaceAll("\\", "/"), bytes: buffer.length, sha256: sha256(buffer) });
+  process.stdout.write(`phase43-stage=captured-${name}\n`);
 }
 
 async function setViewport(width, height) {
@@ -187,7 +200,14 @@ try {
   assert(Boolean(electronPath), "已找到 Electron 可执行文件");
   await mkdir(path.join(outputRoot, "screenshots"), { recursive: true });
 
-  first = spawn(electronPath, [`--user-data-dir=${userDataDir}`, "--remote-debugging-port=0", "."], {
+  first = spawn(electronPath, [
+    `--user-data-dir=${userDataDir}`,
+    "--remote-debugging-port=0",
+    "--disable-gpu",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "."
+  ], {
     cwd: desktopRoot,
     env: sanitizedEnvironment(),
     stdio: "ignore",
@@ -218,6 +238,7 @@ try {
   await setViewport(1440, 900);
   await waitFor(() => pageSession.evaluate("Boolean(document.querySelector('#root')?.childElementCount && document.body.innerText.includes('Work'))"), 15_000, "工作台首屏");
   await pageSession.evaluate(helperSource);
+  process.stdout.write("phase43-stage=renderer-ready\n");
 
   const initialSafety = await evaluateJson(`({
     title: document.title,
@@ -231,7 +252,11 @@ try {
 
   await pageSession.evaluate(`(async () => {
     document.querySelector('[aria-label="新建 Project"]').click();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建 Project"]')));
+    document.querySelector('.create-dialog-backdrop').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await __phase43.until(() => !document.querySelector('form[aria-label="新建 Project"]'));
+    document.querySelector('[aria-label="新建 Project"]').click();
+    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建 Project"]')));
     __phase43.setValue(document.querySelector('[aria-label="项目名称"]'), 'Phase43 正式 UAT');
     __phase43.setValue(document.querySelector('[aria-label="项目类型"]'), 'S4');
     __phase43.setValue(document.querySelector('[aria-label="系统或本地标签"]'), 'UAT/100');
@@ -254,7 +279,26 @@ try {
   assert(taskDialog.activeCount === 1 && taskDialog.backgrounds.every((color) => color !== "rgb(37, 99, 235)"), "文件夹页签未被主按钮蓝色样式污染");
   await capture("task-dialog-folder-binding");
 
+  const existingFolderMode = await pageSession.evaluate(`(async () => {
+    [...document.querySelectorAll('.task-folder-mode button')].find((item) => item.textContent.trim() === '已有文件夹').click();
+    await __phase43.until(() => Boolean([...document.querySelectorAll('.local-folder-picker button')].find((item) => item.textContent.includes('选择电脑文件夹'))));
+    const picker = [...document.querySelectorAll('.local-folder-picker button')].find((item) => item.textContent.includes('选择电脑文件夹'));
+    const internalCaseSelect = document.querySelector('[aria-label="已有工作文件夹"]');
+    return JSON.stringify({ pickerLabel: picker?.textContent.trim(), hasInternalCaseSelect: Boolean(internalCaseSelect) });
+  })()`);
+  const existingFolderResult = JSON.parse(existingFolderMode);
+  assert(existingFolderResult.pickerLabel === "选择电脑文件夹" && !existingFolderResult.hasInternalCaseSelect, "已有文件夹必须调用电脑目录选择器，不能复用内部案件下拉框");
+  await capture("task-dialog-existing-local-picker");
+  await pageSession.evaluate(`(() => {
+    [...document.querySelectorAll('.task-folder-mode button')].find((item) => item.textContent.trim() === '新建文件夹').click();
+    return true;
+  })()`);
+
   await pageSession.evaluate(`(async () => {
+    document.querySelector('.create-dialog-backdrop').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await __phase43.until(() => !document.querySelector('.create-dialog[aria-label="新建任务"]'));
+    __phase43.clickText('新建任务');
+    await __phase43.until(() => Boolean(document.querySelector('.create-dialog[aria-label="新建任务"]')));
     __phase43.setValue(document.querySelector('[aria-label="任务名称"]'), 'UAT 核心旅程');
     document.querySelector('.case-create').requestSubmit();
     await __phase43.until(async () => {
@@ -290,9 +334,106 @@ try {
     return true;
   })()`);
 
+  const outsideDismissal = await evaluateJson(`await (async () => {
+    const threadMenu = document.querySelector('.thread-menu');
+    if (!threadMenu) throw new Error('missing-thread-menu');
+    threadMenu?.querySelector('summary')?.click();
+    await __phase43.until(() => Boolean(threadMenu?.open));
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await __phase43.until(() => !threadMenu?.open);
+
+    const modelTrigger = document.querySelector('.model-select');
+    if (!modelTrigger) throw new Error('missing-model-picker');
+    modelTrigger?.click();
+    await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'true');
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'false');
+
+    threadMenu?.querySelector('summary')?.click();
+    await __phase43.until(() => Boolean(threadMenu?.open));
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await __phase43.until(() => !threadMenu?.open);
+
+    modelTrigger?.click();
+    await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'true');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'false');
+
+    return {
+      threadMenuClosed: !threadMenu?.open,
+      modelPickerClosed: modelTrigger?.getAttribute('aria-expanded') === 'false'
+    };
+  })()`);
+  assert(outsideDismissal.threadMenuClosed && outsideDismissal.modelPickerClosed, "会话菜单和模型选择器支持点击空白处或 Esc 收起");
+
+  const uatStatePath = path.join(isolatedRepoRoot, "local-data", "workbench", "app-state.json");
+  const uatState = JSON.parse(await readFile(uatStatePath, "utf8"));
+  const uatProject = uatState.projects.find((item) => item.name === "Phase43 正式 UAT");
+  const uatConnection = {
+    ...uatProject.config.adt,
+    alias: "DS4 开发 220",
+    systemId: "DS4",
+    instanceNumber: "02",
+    environment: "development",
+    usage: "UAT 只读连接选择器",
+    routingKeywords: ["UAT"],
+    url: "https://ds4.uat.invalid:44302",
+    client: "220",
+    username: "UAT_USER",
+    sslMode: "strict",
+    readOnly: true,
+    configStatus: "verified",
+    connectionStatus: "verified",
+    minimalReadStatus: "verified",
+    lastVerificationMode: "adt",
+    lastCheckedAt: "2026-07-13T08:00:00.000Z"
+  };
+  uatProject.config.adt = uatConnection;
+  uatProject.config.adtConnections = [uatConnection];
+  uatProject.config.activeAdtConnectionId = uatConnection.id;
+  await writeFile(uatStatePath, `${JSON.stringify(uatState, null, 2)}\n`, "utf8");
+  await pageSession.evaluate("location.reload()");
+  await waitFor(() => pageSession.evaluate("document.readyState === 'complete' && Boolean(document.querySelector('.conversation-panel'))"), 12_000, "UAT SAP 连接状态重载");
+  await pageSession.evaluate(helperSource);
+  const sapReadiness = await evaluateJson(`await (async () => {
+    const state = (await window.workbench.getState()).data;
+    const project = state.projects.find((item) => item.id === state.activeProjectId);
+    return {
+      activeView: document.querySelector('.workspace-switch button.active')?.textContent?.trim() ?? '',
+      hasSapEvidenceButton: [...document.querySelectorAll('button')].some((item) => item.textContent.includes('SAP 取证')),
+      projectName: project?.name ?? '',
+      connections: (project?.config.adtConnections ?? []).map((item) => ({ id: item.id, systemId: item.systemId, instanceNumber: item.instanceNumber, connectionStatus: item.connectionStatus, minimalReadStatus: item.minimalReadStatus, lastVerificationMode: item.lastVerificationMode }))
+    };
+  })()`);
+  assert(sapReadiness.hasSapEvidenceButton, `注入的 SAP UAT 连接没有进入可取证状态：${JSON.stringify(sapReadiness)}`);
+  const sapOutsideDismissal = await evaluateJson(`await (async () => {
+    __phase43.clickText('SAP 取证');
+    await __phase43.until(() => Boolean(document.querySelector('.sap-connection-picker > button')));
+    const sapTrigger = document.querySelector('.sap-connection-picker > button');
+    sapTrigger.click();
+    await __phase43.until(() => sapTrigger.getAttribute('aria-expanded') === 'true');
+    document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    await __phase43.until(() => sapTrigger.getAttribute('aria-expanded') === 'false');
+    sapTrigger.click();
+    await __phase43.until(() => sapTrigger.getAttribute('aria-expanded') === 'true');
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    await __phase43.until(() => sapTrigger.getAttribute('aria-expanded') === 'false');
+    __phase43.clickText('收起取证');
+    return { sapPickerClosed: sapTrigger.getAttribute('aria-expanded') === 'false' };
+  })()`);
+  assert(sapOutsideDismissal.sapPickerClosed, "SAP 连接选择器支持点击空白处或 Esc 收起");
+
   await pageSession.evaluate(`(async () => {
-    [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat')).click();
-    await __phase43.until(() => Boolean(document.querySelector('[aria-label="日常对话输入"]')));
+    const chatButton = [...document.querySelectorAll('.workspace-switch button')].find((item) => item.textContent.includes('Chat'));
+    if (!chatButton) throw new Error('missing-chat-switch');
+    chatButton.click();
+    try {
+      await __phase43.until(() => Boolean(document.querySelector('[aria-label="日常对话输入"]')));
+    } catch (error) {
+      const activeTab = document.querySelector('.workspace-switch button.active')?.textContent?.trim() ?? 'unknown';
+      const dialog = document.querySelector('[role="dialog"]')?.textContent?.replace(/\\s+/g, ' ').trim() ?? 'none';
+      throw new Error('chat-switch-timeout:active=' + activeTab + ';dialog=' + dialog + ';body=' + document.body.innerText.slice(0, 800));
+    }
     const textarea = document.querySelector('[aria-label="日常对话输入"]');
     __phase43.setValue(textarea, 'Phase43 日常对话隔离验证');
     document.querySelector('.daily-chat-composer').requestSubmit();
@@ -473,12 +614,28 @@ try {
       noHorizontalPageOverflow: document.documentElement.scrollWidth <= innerWidth + 1,
       composerInside: inside(composer),
       sendInside: inside(send),
-      conversationWidth: Math.round(conversation?.width ?? 0)
+      conversationWidth: Math.round(conversation?.width ?? 0),
+      projectSettingsVisible: inside(document.querySelector('.project-settings-button')?.getBoundingClientRect())
     };
   })()`);
   assert(minimumViewport.noHorizontalPageOverflow && minimumViewport.composerInside && minimumViewport.sendInside, "680×520 最小窗口输入区仍完整可操作");
   assert(minimumViewport.conversationWidth >= 500, "680×520 最小窗口保留足够的核心对话宽度");
+  assert(minimumViewport.projectSettingsVisible, "680×520 最小窗口仍保留 Project 设置入口");
   await capture("responsive-680x520");
+
+  const compactSapPicker = await evaluateJson(`await (async () => {
+    __phase43.clickText('SAP 取证');
+    await __phase43.until(() => Boolean(document.querySelector('.sap-connection-picker > button')));
+    const trigger = document.querySelector('.sap-connection-picker > button');
+    trigger.click();
+    await __phase43.until(() => trigger.getAttribute('aria-expanded') === 'true');
+    const panel = document.querySelector('.sap-connection-picker-panel')?.getBoundingClientRect();
+    const inside = panel && panel.left >= -1 && panel.right <= innerWidth + 1 && panel.top >= -1 && panel.bottom <= innerHeight + 1;
+    return { inside, left: panel?.left ?? -1, right: panel?.right ?? -1, width: panel?.width ?? 0 };
+  })()`);
+  assert(compactSapPicker.inside, "680×520 最小窗口 SAP 连接选择面板不越界");
+  await capture("responsive-680x520-sap-picker");
+  await pageSession.evaluate(`document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
 
   process.stdout.write("phase43-stage=thread-lifecycle-start\n");
   const threadLifecycle = await evaluateJson(`await (async () => {

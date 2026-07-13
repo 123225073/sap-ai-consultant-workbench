@@ -14,7 +14,7 @@ function log(message) {
 }
 
 const entrySource = `
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { WorkspaceStore, parseCreateLocalCaseInput, parseCreateLocalProjectInput } from "./apps/desktop/src/main/workspaceStore.ts";
 
@@ -206,17 +206,80 @@ for (const marker of ["workbench:create-local-project", "workbench:create-local-
 for (const forbidden of ["workbench:create-demo-project", "workbench:create-demo-case", "createDemoProject:", "createDemoCase:"]) {
   assert(!appLifecycleSource.includes(forbidden), "demo lifecycle IPC is still exposed: " + forbidden);
 }
-for (const forbidden of ["openPath", "execFile", "spawn(", "exec(", "fetch(", "unlink", "rm("]) {
-  const found = forbidden === "rm("
-    ? appLifecycleSource.replaceAll("confirm(", "").includes("rm(")
-    : appLifecycleSource.includes(forbidden);
-  assert(!found, "unsafe lifecycle source marker found: " + forbidden);
+for (const forbidden of ["openPath", "execFile", "spawn(", "exec(", "fetch(", "unlink"]) {
+  assert(!appLifecycleSource.includes(forbidden), "unsafe lifecycle source marker found: " + forbidden);
+}
+const workspaceSource = sourceByFile["apps/desktop/src/main/workspaceStore.ts"];
+const transactionCleanupStart = workspaceSource.indexOf("private async rollbackPreparingTransaction");
+const transactionCleanupEnd = workspaceSource.indexOf("private async writeCaseMarkdown", transactionCleanupStart);
+assert(transactionCleanupStart >= 0 && transactionCleanupEnd > transactionCleanupStart, "controlled transaction recovery block is missing");
+const lifecycleWithoutTransactionCleanup = workspaceSource.slice(0, transactionCleanupStart) + workspaceSource.slice(transactionCleanupEnd);
+assert(!lifecycleWithoutTransactionCleanup.includes("fs.rm("), "file removal escaped the controlled transaction recovery block");
+for (const marker of [".txn.tmp", ".txn.bak", "transactionDirectory()", "parseTransactionJournal", "rollbackPreparingTransaction", "cleanupCommittedTransaction"]) {
+  assert(workspaceSource.slice(transactionCleanupStart, transactionCleanupEnd).includes(marker), "controlled transaction recovery marker is missing: " + marker);
 }
 pass("noUnsafeLifecycleCapabilities");
 
 const tempFiles = await listTmpFiles(path.join(isolatedRepoRoot, "local-data", "workbench"));
 assert(tempFiles.length === 0, "atomic write temp files were left behind: " + tempFiles.join(", "));
 pass("noAtomicTempResidue");
+
+const recoveryTargetPath = path.join(caseRoot(alphaAfterSwitch, pricingCase), "README.md");
+const recoveryOriginalContent = await readFile(recoveryTargetPath, "utf8");
+const recoveryTransactionId = "probe-preparing";
+const recoveryBackupPath = recoveryTargetPath + "." + recoveryTransactionId + ".txn.bak";
+const recoveryTempPath = recoveryTargetPath + "." + recoveryTransactionId + ".txn.tmp";
+const recoveryDirectory = path.join(isolatedRepoRoot, "local-data", "workbench", "temp", "transactions");
+const recoveryJournalPath = path.join(recoveryDirectory, "transaction-" + recoveryTransactionId + ".json");
+await mkdir(recoveryDirectory, { recursive: true });
+await rename(recoveryTargetPath, recoveryBackupPath);
+await writeFile(recoveryTargetPath, "partial transaction content", "utf8");
+await writeFile(recoveryTempPath, "staged transaction content", "utf8");
+await writeFile(recoveryJournalPath, JSON.stringify({
+  version: 1,
+  status: "preparing",
+  createdAt: new Date().toISOString(),
+  items: [{
+    targetPath: recoveryTargetPath,
+    tempPath: recoveryTempPath,
+    backupPath: recoveryBackupPath,
+    hadOriginal: true
+  }]
+}, null, 2) + "\\n", "utf8");
+const preparingRecoveryStore = new WorkspaceStore(isolatedRepoRoot);
+await preparingRecoveryStore.getState();
+assert(await readFile(recoveryTargetPath, "utf8") === recoveryOriginalContent, "preparing transaction did not restore original file after restart");
+await assertRejects("preparingTransactionJournalRemoved", () => stat(recoveryJournalPath));
+await assertRejects("preparingTransactionBackupRemoved", () => stat(recoveryBackupPath));
+await assertRejects("preparingTransactionTempRemoved", () => stat(recoveryTempPath));
+pass("preparingTransactionRecoveredAfterRestart");
+
+const committedTransactionId = "probe-committed";
+const committedBackupPath = recoveryTargetPath + "." + committedTransactionId + ".txn.bak";
+const committedTempPath = recoveryTargetPath + "." + committedTransactionId + ".txn.tmp";
+const committedJournalPath = path.join(recoveryDirectory, "transaction-" + committedTransactionId + ".json");
+const committedContent = "committed transaction content";
+await rename(recoveryTargetPath, committedBackupPath);
+await writeFile(recoveryTargetPath, committedContent, "utf8");
+await writeFile(committedTempPath, "unused staged content", "utf8");
+await writeFile(committedJournalPath, JSON.stringify({
+  version: 1,
+  status: "committed",
+  createdAt: new Date().toISOString(),
+  items: [{
+    targetPath: recoveryTargetPath,
+    tempPath: committedTempPath,
+    backupPath: committedBackupPath,
+    hadOriginal: true
+  }]
+}, null, 2) + "\\n", "utf8");
+const committedRecoveryStore = new WorkspaceStore(isolatedRepoRoot);
+await committedRecoveryStore.getState();
+assert(await readFile(recoveryTargetPath, "utf8") === committedContent, "committed transaction was rolled back after restart");
+await assertRejects("committedTransactionJournalRemoved", () => stat(committedJournalPath));
+await assertRejects("committedTransactionBackupRemoved", () => stat(committedBackupPath));
+await assertRejects("committedTransactionTempRemoved", () => stat(committedTempPath));
+pass("committedTransactionCleanedAfterRestart");
 
 const legacyStore = new WorkspaceStore(legacyRepoRoot);
 const legacyProjectState = await legacyStore.createLocalProject({ name: "Legacy Client", sapVersion: "S4", systemLabel: "LEG/100" });
@@ -234,20 +297,75 @@ const staleState = JSON.parse(await readFile(staleStatePath, "utf8"));
 const staleProject = staleState.projects.find((project) => project.id === legacyProject.id);
 assert(staleProject, "legacy stale project missing");
 staleProject.config.localStorage.casesDir = expectedCasesDir(staleProject, legacyFirstCase);
+const legacyProjectJsonPath = path.join(legacyRepoRoot, "local-data", "workbench", "projects", legacyProject.id, "project.json");
+const staleProjectJson = JSON.parse(await readFile(legacyProjectJsonPath, "utf8"));
+for (const config of [staleProject.config, staleProjectJson.config]) {
+  config.schemaVersion = 2;
+  for (const connection of config.adtConnections) {
+    delete connection.systemId;
+    delete connection.instanceNumber;
+    connection.connectionStatus = "verified";
+    connection.minimalReadStatus = "verified";
+    connection.lastVerificationMode = "adt";
+  }
+  delete config.adt.systemId;
+  delete config.adt.instanceNumber;
+  config.adt.connectionStatus = "verified";
+  config.adt.minimalReadStatus = "verified";
+  config.adt.lastVerificationMode = "adt";
+}
 await writeFile(staleStatePath, JSON.stringify(staleState, null, 2) + "\\n", "utf8");
+await writeFile(legacyProjectJsonPath, JSON.stringify(staleProjectJson, null, 2) + "\\n", "utf8");
 
 const migratedState = await legacyStore.getState();
 const migratedProject = migratedState.projects.find((project) => project.id === legacyProject.id);
 assert(migratedProject, "legacy migrated project missing");
 assert(migratedProject.config.localStorage.casesDir === expectedCasesDir(migratedProject, legacyActiveCase), "getState did not return migrated active case storage path");
+assert(migratedProject.config.schemaVersion === 3, "legacy SAP config did not migrate to schemaVersion 3");
+assert(migratedProject.config.adtConnections.every((connection) => connection.connectionStatus === "pending-verification" && connection.minimalReadStatus === "pending-verification" && connection.lastVerificationMode === null), "legacy verified SAP status remained trusted without SID and instance identity");
 const persistedState = JSON.parse(await readFile(staleStatePath, "utf8"));
 const persistedProject = persistedState.projects.find((project) => project.id === legacyProject.id);
 assert(persistedProject, "legacy persisted project missing");
 assert(persistedProject.config.localStorage.casesDir === expectedCasesDir(persistedProject, legacyActiveCase), "app-state.json did not persist normalized active case storage path");
-const legacyProjectJsonPath = path.join(legacyRepoRoot, "local-data", "workbench", "projects", legacyProject.id, "project.json");
 const persistedProjectJson = JSON.parse(await readFile(legacyProjectJsonPath, "utf8"));
 assert(persistedProjectJson.config.localStorage.casesDir === expectedCasesDir(legacyActiveProject, legacyActiveCase), "project.json did not persist normalized active case storage path");
 pass("legacyStateStorageMigration");
+pass("legacySapIdentityVerificationReset");
+
+const configOnlyState = JSON.parse(await readFile(staleStatePath, "utf8"));
+const configOnlyProject = configOnlyState.projects.find((project) => project.id === legacyProject.id);
+const configOnlyProjectJson = JSON.parse(await readFile(legacyProjectJsonPath, "utf8"));
+assert(configOnlyProject, "config-only migration project missing");
+for (const config of [configOnlyProject.config, configOnlyProjectJson.config]) {
+  config.schemaVersion = 2;
+  for (const connection of config.adtConnections) {
+    delete connection.systemId;
+    delete connection.instanceNumber;
+    connection.connectionStatus = "verified";
+    connection.minimalReadStatus = "verified";
+    connection.lastVerificationMode = "adt";
+  }
+  delete config.adt.systemId;
+  delete config.adt.instanceNumber;
+  config.adt.connectionStatus = "verified";
+  config.adt.minimalReadStatus = "verified";
+  config.adt.lastVerificationMode = "adt";
+}
+await writeFile(staleStatePath, JSON.stringify(configOnlyState, null, 2) + "\\n", "utf8");
+await writeFile(legacyProjectJsonPath, JSON.stringify(configOnlyProjectJson, null, 2) + "\\n", "utf8");
+const configOnlyStore = new WorkspaceStore(legacyRepoRoot);
+await configOnlyStore.getState();
+const configOnlyPersistedState = JSON.parse(await readFile(staleStatePath, "utf8"));
+const configOnlyPersistedProject = configOnlyPersistedState.projects.find((project) => project.id === legacyProject.id);
+const configOnlyPersistedProjectJson = JSON.parse(await readFile(legacyProjectJsonPath, "utf8"));
+assert(configOnlyPersistedProject.config.schemaVersion === 3, "nested config-only migration was not persisted to app-state.json");
+assert(configOnlyPersistedProjectJson.config.schemaVersion === 3, "nested config-only migration was not persisted to project.json");
+assert(configOnlyPersistedProject.config.adtConnections.every((connection) => connection.connectionStatus === "pending-verification" && connection.minimalReadStatus === "pending-verification" && connection.lastVerificationMode === null), "nested config-only migration retained stale SAP verification");
+const idempotentConfigStore = new WorkspaceStore(legacyRepoRoot);
+const idempotentConfigState = await idempotentConfigStore.getState();
+const idempotentConfigProject = idempotentConfigState.projects.find((project) => project.id === legacyProject.id);
+assert(idempotentConfigProject.config.schemaVersion === 3, "nested config migration was not idempotent after restart");
+pass("nestedProjectConfigMigrationPersisted");
 
 persistedProjectJson.config.localStorage.casesDir = expectedCasesDir(legacyActiveProject, legacyFirstCase);
 await writeFile(legacyProjectJsonPath, JSON.stringify(persistedProjectJson, null, 2) + "\\n", "utf8");

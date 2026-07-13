@@ -15,6 +15,13 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function sourceBlock(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert(start >= 0 && end > start, `missing source block: ${startMarker}`);
+  return source.slice(start, end);
+}
+
 async function readSource(relativePath) {
   return readFile(path.join(repoRoot, relativePath), "utf8");
 }
@@ -58,6 +65,7 @@ assert(!sources.app.includes("workbench:delete-project"), "renderer must not cal
 assert(!sources.workspaceStore.includes("state.projects = state.projects.filter"), "must not remove projects from state with filter assignment");
 assert(!sources.workspaceStore.includes(".projects.splice"), "must not splice projects out of state");
 assert(!sources.workspaceStore.includes("shell.trashItem"), "must not move project files to trash");
+const visibilityStoreBlock = sourceBlock(sources.workspaceStore, "async hideProjectFromSidebar", "async switchCase");
 for (const forbidden of [
   "deleteProject",
   "removeProjectFiles",
@@ -78,8 +86,8 @@ for (const forbidden of [
 ]) {
   assert(![sources.workspaceStore, sources.preload, sources.app].join("\n").includes(forbidden), `forbidden renderer/store capability marker: ${forbidden}`);
 }
-for (const forbidden of ["fs." + "rm", "fs.un" + "link"]) {
-  assert(!sources.workspaceStore.includes(forbidden), `workspace store must not delete files: ${forbidden}`);
+for (const forbidden of ["fs." + "rm", "fs.un" + "link", "shell.trashItem", "removeProjectFiles", "deleteProject"]) {
+  assert(!visibilityStoreBlock.includes(forbidden), `project visibility must not delete files: ${forbidden}`);
 }
 pass("phase26AddsNoDeleteOrExternalCapability");
 

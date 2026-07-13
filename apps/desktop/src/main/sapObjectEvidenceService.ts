@@ -112,7 +112,7 @@ export function parseSapObjectEvidenceRequest(input: unknown): SapObjectEvidence
     throw new Error("SAP 证据请求格式无效。");
   }
   const candidate = input as Partial<SapObjectEvidenceRequest>;
-  const allowedKeys = new Set(["objectType", "objectName", "functionGroup"]);
+  const allowedKeys = new Set(["objectType", "objectName", "functionGroup", "connectionMode", "connectionIds", "queryContext"]);
   const extraKeys = Object.keys(candidate).filter((key) => !allowedKeys.has(key));
   if (extraKeys.length > 0) {
     throw new Error("SAP 证据请求包含不支持的字段。");
@@ -124,8 +124,33 @@ export function parseSapObjectEvidenceRequest(input: unknown): SapObjectEvidence
 
   const request: SapObjectEvidenceRequest = {
     objectType: objectType as SapObjectEvidenceType,
-    objectName: normalizeObjectName(candidate.objectName, "SAP 对象名")
+    objectName: normalizeObjectName(candidate.objectName, "SAP 对象名"),
+    connectionMode: candidate.connectionMode === "manual" ? "manual" : "auto"
   };
+
+  if (candidate.connectionMode !== undefined && candidate.connectionMode !== "auto" && candidate.connectionMode !== "manual") {
+    throw new Error("SAP 连接选择模式无效。");
+  }
+  if (candidate.connectionIds !== undefined) {
+    if (!Array.isArray(candidate.connectionIds) || candidate.connectionIds.length > 6) {
+      throw new Error("SAP 连接列表无效；一次只读取 1 至 6 个已确认连接。");
+    }
+    const connectionIds = [...new Set(candidate.connectionIds.map((value) => text(value)))];
+    if (connectionIds.some((value) => !/^[A-Za-z0-9_-]{1,80}$/.test(value))) {
+      throw new Error("SAP 连接列表包含无效连接 ID。");
+    }
+    request.connectionIds = connectionIds;
+  }
+  if (candidate.queryContext !== undefined) {
+    const queryContext = text(candidate.queryContext);
+    if (queryContext.length > 6000 || /[\u0000\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(queryContext)) {
+      throw new Error("SAP 连接路由上下文格式无效或内容过长。");
+    }
+    request.queryContext = queryContext;
+  }
+  if (request.connectionMode === "manual" && (request.connectionIds?.length ?? 0) === 0) {
+    throw new Error("手动选择 SAP 连接时，至少需要选择一个已验证连接。");
+  }
 
   if (request.objectType === "function" && text(candidate.functionGroup)) {
     request.functionGroup = normalizeObjectName(candidate.functionGroup, "Function group 名称");
@@ -184,6 +209,9 @@ function metadataLines(summary: SapObjectEvidenceSummary): string[] {
     `Object name: ${summary.objectName}`,
     `Function group: ${summary.functionGroup ?? "not applicable"}`,
     `System alias: ${summary.systemAlias}`,
+    `System ID: ${summary.systemId}`,
+    `Instance number: ${summary.instanceNumber}`,
+    `Environment: ${summary.environment}`,
     `Endpoint: ${summary.endpointHost}`,
     `Client: ${summary.client}`,
     `User: ${summary.usernameMasked}`,
@@ -203,6 +231,9 @@ export function normalizeSapObjectEvidenceResult(result: SapObjectEvidenceConnec
     objectName: normalizeObjectName(result.objectName, "SAP 对象名"),
     functionGroup: result.functionGroup ? normalizeObjectName(result.functionGroup, "Function group 名称") : null,
     systemAlias: result.system.alias,
+    systemId: result.system.systemId,
+    instanceNumber: result.system.instanceNumber,
+    environment: result.system.environment,
     endpointHost: result.system.endpointHost,
     client: result.system.client,
     usernameMasked: result.system.usernameMasked,
@@ -216,7 +247,8 @@ export function normalizeSapObjectEvidenceResult(result: SapObjectEvidenceConnec
 }
 
 export function renderSapObjectEvidenceFiles(record: SapObjectEvidenceRecord): CaseGeneratedFile[] {
-  const slug = `${record.summary.objectType}-${safeSlug(record.summary.objectName)}-${timestampSlug(record.summary.readAt)}-${record.summary.digest.slice(0, 12)}`;
+  const systemSlug = safeSlug(`${record.summary.systemAlias}-${record.summary.client}`);
+  const slug = `${record.summary.objectType}-${safeSlug(record.summary.objectName)}-${systemSlug}-${timestampSlug(record.summary.readAt)}-${record.summary.digest.slice(0, 12)}`;
   const evidencePath = `evidence/sap-object-evidence-${slug}.md`;
   const snapshotPath = `snapshots/sap-object-snapshot-${slug}.txt`;
   const summaryPath = `outputs/sap-object-evidence-summary-${slug}.md`;
@@ -264,7 +296,9 @@ export function renderSapObjectEvidenceFiles(record: SapObjectEvidenceRecord): C
         "| 字段 | 值 |",
         "|---|---|",
         `| 对象 | ${record.summary.objectType} ${record.summary.objectName} |`,
-        `| 系统 | ${record.summary.systemAlias} / ${record.summary.client} |`,
+        `| 系统 | ${record.summary.systemId || record.summary.systemAlias} / Client ${record.summary.client} |`,
+        `| 实例 | ${record.summary.instanceNumber || "未记录"} |`,
+        `| 环境 | ${record.summary.environment} |`,
         `| 来源模式 | ${record.summary.sourceMode} |`,
         `| 读取时间 | ${record.summary.readAt} |`,
         `| 摘要指纹 | ${record.summary.digest.slice(0, 16)} |`,
@@ -281,6 +315,9 @@ export function renderSapObjectEvidenceFiles(record: SapObjectEvidenceRecord): C
         ["objectName", record.summary.objectName].map(csvCell).join(","),
         ["functionGroup", record.summary.functionGroup ?? ""].map(csvCell).join(","),
         ["systemAlias", record.summary.systemAlias].map(csvCell).join(","),
+        ["systemId", record.summary.systemId].map(csvCell).join(","),
+        ["instanceNumber", record.summary.instanceNumber].map(csvCell).join(","),
+        ["environment", record.summary.environment].map(csvCell).join(","),
         ["endpointHost", record.summary.endpointHost].map(csvCell).join(","),
         ["client", record.summary.client].map(csvCell).join(","),
         ["usernameMasked", record.summary.usernameMasked].map(csvCell).join(","),

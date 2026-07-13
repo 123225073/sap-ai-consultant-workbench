@@ -12,6 +12,9 @@ const MAX_ADT_RESPONSE_CHARS = 120000;
 
 export interface AdtConnectorInput {
   alias: string;
+  systemId: string;
+  instanceNumber: string;
+  environment: AdtConfig["environment"];
   url: string;
   client: string;
   username: string;
@@ -28,7 +31,7 @@ interface AdtStatusResult {
 
 export interface AdtReadonlyConnector {
   verify(input: AdtConnectorInput): Promise<AdtVerificationReport>;
-  readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options?: { allowFakeEvidence?: boolean }): Promise<SapObjectEvidenceConnectorResult>;
+  readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options?: { allowFakeEvidence?: boolean; signal?: AbortSignal }): Promise<SapObjectEvidenceConnectorResult>;
 }
 
 function nowIso(): string {
@@ -54,6 +57,9 @@ function endpointHost(url: string): string {
 function redactedSystem(input: Omit<AdtConnectorInput, "password">): AdtRedactedSystemInfo {
   return {
     alias: input.alias,
+    systemId: input.systemId,
+    instanceNumber: input.instanceNumber,
+    environment: input.environment,
     endpointHost: endpointHost(input.url),
     client: input.client,
     usernameMasked: maskUsername(input.username),
@@ -167,6 +173,14 @@ function describeAdtFailure(errorValue: unknown): AdtFailureDescription {
       detail: "ADT 请求在 30 秒内没有完成。",
       message: copy.reason,
       suggestion: copy.suggestion
+    };
+  }
+
+  if (errorValue instanceof Error && errorValue.name === "AbortError") {
+    return {
+      detail: "SAP 只读取证已达到本次任务总时限。",
+      message: "SAP 只读取证超过 90 秒，已停止等待。",
+      suggestion: "请检查 VPN、SAP 网络和 ADT 服务响应后重试；本次没有发送任何写入请求。"
     };
   }
 
@@ -335,7 +349,7 @@ interface AdtGetResult {
   contentType: string;
 }
 
-function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResult> {
+function adtGet(input: AdtConnectorInput, fixedPath: string, signal?: AbortSignal): Promise<AdtGetResult> {
   const target = buildAdtUrl(input, fixedPath);
   const isHttps = target.protocol === "https:";
   const headers = {
@@ -347,7 +361,8 @@ function adtGet(input: AdtConnectorInput, fixedPath: string): Promise<AdtGetResu
   const options: http.RequestOptions | https.RequestOptions = {
     method: "GET",
     headers,
-    timeout: ADT_GET_TIMEOUT_MS
+    timeout: ADT_GET_TIMEOUT_MS,
+    signal
   };
   if (isHttps && input.sslMode === "skip-certificate") {
     options.agent = new https.Agent({ rejectUnauthorized: false });
@@ -463,7 +478,7 @@ export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
     }
   }
 
-  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest): Promise<SapObjectEvidenceConnectorResult> {
+  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { signal?: AbortSignal } = {}): Promise<SapObjectEvidenceConnectorResult> {
     if (input.readOnly !== true) {
       const copy = externalConnectorUserError("ADT Service", "configuration");
       throw externalConnectorThrownError({
@@ -475,7 +490,7 @@ export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
     const readAt = nowIso();
     let result: AdtGetResult;
     try {
-      result = await adtGet(input, fixedPath);
+      result = await adtGet(input, fixedPath, options.signal);
     } catch (readError) {
       const failure = describeAdtFailure(readError);
       throw externalConnectorThrownError({ reason: failure.message, suggestion: failure.suggestion });
@@ -557,7 +572,7 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
     return baseT000(true, true, input.client);
   }
 
-  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { allowFakeEvidence?: boolean } = {}): Promise<SapObjectEvidenceConnectorResult> {
+  async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { allowFakeEvidence?: boolean; signal?: AbortSignal } = {}): Promise<SapObjectEvidenceConnectorResult> {
     if (options.allowFakeEvidence !== true) {
       throw new Error("原因：SAP object evidence 需要真实的只读 ADT Service。建议：fake evidence 仅用于本地 probe，请先完成真实 ADT 连接验证。");
     }

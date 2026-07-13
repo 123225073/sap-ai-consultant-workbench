@@ -65,6 +65,21 @@ interface StoredState {
   chatThreads: DailyChatThread[];
 }
 
+interface TextBatchTransactionItem {
+  targetPath: string;
+  tempPath: string;
+  backupPath: string;
+  hadOriginal: boolean;
+  snapshotPath?: string;
+}
+
+interface TextBatchTransactionJournal {
+  version: 1;
+  status: "preparing" | "committed";
+  createdAt: string;
+  items: TextBatchTransactionItem[];
+}
+
 export interface PreparedSafeModelDraftRequest {
   projectId: string;
   providerId: string;
@@ -91,6 +106,24 @@ export interface DailyChatAssistantReply {
   projectId: string;
   providerId: string;
   providerName: string;
+}
+
+export interface LocalTaskFolderBindingInput {
+  folderPath: string;
+  folderName: string;
+}
+
+interface LocalTaskFolderBindingRecord {
+  projectId: string;
+  caseId: string;
+  folderPath: string;
+  folderName: string;
+  createdAt: string;
+}
+
+interface LocalTaskFolderBindingRegistry {
+  schemaVersion: 1;
+  bindings: LocalTaskFolderBindingRecord[];
 }
 
 const DEMO_PROJECT_ID = "demo-s4hana";
@@ -473,11 +506,16 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
   const adt: ProjectConfig["adt"] = {
     id: "adt-default",
     alias: demo ? "演示开发系统" : "",
+    systemId: demo ? "DEM" : "",
+    instanceNumber: demo ? "00" : "",
+    environment: demo ? "development" : "other",
+    usage: "",
+    routingKeywords: [],
     url: demo ? "https://sap-demo.example.com" : "",
     client: demo ? "100" : "",
     username: demo ? "DEMO_USER" : "",
     language: "ZH",
-    sslMode: "strict",
+    sslMode: "skip-certificate",
     readOnly: true,
     credential: emptySecretHandle("adt-password"),
     configStatus: demo ? "saved" : "not-configured",
@@ -487,7 +525,7 @@ function defaultProjectConfig(projectId: string, projectDir: string, caseDir: st
     lastCheckedAt: null
   };
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     projectId,
     updatedAt,
     adt,
@@ -640,7 +678,7 @@ export function parseCreateWorkThreadInput(input: unknown): CreateWorkThreadInpu
     throw new Error("新建任务请求无效。");
   }
   const keys = Object.keys(input);
-  if (keys.some((key) => !["projectId", "title", "folderMode", "folderName", "caseId"].includes(key))) {
+  if (keys.some((key) => !["projectId", "title", "folderMode", "folderName", "caseId", "folderSelectionToken"].includes(key))) {
     throw new Error("新建任务请求包含不支持的字段。");
   }
   const candidate = input as Partial<CreateWorkThreadInput>;
@@ -651,7 +689,11 @@ export function parseCreateWorkThreadInput(input: unknown): CreateWorkThreadInpu
     folderMode
   };
   if (folderMode === "existing") {
-    result.caseId = assertStrictLifecycleId("工作文件夹 ID", candidate.caseId);
+    if (candidate.folderSelectionToken) {
+      result.folderSelectionToken = assertStrictLifecycleId("文件夹选择凭证", candidate.folderSelectionToken);
+    } else {
+      result.caseId = assertStrictLifecycleId("工作文件夹 ID", candidate.caseId);
+    }
   } else {
     result.folderName = assertSafeLifecycleText("工作文件夹名称", candidate.folderName || candidate.title, 120);
   }
@@ -822,6 +864,8 @@ function createLocalCaseRecord(projectId: string, title: string, existingCaseIds
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
     folderName: id,
+    folderSource: "managed",
+    linkedFolderName: null,
     currentSummary: "尚未生成案件成果。",
     knowledgeReferences: [],
     messages: []
@@ -964,6 +1008,8 @@ function uniqueSecretTargetId(value: unknown, fallback: string, usedIds: Set<str
 function adtVerificationIdentity(config: AdtConfig): string {
   return JSON.stringify({
     id: config.id,
+    systemId: config.systemId,
+    instanceNumber: config.instanceNumber,
     url: config.url,
     client: config.client,
     username: config.username,
@@ -1044,7 +1090,29 @@ function adtVerificationMode(value: unknown): AdtVerificationMode | null {
 }
 
 function sslMode(value: unknown): ProjectConfig["adt"]["sslMode"] {
-  return value === "skip-certificate" ? "skip-certificate" : "strict";
+  return value === "strict" ? "strict" : "skip-certificate";
+}
+
+function sapEnvironment(value: unknown): ProjectConfig["adt"]["environment"] {
+  return value === "development" || value === "quality" || value === "production" || value === "sandbox" ? value : "other";
+}
+
+function sapInstanceNumber(value: unknown): string {
+  const normalized = text(value);
+  if (!normalized) return "";
+  if (!/^\d{2}$/.test(normalized)) throw new Error("SAP 实例编号必须是两位数字，例如 00 或 02。");
+  return normalized;
+}
+
+function sapRoutingKeywords(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.flatMap((item) => typeof item === "string" ? [item.trim()] : []).filter(Boolean))]
+    .slice(0, 20)
+    .map((item) => item.slice(0, 40));
+}
+
+function sapConnectionIdentityComplete(systemId: string, instanceNumber: string, url: string): boolean {
+  return /^[A-Z0-9]{3}$/.test(systemId) && (Boolean(instanceNumber) || /^https:\/\//i.test(url.trim()));
 }
 
 function codexIntegrationType(value: unknown): ProjectConfig["codex"]["integrationType"] {
@@ -1097,6 +1165,8 @@ function normalizeLocalStorageConfig(
 
 function adtConnectionFieldsChanged(previous: AdtConfig, next: AdtConfig): boolean {
   return (
+    previous.systemId !== next.systemId ||
+    previous.instanceNumber !== next.instanceNumber ||
     previous.url !== next.url ||
     previous.client !== next.client ||
     previous.username !== next.username ||
@@ -1466,6 +1536,10 @@ function normalizeCaseSummary(value: unknown, projectId: string, fallback: CaseS
   const candidate = value && typeof value === "object" ? value as Partial<CaseSummary> : fallback;
   const id = safeId(candidate.id, fallback.id);
   const folderName = safeId(candidate.folderName || candidate.caseDir || id, id);
+  const folderSource = candidate.folderSource === "linked-local" ? "linked-local" : "managed";
+  const linkedFolderName = folderSource === "linked-local"
+    ? text(candidate.linkedFolderName).replace(/[\\/]/g, "").trim().slice(0, 120) || null
+    : null;
   const messages = Array.isArray(candidate.messages)
     ? candidate.messages.flatMap((message) => {
         const normalized = normalizeCaseMessage(message, id);
@@ -1483,6 +1557,8 @@ function normalizeCaseSummary(value: unknown, projectId: string, fallback: CaseS
     updatedAt: text(candidate.updatedAt, nowIso()),
     lastOpenedAt: text(candidate.lastOpenedAt, nowIso()),
     folderName,
+    folderSource,
+    linkedFolderName,
     currentSummary: text(candidate.currentSummary, text(candidate.summary, fallback.currentSummary)),
     knowledgeReferences: normalizeCaseKnowledgeReferences(candidate.knowledgeReferences),
     messages
@@ -1557,12 +1633,34 @@ function workThreadFingerprint(state: StoredState): unknown {
   }));
 }
 
+function projectConfigMigrationFingerprint(state: StoredState): unknown {
+  const projects = Array.isArray(state.projects) ? state.projects : [];
+  return projects.map((project) => ({
+    id: project.id,
+    schemaVersion: project.config?.schemaVersion,
+    projectDir: project.config?.localStorage?.projectDir,
+    casesDir: project.config?.localStorage?.casesDir,
+    adtConnections: Array.isArray(project.config?.adtConnections) ? project.config.adtConnections.map((connection) => ({
+      id: connection.id,
+      systemId: connection.systemId,
+      instanceNumber: connection.instanceNumber,
+      url: connection.url,
+      client: connection.client,
+      connectionStatus: connection.connectionStatus,
+      minimalReadStatus: connection.minimalReadStatus,
+      lastVerificationMode: connection.lastVerificationMode
+    })) : []
+  }));
+}
+
 export class WorkspaceStore {
   private readonly workspaceRoot: string;
   private readonly statePath: string;
   private readonly stateBackupPath: string;
+  private readonly localFolderBindingsPath: string;
   private readonly database: DatabaseService;
   private databaseInitialized = false;
+  private transactionRecoveryComplete = false;
   private stateWriteQueue: Promise<void> = Promise.resolve();
   private startupNotice: string | null = null;
   private readonly adtVerificationSequences = new Map<string, number>();
@@ -1572,11 +1670,58 @@ export class WorkspaceStore {
     this.workspaceRoot = path.join(repoRoot, "local-data", "workbench");
     this.statePath = path.join(this.workspaceRoot, "app-state.json");
     this.stateBackupPath = path.join(this.workspaceRoot, "app-state.backup.json");
+    this.localFolderBindingsPath = path.join(this.workspaceRoot, "local-folder-bindings.json");
     this.database = new DatabaseService(this.workspaceRoot);
   }
 
   getWorkspaceRoot(): string {
     return this.workspaceRoot;
+  }
+
+  async inspectLocalTaskFolder(selectedPath: string): Promise<LocalTaskFolderBindingInput> {
+    if (typeof selectedPath !== "string" || !path.isAbsolute(selectedPath) || selectedPath.startsWith("\\\\")) {
+      throw new Error("请选择此电脑上的本地文件夹。网络共享目录暂不支持绑定。");
+    }
+    const resolvedPath = path.resolve(selectedPath);
+    const stats = await fs.lstat(resolvedPath);
+    if (stats.isSymbolicLink() || !stats.isDirectory()) {
+      throw new Error("所选路径不是普通本地文件夹，已停止绑定。");
+    }
+    const realPath = await fs.realpath(resolvedPath);
+    if (realPath === path.parse(realPath).root) {
+      throw new Error("不能把整个磁盘根目录绑定为任务文件夹，请选择一个具体目录。");
+    }
+    const workspaceRealPath = await fs.realpath(this.workspaceRoot).catch(() => path.resolve(this.workspaceRoot));
+    const lowerRealPath = realPath.toLowerCase();
+    const lowerWorkspacePath = workspaceRealPath.toLowerCase();
+    if (
+      lowerRealPath === lowerWorkspacePath ||
+      lowerRealPath.startsWith(`${lowerWorkspacePath}${path.sep}`) ||
+      lowerWorkspacePath.startsWith(`${lowerRealPath}${path.sep}`)
+    ) {
+      throw new Error("不能绑定工作台自身目录或其上级目录，请选择独立的业务文件夹。");
+    }
+    const sensitiveSegments = new Set([
+      "windows",
+      "system32",
+      "program files",
+      "program files (x86)",
+      "programdata",
+      "appdata",
+      "$recycle.bin",
+      "system volume information",
+      ".ssh",
+      ".aws",
+      ".azure",
+      ".gnupg"
+    ]);
+    const pathSegments = realPath.split(/[\\/]+/).map((segment) => segment.toLowerCase()).filter(Boolean);
+    if (pathSegments.some((segment) => sensitiveSegments.has(segment))) {
+      throw new Error("所选目录属于系统或凭据敏感位置，不能绑定到任务。");
+    }
+    const folderName = path.basename(realPath).trim();
+    if (!folderName) throw new Error("无法识别所选文件夹名称，请重新选择。");
+    return { folderPath: realPath, folderName: folderName.slice(0, 120) };
   }
 
   private async runExclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -1723,7 +1868,7 @@ export class WorkspaceStore {
     });
   }
 
-  async createWorkThread(input: unknown): Promise<WorkbenchState> {
+  async createWorkThread(input: unknown, localFolder?: LocalTaskFolderBindingInput): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
       const threadInput = parseCreateWorkThreadInput(input);
       const state = await this.loadOrCreateState();
@@ -1731,8 +1876,22 @@ export class WorkspaceStore {
       if (!project || project.isVisible === false) throw new Error("目标 Project 已不存在或已隐藏。");
       let caseItem: CaseSummary | undefined;
       if (threadInput.folderMode === "existing") {
-        caseItem = project.cases.find((item) => item.id === threadInput.caseId);
-        if (!caseItem) throw new Error("选择的工作文件夹已不存在。");
+        if (localFolder) {
+          const registry = await this.readLocalTaskFolderBindingRegistry();
+          const existingBinding = registry.bindings.find((item) =>
+            item.projectId === project.id && item.folderPath.toLowerCase() === localFolder.folderPath.toLowerCase()
+          );
+          caseItem = existingBinding ? project.cases.find((item) => item.id === existingBinding.caseId) : undefined;
+          if (!caseItem) {
+            caseItem = createLocalCaseRecord(project.id, localFolder.folderName, project.cases.map((item) => item.id));
+            caseItem.folderSource = "linked-local";
+            caseItem.linkedFolderName = localFolder.folderName;
+            project.cases.unshift(caseItem);
+          }
+        } else {
+          caseItem = project.cases.find((item) => item.id === threadInput.caseId);
+          if (!caseItem) throw new Error("选择的工作文件夹已不存在。");
+        }
       } else {
         caseItem = createLocalCaseRecord(project.id, threadInput.folderName ?? threadInput.title, project.cases.map((item) => item.id));
         project.cases.unshift(caseItem);
@@ -1748,6 +1907,9 @@ export class WorkspaceStore {
       syncProjectLocalStorage(project, caseItem);
       await this.ensureCaseFiles(state);
       await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+      if (localFolder) {
+        await this.upsertLocalTaskFolderBinding(project.id, caseItem.id, localFolder);
+      }
       await this.saveState(state);
       await this.refreshSearchIndex(state);
       return this.withFiles(state);
@@ -2428,6 +2590,13 @@ export class WorkspaceStore {
   }
 
   async appendSapObjectEvidence(result: SapObjectEvidenceConnectorResult, targetCase?: { projectId: string; caseId: string; threadId: string }): Promise<SapObjectEvidenceResult> {
+    return this.appendSapObjectEvidenceBatch([result], targetCase);
+  }
+
+  async appendSapObjectEvidenceBatch(results: SapObjectEvidenceConnectorResult[], targetCase?: { projectId: string; caseId: string; threadId: string }): Promise<SapObjectEvidenceResult> {
+    if (results.length === 0 || results.length > 6) {
+      throw new Error("SAP 只读证据批次必须包含 1 至 6 个已确认连接结果。");
+    }
     return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
@@ -2454,22 +2623,24 @@ export class WorkspaceStore {
     };
     currentCase.messages = targetThread.messages.map((message) => ({ ...message, caseId: currentCase.id }));
     syncProjectLocalStorage(project, currentCase);
-    const record = normalizeSapObjectEvidenceResult(result);
-    const generatedFiles = renderSapObjectEvidenceFiles(record);
+    const records = results.map(normalizeSapObjectEvidenceResult);
+    const generatedFiles = records.flatMap(renderSapObjectEvidenceFiles);
     const generatedPaths = generatedFiles.map((file) => file.relativePath);
+    const summaries = records.map((record) => record.summary);
+    const firstSummary = summaries[0];
 
     const assistantMessage = createCaseMessage(
       "assistant",
       currentCase.id,
       [
-        `SAP read-only evidence attached: ${record.summary.objectType} ${record.summary.objectName}.`,
+        `已补充 SAP 只读证据：${firstSummary.objectType} ${firstSummary.objectName}。`,
         "",
-        `System: ${record.summary.systemAlias} / client ${record.summary.client}.`,
-        `Read time: ${record.summary.readAt}.`,
+        `读取范围：${summaries.map((summary) => `${summary.systemId || summary.systemAlias} / Client ${summary.client}`).join("、")}。`,
+        `读取时间：${summaries.map((summary) => summary.readAt).join("、")}。`,
         "",
         sapObjectEvidenceBoundary,
         "",
-        "Generated files:",
+        "已生成文件：",
         ...generatedPaths.map((file) => `- ${file}`)
       ].join("\n"),
       "problem-analysis",
@@ -2480,7 +2651,7 @@ export class WorkspaceStore {
     currentCase.messages.push(assistantMessage);
     targetThread.messages = currentCase.messages.map((message) => ({ ...message, caseId: currentCase.id }));
     targetThread.updatedAt = nowIso();
-    currentCase.currentSummary = `已加入 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据；用户审核后，案件结论可以引用该证据。`;
+    currentCase.currentSummary = `已从 ${summaries.length} 个 SAP 登录连接加入 ${firstSummary.objectType} ${firstSummary.objectName} 的只读证据；用户审核后，案件结论可以引用这些证据。`;
     currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
     currentCase.lastOpenedAt = nowIso();
@@ -2489,13 +2660,13 @@ export class WorkspaceStore {
     const maintenance = buildCaseMaintenanceArtifacts(project, currentCase);
     const metadata = {
       ...(maintenance.metadata && typeof maintenance.metadata === "object" ? maintenance.metadata as Record<string, unknown> : {}),
-      sapObjectEvidence: record.summary,
+      sapObjectEvidence: summaries,
       generatedFiles: generatedFiles.map((file) => ({ relativePath: file.relativePath, purpose: file.purpose })),
       workflowBoundary: sapObjectEvidenceBoundary,
       safety: {
         localOnly: true,
         sapWrite: "disabled",
-        sapEvidenceRead: "single-object-readonly",
+        sapEvidenceRead: summaries.length > 1 ? "single-object-cross-system-readonly" : "single-object-readonly",
         externalModelCall: "not-run",
         feishuPublish: "not-run",
         secretsStoredInCaseFiles: false
@@ -2514,21 +2685,20 @@ export class WorkspaceStore {
       ].join("\n"),
       timeline: [
         maintenance.timeline,
-        `- ${record.summary.readAt}：已加入 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据。`
+        ...summaries.map((summary) => `- ${summary.readAt}：已从 ${summary.systemId || summary.systemAlias} / Client ${summary.client} 加入 ${summary.objectType} ${summary.objectName} 的 SAP 只读证据。`)
       ].join("\n"),
       contextPack: [
         maintenance.contextPack,
         "",
         "## SAP 只读证据",
         "",
-        `- ${record.summary.objectType} ${record.summary.objectName}，来源 ${record.summary.systemAlias} / ${record.summary.client}。`,
-        `- 证据时间：${record.summary.readAt}。`,
+        ...summaries.map((summary) => `- ${summary.objectType} ${summary.objectName}，来源 ${summary.systemId || summary.systemAlias} / Client ${summary.client}，证据时间 ${summary.readAt}。`),
         "- 完整证据保留在受限的工作文件夹证据文件中，默认不发送给模型。"
       ].join("\n"),
       metadata
     };
 
-    await this.writeCaseMarkdown(state, currentCase, artifacts, targetThread.id);
+    await this.writeCaseMarkdown(state, currentCase, artifacts, targetThread.id, true);
     const visibleThread = state.workThreads.find((thread) => thread.id === visibleSelection.threadId && thread.status === "active");
     const visibleProject = visibleThread ? state.projects.find((item) => item.id === visibleThread.projectId) : undefined;
     const visibleCase = visibleProject?.cases.find((item) => item.id === visibleThread?.caseId);
@@ -2538,11 +2708,11 @@ export class WorkspaceStore {
       state.activeCaseId = visibleCase.id;
       state.activeWorkThreadId = visibleThread.id;
     }
-    await this.saveState(state);
     await this.refreshSearchIndex(state);
     return {
       state: await this.withFiles(state),
-      summary: record.summary,
+      summary: firstSummary,
+      summaries,
       generatedFiles: generatedPaths
     };
     });
@@ -3090,6 +3260,10 @@ export class WorkspaceStore {
 
   private async loadOrCreateState(): Promise<StoredState> {
     await fs.mkdir(this.workspaceRoot, { recursive: true });
+    if (!this.transactionRecoveryComplete) {
+      await this.recoverInterruptedTextBatchTransactions();
+      this.transactionRecoveryComplete = true;
+    }
     let raw: string;
     try {
       raw = await fs.readFile(this.statePath, "utf8");
@@ -3129,13 +3303,15 @@ export class WorkspaceStore {
         throw new Error(`本地状态文件无法读取，原文件已保留为 ${path.basename(preservedPath)}。未找到可用备份，已停止写入以避免覆盖真实工作。`);
       }
     }
-    const activeProject = this.activeProjectFromState(normalized);
     const shouldPersistState = raw.includes("secure-store:sec_") || this.shouldPersistNormalizedState(parsed, normalized);
     if (shouldPersistState) {
       await this.saveState(normalized);
-    }
-    if (shouldPersistState || await this.shouldPersistActiveProjectMetadata(activeProject)) {
-      await this.writeProjectMetadata(activeProject);
+      await Promise.all(normalized.projects.map((project) => this.writeProjectMetadata(project)));
+    } else {
+      const activeProject = this.activeProjectFromState(normalized);
+      if (await this.shouldPersistActiveProjectMetadata(activeProject)) {
+        await this.writeProjectMetadata(activeProject);
+      }
     }
     await this.initializeDatabase();
     return normalized;
@@ -3197,11 +3373,7 @@ export class WorkspaceStore {
     if (JSON.stringify(projectVisibilityFingerprint(parsed)) !== JSON.stringify(projectVisibilityFingerprint(normalized))) return true;
     if (JSON.stringify(chatThreadFingerprint(parsed)) !== JSON.stringify(chatThreadFingerprint(normalized))) return true;
     if (JSON.stringify(workThreadFingerprint(parsed)) !== JSON.stringify(workThreadFingerprint(normalized))) return true;
-    const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
-    const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
-    if (!parsedProject || !normalizedProject) return true;
-    return parsedProject.config?.localStorage?.casesDir !== normalizedProject.config.localStorage.casesDir ||
-      parsedProject.config?.localStorage?.projectDir !== normalizedProject.config.localStorage.projectDir;
+    return JSON.stringify(projectConfigMigrationFingerprint(parsed)) !== JSON.stringify(projectConfigMigrationFingerprint(normalized));
   }
 
   private async saveState(state: StoredState): Promise<void> {
@@ -3451,7 +3623,7 @@ export class WorkspaceStore {
     const candidateAdtConnections = Array.isArray(candidate.adtConnections) ? candidate.adtConnections : [];
     const usesLegacySingleAdt = candidateAdtConnections.length === 0;
     const rawAdtConnections = !usesLegacySingleAdt
-      ? candidateAdtConnections.slice(0, 6)
+      ? candidateAdtConnections.slice(0, 200)
       : [candidate.adt ?? fallback.adt];
     const feishu = candidate.feishu ?? fallback.feishu;
     const codex = candidate.codex ?? fallback.codex;
@@ -3470,14 +3642,22 @@ export class WorkspaceStore {
       normalizedAdtIds.set(text(rawConnection.id, id), id);
       const existingConnection = existingAdtConnections.find((item) => item.id === id) ?? (usesLegacySingleAdt && index === 0 ? existingConfig?.adt : undefined);
       const alias = text(rawConnection.alias, fallback.adt.alias);
+      const systemId = text(rawConnection.systemId).toUpperCase().slice(0, 3);
+      const instanceNumber = sapInstanceNumber(rawConnection.instanceNumber);
       const url = text(rawConnection.url, fallback.adt.url);
       const client = text(rawConnection.client, fallback.adt.client);
       const username = text(rawConnection.username, fallback.adt.username);
       const language = text(rawConnection.language, fallback.adt.language).toUpperCase() || "ZH";
       const adtConfigStatus = savedOrEmptyStatus(alias, url, client, username);
+      const preserveAdtVerification = preserveVerification && sapConnectionIdentityComplete(systemId, instanceNumber, url);
       return {
         id,
         alias,
+        systemId,
+        instanceNumber,
+        environment: sapEnvironment(rawConnection.environment),
+        usage: text(rawConnection.usage).slice(0, 80),
+        routingKeywords: sapRoutingKeywords(rawConnection.routingKeywords),
         url,
         client,
         username,
@@ -3485,11 +3665,11 @@ export class WorkspaceStore {
         sslMode: sslMode(rawConnection.sslMode),
         readOnly: true,
         credential: normalizeSecretHandle(existingConnection?.credential, "adt-password"),
-        configStatus: preserveVerification ? normalizeConfigStatus(rawConnection.configStatus, adtConfigStatus) : adtConfigStatus,
-        connectionStatus: preserveVerification ? normalizeConfigStatus(rawConnection.connectionStatus, "pending-verification") : "pending-verification",
-        minimalReadStatus: preserveVerification ? normalizeConfigStatus(rawConnection.minimalReadStatus, "pending-verification") : "pending-verification",
-        lastVerificationMode: preserveVerification ? adtVerificationMode(rawConnection.lastVerificationMode) : null,
-        lastCheckedAt: preserveVerification ? nullableIso(rawConnection.lastCheckedAt) : null
+        configStatus: preserveAdtVerification ? normalizeConfigStatus(rawConnection.configStatus, adtConfigStatus) : adtConfigStatus,
+        connectionStatus: preserveAdtVerification ? normalizeConfigStatus(rawConnection.connectionStatus, "pending-verification") : "pending-verification",
+        minimalReadStatus: preserveAdtVerification ? normalizeConfigStatus(rawConnection.minimalReadStatus, "pending-verification") : "pending-verification",
+        lastVerificationMode: preserveAdtVerification ? adtVerificationMode(rawConnection.lastVerificationMode) : null,
+        lastCheckedAt: preserveAdtVerification ? nullableIso(rawConnection.lastCheckedAt) : null
       };
     });
     const requestedActiveAdtIdRaw = text(candidate.activeAdtConnectionId, text(candidate.adt?.id, adtConnections[0]?.id ?? "adt-default"));
@@ -3497,7 +3677,7 @@ export class WorkspaceStore {
     const activeAdt = adtConnections.find((item) => item.id === requestedActiveAdtId) ?? adtConnections[0] ?? fallback.adt;
 
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       projectId: project.id,
       updatedAt: configUpdatedAt,
       adt: { ...activeAdt },
@@ -3579,6 +3759,42 @@ export class WorkspaceStore {
     const tempPath = `${safePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
     await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
     await fs.rename(tempPath, safePath);
+  }
+
+  private async upsertLocalTaskFolderBinding(projectId: string, caseId: string, folder: LocalTaskFolderBindingInput): Promise<void> {
+    const registry = await this.readLocalTaskFolderBindingRegistry();
+    registry.bindings = registry.bindings.filter((item) => !(item.projectId === projectId && item.caseId === caseId));
+    registry.bindings.push({
+      projectId,
+      caseId,
+      folderPath: folder.folderPath,
+      folderName: folder.folderName,
+      createdAt: nowIso()
+    });
+    await this.writeJsonAtomic(this.localFolderBindingsPath, registry);
+  }
+
+  private async readLocalTaskFolderBindingRegistry(): Promise<LocalTaskFolderBindingRegistry> {
+    let registry: LocalTaskFolderBindingRegistry = { schemaVersion: 1, bindings: [] };
+    try {
+      const parsed = JSON.parse(await fs.readFile(this.localFolderBindingsPath, "utf8")) as Partial<LocalTaskFolderBindingRegistry>;
+      if (parsed.schemaVersion === 1 && Array.isArray(parsed.bindings)) {
+        registry = {
+          schemaVersion: 1,
+          bindings: parsed.bindings.filter((item): item is LocalTaskFolderBindingRecord => Boolean(
+            item &&
+            typeof item.projectId === "string" &&
+            typeof item.caseId === "string" &&
+            typeof item.folderPath === "string" &&
+            typeof item.folderName === "string" &&
+            typeof item.createdAt === "string"
+          )).slice(-4999)
+        };
+      }
+    } catch (error) {
+      if (!isFileNotFound(error) && !(error instanceof SyntaxError)) throw error;
+    }
+    return registry;
   }
 
   private async writeTextAtomic(targetPath: string, content: string): Promise<void> {
@@ -4076,44 +4292,283 @@ export class WorkspaceStore {
     });
   }
 
-  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts, threadId?: string): Promise<void> {
+  private appendStartupNotice(message: string): void {
+    this.startupNotice = this.startupNotice ? `${this.startupNotice} ${message}` : message;
+  }
+
+  private async pathExists(targetPath: string): Promise<boolean> {
+    try {
+      await fs.lstat(targetPath);
+      return true;
+    } catch (error) {
+      if (isFileNotFound(error)) return false;
+      throw error;
+    }
+  }
+
+  private transactionDirectory(): string {
+    return this.assertInsideWorkspace(path.join(this.workspaceRoot, "temp", "transactions"));
+  }
+
+  private async writeTransactionJournal(journalPath: string, journal: TextBatchTransactionJournal): Promise<void> {
+    await fs.mkdir(path.dirname(journalPath), { recursive: true });
+    await this.writeJsonAtomic(journalPath, journal);
+  }
+
+  private parseTransactionJournal(value: unknown): TextBatchTransactionJournal {
+    if (!value || typeof value !== "object") throw new Error("事务恢复记录结构无效。");
+    const candidate = value as Partial<TextBatchTransactionJournal>;
+    if (candidate.version !== 1 || (candidate.status !== "preparing" && candidate.status !== "committed")) {
+      throw new Error("事务恢复记录版本或状态无效。");
+    }
+    if (!Array.isArray(candidate.items) || candidate.items.length === 0 || candidate.items.length > 256) {
+      throw new Error("事务恢复记录的文件数量无效。");
+    }
+    const items = candidate.items.map((rawItem) => {
+      if (!rawItem || typeof rawItem !== "object") throw new Error("事务恢复记录包含无效文件项。");
+      const item = rawItem as Partial<TextBatchTransactionItem>;
+      if (typeof item.targetPath !== "string" || typeof item.tempPath !== "string" || typeof item.backupPath !== "string" || typeof item.hadOriginal !== "boolean") {
+        throw new Error("事务恢复记录缺少必要文件信息。");
+      }
+      const targetPath = this.assertInsideWorkspace(item.targetPath);
+      const tempPath = this.assertInsideWorkspace(item.tempPath);
+      const backupPath = this.assertInsideWorkspace(item.backupPath);
+      if (!tempPath.startsWith(`${targetPath}.`) || !tempPath.endsWith(".txn.tmp")) throw new Error("事务临时文件路径无效。");
+      if (!backupPath.startsWith(`${targetPath}.`) || !backupPath.endsWith(".txn.bak")) throw new Error("事务备份文件路径无效。");
+      let snapshotPath: string | undefined;
+      if (item.snapshotPath !== undefined) {
+        if (typeof item.snapshotPath !== "string") throw new Error("事务快照路径无效。");
+        snapshotPath = this.assertInsideWorkspace(item.snapshotPath);
+        const relativeParts = path.relative(this.workspaceRoot, snapshotPath).split(path.sep).map((part) => part.toLowerCase());
+        if (!relativeParts.includes("snapshots") || !relativeParts.includes("versions")) throw new Error("事务快照不在受控版本目录中。");
+      }
+      return { targetPath, tempPath, backupPath, hadOriginal: item.hadOriginal, ...(snapshotPath ? { snapshotPath } : {}) };
+    });
+    return {
+      version: 1,
+      status: candidate.status,
+      createdAt: typeof candidate.createdAt === "string" ? candidate.createdAt : nowIso(),
+      items
+    };
+  }
+
+  private async rollbackPreparingTransaction(journal: TextBatchTransactionJournal): Promise<void> {
+    const failures: unknown[] = [];
+    for (const item of [...journal.items].reverse()) {
+      try {
+        if (item.hadOriginal) {
+          if (await this.pathExists(item.backupPath)) {
+            await fs.rm(item.targetPath, { force: true });
+            await fs.rename(item.backupPath, item.targetPath);
+          }
+        } else {
+          await fs.rm(item.targetPath, { force: true });
+        }
+        if (item.snapshotPath) await fs.rm(item.snapshotPath, { force: true });
+        await fs.rm(item.tempPath, { force: true });
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) throw new Error("未完成事务无法自动回滚，恢复记录已保留，请停止继续写入并检查本地磁盘状态。");
+  }
+
+  private async cleanupCommittedTransaction(journal: TextBatchTransactionJournal): Promise<boolean> {
+    const results = await Promise.allSettled(journal.items.flatMap((item) => [
+      fs.rm(item.backupPath, { force: true }),
+      fs.rm(item.tempPath, { force: true })
+    ]));
+    return results.every((result) => result.status === "fulfilled");
+  }
+
+  private async recoverInterruptedTextBatchTransactions(): Promise<void> {
+    const transactionDirectory = this.transactionDirectory();
+    let entries;
+    try {
+      entries = await fs.readdir(transactionDirectory, { withFileTypes: true });
+    } catch (error) {
+      if (isFileNotFound(error)) return;
+      throw error;
+    }
+    const journals = entries.filter((entry) => entry.isFile() && /^transaction-[A-Za-z0-9.-]+\.json$/.test(entry.name));
+    if (journals.length > 20) throw new Error("检测到过多未清理事务记录，已停止写入以避免错误恢复。");
+
+    let recoveredCount = 0;
+    for (const entry of journals) {
+      const journalPath = this.assertInsideWorkspace(path.join(transactionDirectory, entry.name));
+      try {
+        const metadata = await fs.lstat(journalPath);
+        if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 256 * 1024) throw new Error("事务恢复记录不是受控普通文件。");
+        const journal = this.parseTransactionJournal(JSON.parse(await fs.readFile(journalPath, "utf8")) as unknown);
+        if (journal.status === "preparing") {
+          await this.rollbackPreparingTransaction(journal);
+          recoveredCount += 1;
+        } else if (!await this.cleanupCommittedTransaction(journal)) {
+          this.appendStartupNotice("上次已提交写入的临时备份尚未全部清理；正式文件不受影响，下次启动会继续清理。");
+          continue;
+        }
+        await fs.rm(journalPath, { force: true });
+      } catch (error) {
+        if (error instanceof SyntaxError || (error instanceof Error && error.message.includes("事务恢复记录"))) {
+          const preservedPath = this.assertInsideWorkspace(`${journalPath}.invalid-${Date.now()}`);
+          await fs.rename(journalPath, preservedPath);
+          this.appendStartupNotice(`发现无效事务恢复记录，已保留为 ${path.basename(preservedPath)}，没有按其中路径执行文件操作。`);
+          continue;
+        }
+        throw error;
+      }
+    }
+    if (recoveredCount > 0) this.appendStartupNotice(`检测到 ${recoveredCount} 次未完成的案件写入，已恢复到写入前状态。`);
+  }
+
+  private async writeTextBatchAtomic(plans: Array<{ targetPath: string; content: string; snapshotPath?: string }>): Promise<void> {
+    const normalized = plans.map((plan) => ({
+      ...plan,
+      targetPath: this.assertInsideWorkspace(plan.targetPath),
+      ...(plan.snapshotPath ? { snapshotPath: this.assertInsideWorkspace(plan.snapshotPath) } : {})
+    }));
+    if (new Set(normalized.map((plan) => plan.targetPath.toLowerCase())).size !== normalized.length) {
+      throw new Error("案件文件批次包含重复目标，已停止写入。");
+    }
+    const snapshotPaths = normalized.flatMap((plan) => plan.snapshotPath ? [plan.snapshotPath.toLowerCase()] : []);
+    if (new Set(snapshotPaths).size !== snapshotPaths.length) throw new Error("案件文件批次包含重复快照，已停止写入。");
+
+    const transactionId = `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+    const staged: Array<TextBatchTransactionItem & { content: string }> = [];
+    for (const plan of normalized) {
+      let hadOriginal = false;
+      try {
+        const existing = await fs.lstat(plan.targetPath);
+        if (!existing.isFile() || existing.isSymbolicLink()) throw new Error("案件文件目标不是普通文件，已停止整批写入。");
+        hadOriginal = true;
+      } catch (error) {
+        if (!isFileNotFound(error)) throw error;
+      }
+      if (plan.snapshotPath && await this.pathExists(plan.snapshotPath)) throw new Error("案件版本快照目标已存在，已停止整批写入。");
+      staged.push({
+        targetPath: plan.targetPath,
+        content: plan.content,
+        tempPath: `${plan.targetPath}.${transactionId}.txn.tmp`,
+        backupPath: `${plan.targetPath}.${transactionId}.txn.bak`,
+        hadOriginal,
+        ...(plan.snapshotPath ? { snapshotPath: plan.snapshotPath } : {})
+      });
+    }
+    const journalPath = this.assertInsideWorkspace(path.join(this.transactionDirectory(), `transaction-${transactionId}.json`));
+    const journal: TextBatchTransactionJournal = {
+      version: 1,
+      status: "preparing",
+      createdAt: nowIso(),
+      items: staged.map(({ content: _content, ...item }) => item)
+    };
+
+    try {
+      await Promise.all(staged.map(async (plan) => {
+        await fs.mkdir(path.dirname(plan.targetPath), { recursive: true });
+        await fs.writeFile(plan.tempPath, plan.content, "utf8");
+      }));
+      await this.writeTransactionJournal(journalPath, journal);
+
+      for (const plan of staged) {
+        if (plan.hadOriginal) await fs.rename(plan.targetPath, plan.backupPath);
+        await fs.rename(plan.tempPath, plan.targetPath);
+      }
+
+      for (const item of staged) {
+        if (!item.hadOriginal || !item.snapshotPath) continue;
+        await fs.mkdir(path.dirname(item.snapshotPath), { recursive: true });
+        await fs.copyFile(item.backupPath, item.snapshotPath);
+      }
+      journal.status = "committed";
+      await this.writeTransactionJournal(journalPath, journal);
+    } catch (error) {
+      await this.rollbackPreparingTransaction(journal);
+      await fs.rm(journalPath, { force: true });
+      throw error;
+    }
+
+    if (await this.cleanupCommittedTransaction(journal)) {
+      await fs.rm(journalPath, { force: true });
+    } else {
+      this.appendStartupNotice("案件内容已完整保存，但部分事务临时备份尚未清理；下次启动会自动继续清理。");
+    }
+  }
+
+  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts, threadId?: string, persistState = false): Promise<void> {
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
-    const generatedWrites = artifacts.generatedFiles.map(async (file) => {
-      await this.writeGeneratedFile(caseRoot, file);
-    });
     const thread = threadId
       ? state.workThreads.find((item) => item.id === threadId && item.projectId === project.id && item.caseId === caseItem.id)
       : state.workThreads.find((item) => item.id === state.activeWorkThreadId && item.projectId === project.id && item.caseId === caseItem.id);
     const threadRoot = thread
       ? this.assertInsideWorkspace(path.join(caseRoot, "technical", "conversations", thread.id))
       : null;
-    if (threadRoot) await fs.mkdir(threadRoot, { recursive: true });
-    const threadWrites = thread && threadRoot ? [
-      this.writeJsonAtomic(path.join(threadRoot, "messages.json"), thread.messages),
-      this.writeTextAtomic(path.join(threadRoot, "conversation.md"), artifacts.conversation),
-      this.writeTextAtomic(path.join(threadRoot, "timeline.md"), artifacts.timeline),
-      this.writeJsonAtomic(path.join(threadRoot, "metadata.json"), {
+    const json = (value: unknown) => `${JSON.stringify(value, null, 2)}\n`;
+    const projectRoot = this.assertInsideWorkspace(path.join(this.workspaceRoot, "projects", project.id));
+    const plans: Array<{ targetPath: string; content: string; snapshotPath?: string }> = [
+      {
+        targetPath: path.join(projectRoot, "project.json"),
+        content: json({
+          schemaVersion: SCHEMA_VERSION,
+          id: project.id,
+          name: project.name,
+          sapVersion: project.sapVersion,
+          systemLabel: project.systemLabel,
+          isVisible: project.isVisible,
+          visibleOrder: project.visibleOrder,
+          connectionState: project.connectionState,
+          createdAt: project.createdAt,
+          updatedAt: project.updatedAt,
+          config: project.config,
+          standards: project.standards,
+          knowledge: project.knowledge,
+          safety: "no-secrets-local-project"
+        })
+      },
+      { targetPath: path.join(caseRoot, "messages.json"), content: json(caseItem.messages) },
+      { targetPath: path.join(caseRoot, "README.md"), content: artifacts.readme },
+      { targetPath: path.join(caseRoot, "conversation.md"), content: artifacts.conversation },
+      { targetPath: path.join(caseRoot, "timeline.md"), content: artifacts.timeline },
+      { targetPath: path.join(caseRoot, "context_pack.md"), content: artifacts.contextPack },
+      { targetPath: path.join(caseRoot, "metadata.json"), content: json(artifacts.metadata) }
+    ];
+    if (thread && threadRoot) {
+      plans.push(
+        { targetPath: path.join(threadRoot, "messages.json"), content: json(thread.messages) },
+        { targetPath: path.join(threadRoot, "conversation.md"), content: artifacts.conversation },
+        { targetPath: path.join(threadRoot, "timeline.md"), content: artifacts.timeline },
+        { targetPath: path.join(threadRoot, "metadata.json"), content: json({
         threadId: thread.id,
         title: thread.title,
         status: thread.status,
         projectId: thread.projectId,
         caseId: thread.caseId,
         updatedAt: thread.updatedAt
-      })
-    ] : [];
-
-    await Promise.all([
-      this.writeProjectMetadata(project),
-      this.writeJsonAtomic(path.join(caseRoot, "messages.json"), caseItem.messages),
-      this.writeTextAtomic(path.join(caseRoot, "README.md"), artifacts.readme),
-      this.writeTextAtomic(path.join(caseRoot, "conversation.md"), artifacts.conversation),
-      this.writeTextAtomic(path.join(caseRoot, "timeline.md"), artifacts.timeline),
-      this.writeTextAtomic(path.join(caseRoot, "context_pack.md"), artifacts.contextPack),
-      this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), artifacts.metadata),
-      ...threadWrites,
-      ...generatedWrites
-    ]);
+        }) }
+      );
+    }
+    for (const file of artifacts.generatedFiles) {
+      const targetPath = await this.assertSafeGeneratedWriteTarget(caseRoot, this.generatedFileTarget(caseRoot, file));
+      const parsed = path.parse(file.relativePath.replaceAll("/", "-"));
+      const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+      const snapshotPath = this.assertInsideWorkspace(path.join(caseRoot, "snapshots", "versions", `${parsed.name}-${stamp}-${Math.random().toString(16).slice(2, 8)}${parsed.ext || ".txt"}`));
+      plans.push({ targetPath, content: file.content, snapshotPath });
+    }
+    if (persistState) {
+      let previousState = json(state);
+      try {
+        const existingState = await fs.readFile(this.statePath, "utf8");
+        JSON.parse(existingState);
+        previousState = existingState;
+      } catch (error) {
+        if (!isFileNotFound(error) && !(error instanceof SyntaxError)) throw error;
+      }
+      plans.push(
+        { targetPath: this.stateBackupPath, content: previousState },
+        { targetPath: this.statePath, content: json(state) }
+      );
+    }
+    await this.writeTextBatchAtomic(plans);
   }
 
   private async writeCaseGeneratedFiles(project: ProjectSummary, caseItem: CaseSummary, generatedFiles: CaseGeneratedFile[]): Promise<void> {

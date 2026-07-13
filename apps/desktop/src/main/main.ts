@@ -1,12 +1,13 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput } from "./adtReadonlyConnector";
-import { resolveAdtEndpointCandidates, type AdtEndpointCandidate } from "./adtEndpointResolver";
+import { discoverLocalSapGuiConnections, resolveAdtEndpointCandidates, type AdtEndpointCandidate } from "./adtEndpointResolver";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, discoverFeishuCli, installFeishuCli, saveFeishuCliProfile, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createCodexCliConnector, createCodexValidationFailureReport, type CodexCliConnectorInput } from "./codexCliConnector";
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
-import { isChatCapableModel, parseAppendDailyChatMessageInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
+import { isChatCapableModel, parseAppendDailyChatMessageInput, parseCreateWorkThreadInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
 import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { readControlledKnowledgeTextFile } from "./controlledTextFileImportService";
 import {
@@ -14,13 +15,14 @@ import {
   KNOWLEDGE_IMPORT_TEXT_FILE_ALLOWED_EXTENSIONS,
   parseKnowledgeImportTextFileInput
 } from "./knowledgeService";
-import { parseSapObjectEvidenceRequest } from "./sapObjectEvidenceService";
+import { parseSapObjectEvidenceRequest, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { assertTrustedRendererEvent, isTrustedRendererUrl } from "./trustedRenderer";
 import { createAppLifecycleLogger } from "./appLifecycleLogger";
 import { installLocalAiCapability, parseLocalAiInstallInput, scanLocalAiCapabilities } from "./localAiCapabilityService";
 import { assertPublicModelEndpoint, isDemoModelHost, isUnsafeModelHost } from "./modelEndpointSecurity";
 import { createWorkspaceBackup, importWorkspace } from "./workspaceTransferService";
-import type { AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import { routeSapConnections } from "../shared/sapConnectionRouting";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -40,6 +42,8 @@ const SENSITIVE_ERROR_PATTERNS = [
 const FEISHU_DEVELOPER_CONSOLE_URL = "https://open.feishu.cn/app";
 const FEISHU_AUTHORIZATION_HOST_SUFFIXES = ["feishu.cn", "larksuite.com", "larkoffice.com"] as const;
 const caseWorkflowQueues = new Map<string, Promise<void>>();
+const activeSapEvidenceRuns = new Set<string>();
+const SAP_EVIDENCE_TOTAL_TIMEOUT_MS = 90_000;
 const AI_STREAM_EVENT_CHANNEL = "workbench:ai-conversation-stream";
 
 type ModelDeltaHandler = (delta: string, providerName: string, modelId: string) => void;
@@ -88,7 +92,24 @@ async function runCaseWorkflowExclusive<T>(key: string, operation: () => Promise
 
 function safeErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : "本地工作台操作失败。";
-  return SENSITIVE_ERROR_PATTERNS.reduce((message, pattern) => message.replace(pattern, "[已脱敏]"), raw);
+  const sanitized = SENSITIVE_ERROR_PATTERNS.reduce((message, pattern) => message.replace(pattern, "[已脱敏]"), raw).trim();
+  if (/[㐀-鿿]/.test(sanitized)) return sanitized;
+
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  const technical = `${code} ${sanitized}`.toUpperCase();
+  if (/ENOTFOUND|EAI_AGAIN|GETADDRINFO/.test(technical)) return "无法解析服务主机（DNS/ENOTFOUND），请检查地址和网络设置。";
+  if (/ECONNREFUSED/.test(technical)) return "目标服务拒绝连接（ECONNREFUSED），请检查服务地址、端口和运行状态。";
+  if (/ETIMEDOUT|TIMED?\s*OUT/.test(technical)) return "连接目标服务超时（ETIMEDOUT），请检查网络、代理或服务状态。";
+  if (/ECONNRESET|SOCKET\s+HANG\s+UP/.test(technical)) return "连接被目标服务重置（ECONNRESET），请稍后重试或检查代理设置。";
+  if (/ENOENT|NO SUCH FILE|NOT FOUND/.test(technical)) return "未找到所需文件或本机命令（ENOENT），请检查安装状态和路径。";
+  if (/FETCH FAILED|NETWORK ERROR|FAILED TO FETCH/.test(technical)) return "网络请求失败，请检查网络、代理、Base URL 或目标服务状态。";
+  const httpStatus = sanitized.match(/HTTP\s+(\d{3})/i)?.[1];
+  if (httpStatus) {
+    const labels: Record<string, string> = { "400": "请求格式错误", "401": "身份验证失败", "403": "权限不足", "404": "接口不存在", "408": "请求超时", "429": "请求过于频繁", "500": "服务内部错误", "502": "网关错误", "503": "服务暂时不可用", "504": "网关超时" };
+    return `目标服务返回 HTTP ${httpStatus}${labels[httpStatus] ? `（${labels[httpStatus]}）` : ""}，请检查配置或稍后重试。`;
+  }
+  if (/TYPEERROR|SYNTAXERROR|RANGEERROR/.test(technical)) return "本地处理出现数据格式错误，请重试；如果持续失败，请重新验证相关配置。";
+  return "操作未完成，系统返回了未识别错误。请重试；如果持续失败，请重新验证相关配置。";
 }
 
 function mayRetryWithVerifiedModel(error: unknown): boolean {
@@ -142,8 +163,20 @@ function trustedResponse<T>(event: IpcMainInvokeEvent, appRoot: string, task: ()
 }
 
 function adtInputWithoutPassword(config: ProjectConfig, resolvedUrl = config.adt.url, sslMode = config.adt.sslMode): Omit<AdtConnectorInput, "password"> {
+  let resolvedInstanceNumber = config.adt.instanceNumber;
+  if (!resolvedInstanceNumber) {
+    try {
+      const port = new URL(resolvedUrl).port;
+      resolvedInstanceNumber = /^443\d{2}$/.test(port) ? port.slice(-2) : "";
+    } catch {
+      resolvedInstanceNumber = "";
+    }
+  }
   return {
     alias: config.adt.alias,
+    systemId: config.adt.systemId,
+    instanceNumber: resolvedInstanceNumber,
+    environment: config.adt.environment,
     url: resolvedUrl,
     client: config.adt.client,
     username: config.adt.username,
@@ -336,6 +369,7 @@ type AdtConfigCheck =
 async function validateAdtConfig(config: ProjectConfig): Promise<AdtConfigCheck> {
   const missing = [
     ["系统别名", config.adt.alias],
+    ["System ID", config.adt.systemId],
     ["SAP GUI 地址 / ADT 地址", config.adt.url],
     ["Client", config.adt.client],
     ["用户", config.adt.username],
@@ -350,10 +384,34 @@ async function validateAdtConfig(config: ProjectConfig): Promise<AdtConfigCheck>
       suggestion: "请先补齐 SAP 只读配置；地址可以直接填写 SAP GUI 中的应用服务器，也可以填写完整 ADT 地址。"
     };
   }
+  if (!/^[A-Z0-9]{3}$/.test(config.adt.systemId.trim().toUpperCase())) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: "System ID（SID）必须是 3 位字母或数字。",
+      suggestion: "请按 SAP Logon 中的系统标识填写，例如 DS4、QS4 或 PS4。"
+    };
+  }
+  if (config.adt.instanceNumber && !/^\d{2}$/.test(config.adt.instanceNumber)) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: "SAP 实例编号必须是两位数字。",
+      suggestion: "请填写例如 00 或 02；也可以从本机 SAP Logon 导入。"
+    };
+  }
+  if (!/^\d{3}$/.test(config.adt.client)) {
+    return {
+      ok: false,
+      code: "missing-config",
+      message: "SAP Client 必须是 3 位数字。",
+      suggestion: "请填写例如 200、610 或 800。"
+    };
+  }
 
   let candidates: AdtEndpointCandidate[] = [];
   try {
-    candidates = await resolveAdtEndpointCandidates(config.adt.url);
+    candidates = await resolveAdtEndpointCandidates(config.adt.url, { instanceNumber: config.adt.instanceNumber });
   } catch (error) {
     return {
       ok: false,
@@ -367,8 +425,25 @@ async function validateAdtConfig(config: ProjectConfig): Promise<AdtConfigCheck>
       ok: false,
       code: "invalid-url",
       message: "SAP 地址无法推导 ADT 连接。",
-      suggestion: "请填写 SAP GUI 中的应用服务器，例如 sap-dev.example.com；或填写完整 ADT 地址，例如 https://sap-host:44300。"
+      suggestion: "请填写两位实例编号（例如 02），或从 SAP Logon 导入；完整 ADT 地址也可以直接填写，例如 https://sap-host:44302。"
     };
+  }
+
+  if (config.adt.instanceNumber && /^https:\/\//i.test(config.adt.url.trim())) {
+    try {
+      const explicitPort = new URL(config.adt.url.trim()).port;
+      const portInstance = /^443\d{2}$/.test(explicitPort) ? explicitPort.slice(-2) : "";
+      if (portInstance && portInstance !== config.adt.instanceNumber) {
+        return {
+          ok: false,
+          code: "invalid-url",
+          message: `ADT 地址端口对应实例 ${portInstance}，与填写的实例编号 ${config.adt.instanceNumber} 不一致。`,
+          suggestion: "请统一实例编号和 HTTPS 端口；例如实例 02 通常使用 44302。"
+        };
+      }
+    } catch {
+      // URL validity is reported by the endpoint resolver above.
+    }
   }
 
   if (config.adt.readOnly !== true) {
@@ -392,6 +467,10 @@ async function validateAdtConfig(config: ProjectConfig): Promise<AdtConfigCheck>
   }
 
   return { ok: true, candidates };
+}
+
+function projectConfigForAdtConnection(config: ProjectConfig, connection: AdtConfig): ProjectConfig {
+  return { ...config, adt: { ...connection }, activeAdtConnectionId: connection.id };
 }
 
 function validateModelProvider(provider: ApiProviderConfig): { ok: true } | { ok: false; code: ModelProviderVerificationErrorCode; message: string; suggestion: string } {
@@ -566,6 +645,31 @@ async function verifyAdtReadonly(store: WorkspaceStore, secretStore: SecureSecre
   }
   const state = await store.updateAdtVerification(projectId, connectionId, verificationSequence, config.adt, report);
   return { report, state };
+}
+
+async function verifyAdtReadonlyWithConsent(event: IpcMainInvokeEvent, store: WorkspaceStore, secretStore: SecureSecretStore, projectId: unknown): Promise<AdtVerificationResult> {
+  if (typeof projectId !== "string" || projectId.trim().length === 0) {
+    throw new Error("ADT 只读验证请求缺少项目 ID。");
+  }
+  const config = await store.getProjectConfig(projectId);
+  if (config.adt.sslMode === "skip-certificate") {
+    const options = {
+      type: "warning" as const,
+      title: "确认跳过 SAP 证书校验",
+      message: "当前连接将跳过 TLS 证书真实性校验。是否继续发送 SAP 登录凭据并执行只读验证？",
+      detail: "仅应在受控企业内网和已确认的 SAP 主机上使用。恶意代理或错误主机可能截获用户名和密码；有受信任证书时请改用“严格校验”。",
+      buttons: ["取消", "确认并验证"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true
+    };
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const confirmation = parentWindow
+      ? await dialog.showMessageBox(parentWindow, options)
+      : await dialog.showMessageBox(options);
+    if (confirmation.response !== 1) throw new Error("已取消跳过证书校验的 SAP 只读验证；其他功能不受影响。");
+  }
+  return verifyAdtReadonly(store, secretStore, projectId);
 }
 
 async function verifyFeishuCli(store: WorkspaceStore, projectId: unknown): Promise<FeishuVerificationResult> {
@@ -926,44 +1030,87 @@ async function appendDailyChatMessage(store: WorkspaceStore, secretStore: Secure
 async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<SapObjectEvidenceResult> {
   const request = parseSapObjectEvidenceRequest(input);
   const { projectId, caseId, threadId, config } = await store.getActiveProjectConfig();
-  const configCheck = await validateAdtConfig(config);
-  if (!configCheck.ok) {
-    throw new Error(`${configCheck.message} ${configCheck.suggestion}`);
+  const runKey = `${projectId}\u0000${caseId}\u0000${threadId}`;
+  if (activeSapEvidenceRuns.has(runKey)) {
+    throw new Error("当前任务正在执行 SAP 只读取证，请等待完成后再试。");
   }
-  if (config.adt.connectionStatus !== "verified" || config.adt.minimalReadStatus !== "verified") {
-    throw new Error("补充 SAP 只读证据前，必须先完成 ADT 连接和 T000 最小读取验证。");
-  }
-
-  const allowFakeEvidence = (
-    process.env.WORKBENCH_ALLOW_FAKE_ADT_EVIDENCE === "1" &&
-    config.adt.lastVerificationMode === "fake" &&
-    configCheck.candidates.some((candidate) => isDemoAdtHost(candidate.url))
-  );
-  const allowRealEvidence = config.adt.lastVerificationMode === "adt";
-  if (!allowRealEvidence && !allowFakeEvidence) {
-    throw new Error("尚未完成真实 ADT 只读验证，已阻止读取 SAP 对象证据。Fake evidence 仅允许在显式本地 probe 和演示 SAP 主机下使用。");
-  }
-
-  let password = "";
+  activeSapEvidenceRuns.add(runKey);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SAP_EVIDENCE_TOTAL_TIMEOUT_MS);
   try {
-    password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password", connectionId: config.adt.id });
-  } catch {
-    throw new Error("系统安全存储中没有可用的 SAP 密码。请重新保存当前 Project 的 SAP 密码，再验证 ADT 只读连接。");
+  const allConnections = config.adtConnections.length > 0 ? config.adtConnections : [config.adt];
+  let selectedConnections: AdtConfig[] = [];
+  if (request.connectionMode === "manual") {
+    const selectedIds = new Set(request.connectionIds ?? []);
+    selectedConnections = allConnections.filter((connection) => selectedIds.has(connection.id));
+    if (selectedConnections.length !== selectedIds.size) {
+      throw new Error("所选 SAP 连接已不存在，请重新打开连接选择器确认。");
+    }
+  } else {
+    const route = routeSapConnections(allConnections, request.queryContext ?? "", config.activeAdtConnectionId);
+    if (route.connectionIds.length === 0) throw new Error(route.reason);
+    if (route.needsConfirmation) {
+      throw new Error(`${route.reason} 为避免读取错误系统，请先确认具体 SAP 连接。`);
+    }
+    const selectedIds = new Set(route.connectionIds);
+    selectedConnections = allConnections.filter((connection) => selectedIds.has(connection.id));
+  }
+  if (selectedConnections.length === 0 || selectedConnections.length > 6) {
+    throw new Error("本次 SAP 只读取证必须选择 1 至 6 个登录连接。");
   }
 
-  const connector = allowFakeEvidence ? new FakeAdtReadonlyConnector() : createAdtReadonlyConnector();
-  let lastError: unknown = null;
-  for (const candidate of configCheck.candidates) {
-    try {
-      const evidence = await connector.readObjectEvidence({ ...adtInputWithoutPassword(config, candidate.url), password }, request, {
-        allowFakeEvidence
-      });
-      return store.appendSapObjectEvidence(evidence, { projectId, caseId, threadId });
-    } catch (error) {
-      lastError = error;
+  const evidenceResults: SapObjectEvidenceConnectorResult[] = [];
+  for (const connection of selectedConnections) {
+    const scopedConfig = projectConfigForAdtConnection(config, connection);
+    const configCheck = await validateAdtConfig(scopedConfig);
+    if (!configCheck.ok) {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"}：${configCheck.message} ${configCheck.suggestion}`);
     }
+    if (connection.connectionStatus !== "verified" || connection.minimalReadStatus !== "verified") {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 尚未完成 ADT 连接和 T000 最小读取验证。`);
+    }
+
+    const allowFakeEvidence = (
+      process.env.WORKBENCH_ALLOW_FAKE_ADT_EVIDENCE === "1" &&
+      connection.lastVerificationMode === "fake" &&
+      configCheck.candidates.some((candidate) => isDemoAdtHost(candidate.url))
+    );
+    const allowRealEvidence = connection.lastVerificationMode === "adt";
+    if (!allowRealEvidence && !allowFakeEvidence) {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 尚未完成真实 ADT 只读验证，已阻止读取对象证据。`);
+    }
+
+    let password = "";
+    try {
+      password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password", connectionId: connection.id });
+    } catch {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 在系统安全存储中没有可用密码，请重新保存并验证。`);
+    }
+
+    const connector = allowFakeEvidence ? new FakeAdtReadonlyConnector() : createAdtReadonlyConnector();
+    let lastError: unknown = null;
+    let evidenceResult: SapObjectEvidenceConnectorResult | null = null;
+    for (const candidate of configCheck.candidates) {
+      try {
+        evidenceResult = await connector.readObjectEvidence({ ...adtInputWithoutPassword(scopedConfig, candidate.url), password }, request, {
+          allowFakeEvidence,
+          signal: controller.signal
+        });
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!evidenceResult) {
+      throw lastError instanceof Error ? lastError : new Error(`${connection.alias || connection.systemId || "SAP 连接"} 的所有已解析 ADT 地址都无法读取对象证据。`);
+    }
+    evidenceResults.push(evidenceResult);
   }
-  throw lastError instanceof Error ? lastError : new Error("所有已解析的 ADT 地址都无法读取只读对象证据。");
+  return store.appendSapObjectEvidenceBatch(evidenceResults, { projectId, caseId, threadId });
+  } finally {
+    clearTimeout(timeout);
+    activeSapEvidenceRuns.delete(runKey);
+  }
 }
 
 async function prepareFeishuHandoff(store: WorkspaceStore): Promise<FeishuHandoffResult> {
@@ -1016,6 +1163,7 @@ async function importKnowledgeTextFile(event: IpcMainInvokeEvent, store: Workspa
 }
 
 function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore, appRoot: string): void {
+  const pendingLocalFolderSelections = new Map<string, { projectId: string; folderPath: string; folderName: string; expiresAt: number }>();
   ipcMain.handle("workbench:get-state", (event) => trustedResponse(event, appRoot, () => store.getState()));
   ipcMain.handle("workbench:create-workspace-backup", (event) => trustedResponse(event, appRoot, () => createWorkspaceBackup(store.getWorkspaceRoot())));
   ipcMain.handle("workbench:import-workspace", (event) => trustedResponse(event, appRoot, async () => {
@@ -1035,7 +1183,48 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   }));
   ipcMain.handle("workbench:create-local-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalProject(input)));
   ipcMain.handle("workbench:create-local-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalCase(input)));
-  ipcMain.handle("workbench:create-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createWorkThread(input)));
+  ipcMain.handle("workbench:select-local-task-folder", (event, input: unknown) => trustedResponse(event, appRoot, async (): Promise<LocalTaskFolderSelectionResult> => {
+    if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 1) {
+      throw new Error("选择任务文件夹请求无效。");
+    }
+    const projectId = validProjectId((input as { projectId?: unknown }).projectId, "选择任务文件夹");
+    const state = await store.getState();
+    if (!state.projects.some((project) => project.id === projectId && project.isVisible !== false)) {
+      throw new Error("目标 Project 已不存在或已隐藏。");
+    }
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: "选择任务要绑定的电脑文件夹",
+      buttonLabel: "选择此文件夹",
+      properties: ["openDirectory"]
+    };
+    const selection = parentWindow ? await dialog.showOpenDialog(parentWindow, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length === 0) return { cancelled: true };
+    if (selection.filePaths.length !== 1) throw new Error("一次只能绑定一个电脑文件夹。");
+    const folder = await store.inspectLocalTaskFolder(selection.filePaths[0]);
+    const selectionToken = randomUUID();
+    const now = Date.now();
+    for (const [token, pending] of pendingLocalFolderSelections) {
+      if (pending.expiresAt <= now) pendingLocalFolderSelections.delete(token);
+    }
+    pendingLocalFolderSelections.set(selectionToken, { projectId, ...folder, expiresAt: now + 10 * 60 * 1000 });
+    return { cancelled: false, selectionToken, folderName: folder.folderName };
+  }));
+  ipcMain.handle("workbench:create-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const request = parseCreateWorkThreadInput(input);
+    if (request.folderMode !== "existing" || !request.folderSelectionToken) {
+      return store.createWorkThread(request);
+    }
+    const pending = pendingLocalFolderSelections.get(request.folderSelectionToken);
+    pendingLocalFolderSelections.delete(request.folderSelectionToken);
+    if (!pending || pending.expiresAt <= Date.now()) {
+      throw new Error("电脑文件夹选择已失效，请重新选择后创建任务。");
+    }
+    if (pending.projectId !== request.projectId) {
+      throw new Error("所选电脑文件夹与当前 Project 不一致，请重新选择。");
+    }
+    return store.createWorkThread(request, { folderPath: pending.folderPath, folderName: pending.folderName });
+  }));
   ipcMain.handle("workbench:switch-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchWorkThread(input)));
   ipcMain.handle("workbench:update-conversation-thread-status", (event, input: unknown) => trustedResponse(event, appRoot, () => store.updateConversationThreadStatus(input)));
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
@@ -1062,6 +1251,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:preview-current-case-file", (event, input: unknown) => trustedResponse(event, appRoot, () => store.previewCurrentCaseFile(input)));
   ipcMain.handle("workbench:search", (event, query: string) => trustedResponse(event, appRoot, () => store.search(query)));
   ipcMain.handle("workbench:read-sap-object-evidence", (event, input: unknown) => trustedResponse(event, appRoot, () => readSapObjectEvidence(store, secretStore, input)));
+  ipcMain.handle("workbench:sap-gui-discover", (event) => trustedResponse(event, appRoot, () => discoverLocalSapGuiConnections()));
   ipcMain.handle("workbench:prepare-feishu-handoff", (event) => trustedResponse(event, appRoot, () => prepareFeishuHandoff(store)));
   ipcMain.handle("workbench:feishu-discover-cli", (event) => trustedResponse(event, appRoot, () => discoverFeishuCli()));
   ipcMain.handle("workbench:feishu-install-cli", (event) => trustedResponse(event, appRoot, () => installFeishuCliWithConsent()));
@@ -1069,7 +1259,7 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:open-feishu-developer-console", (event) => trustedResponse(event, appRoot, () => openFeishuDeveloperConsole()));
   ipcMain.handle("workbench:save-project-config", (event, projectId: string, config: unknown) => trustedResponse(event, appRoot, () => saveProjectConfig(store, secretStore, projectId, config)));
   ipcMain.handle("workbench:save-project-secret", (event, projectId: string, input: unknown) => trustedResponse(event, appRoot, () => saveProjectSecret(store, secretStore, projectId, input)));
-  ipcMain.handle("workbench:adt-verify-readonly", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyAdtReadonly(store, secretStore, projectId)));
+  ipcMain.handle("workbench:adt-verify-readonly", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyAdtReadonlyWithConsent(event, store, secretStore, projectId)));
   ipcMain.handle("workbench:feishu-verify-cli", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyFeishuCli(store, projectId)));
   ipcMain.handle("workbench:model-provider-verify", (event, projectId: unknown, providerId: unknown) => trustedResponse(event, appRoot, () => verifyModelProvider(store, secretStore, projectId, providerId)));
   ipcMain.handle("workbench:codex-verify-cli", (event, projectId: unknown) => trustedResponse(event, appRoot, () => verifyCodexCli(store, projectId)));

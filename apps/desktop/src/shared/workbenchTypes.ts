@@ -95,6 +95,11 @@ export interface ProjectSecretInput {
 export interface AdtConfig {
   id: string;
   alias: string;
+  systemId: string;
+  instanceNumber: string;
+  environment: SapSystemEnvironment;
+  usage: string;
+  routingKeywords: string[];
   url: string;
   client: string;
   username: string;
@@ -111,6 +116,9 @@ export interface AdtConfig {
 
 export interface AdtRedactedSystemInfo {
   alias: string;
+  systemId: string;
+  instanceNumber: string;
+  environment: SapSystemEnvironment;
   endpointHost: string;
   client: string;
   usernameMasked: string;
@@ -118,6 +126,26 @@ export interface AdtRedactedSystemInfo {
   sslMode: AdtConfig["sslMode"];
   readOnly: true;
   transportWriteMode: "disabled";
+}
+
+export type SapSystemEnvironment = "development" | "quality" | "production" | "sandbox" | "other";
+
+export type SapGuiDiscoverySource = "sap-gui-landscape" | "sap-logon-ini";
+
+export interface SapGuiDiscoveryEntry {
+  id: string;
+  description: string;
+  systemId: string;
+  host: string;
+  instanceNumber: string;
+  source: SapGuiDiscoverySource;
+}
+
+export interface SapGuiDiscoveryReport {
+  scannedAt: string;
+  filesFound: number;
+  warnings: string[];
+  entries: SapGuiDiscoveryEntry[];
 }
 
 export interface AdtT000ProbeResult {
@@ -432,6 +460,9 @@ export interface SapObjectEvidenceRequest {
   objectType: SapObjectEvidenceType;
   objectName: string;
   functionGroup?: string;
+  connectionMode?: "auto" | "manual";
+  connectionIds?: string[];
+  queryContext?: string;
 }
 
 export interface SapObjectEvidenceSummary {
@@ -439,6 +470,9 @@ export interface SapObjectEvidenceSummary {
   objectName: string;
   functionGroup: string | null;
   systemAlias: string;
+  systemId: string;
+  instanceNumber: string;
+  environment: SapSystemEnvironment;
   endpointHost: string;
   client: string;
   usernameMasked: string;
@@ -451,6 +485,7 @@ export interface SapObjectEvidenceSummary {
 export interface SapObjectEvidenceResult {
   state: WorkbenchState;
   summary: SapObjectEvidenceSummary;
+  summaries: SapObjectEvidenceSummary[];
   generatedFiles: string[];
 }
 
@@ -713,7 +748,16 @@ export interface CreateWorkThreadInput {
   folderMode: "new" | "existing";
   folderName?: string;
   caseId?: string;
+  folderSelectionToken?: string;
 }
+
+export interface SelectLocalTaskFolderInput {
+  projectId: string;
+}
+
+export type LocalTaskFolderSelectionResult =
+  | { cancelled: true }
+  | { cancelled: false; selectionToken: string; folderName: string };
 
 export interface SwitchWorkThreadInput {
   threadId: string;
@@ -797,7 +841,7 @@ export interface SwitchCaseInput {
 }
 
 export interface ProjectConfig {
-  schemaVersion: 2;
+  schemaVersion: 3;
   projectId: string;
   updatedAt: string;
   adt: AdtConfig;
@@ -854,6 +898,8 @@ export interface CaseSummary {
   updatedAt: string;
   lastOpenedAt: string;
   folderName: string;
+  folderSource?: "managed" | "linked-local";
+  linkedFolderName?: string | null;
   currentSummary: string;
   knowledgeReferences: CaseKnowledgeReference[];
   messages: CaseMessage[];

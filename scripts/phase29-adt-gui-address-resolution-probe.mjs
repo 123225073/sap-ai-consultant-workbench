@@ -85,10 +85,14 @@ assert(candidates.length === 1, "dispatcher port must not derive an HTTP credent
 pass("dispatcherPortDerivesAdtPorts");
 
 candidates = await resolveAdtEndpointCandidates("sapdev.example.com", { files: [] });
-assert(candidates[0].url === "https://sapdev.example.com:44300", "host fallback did not derive default HTTPS 44300");
-assert(candidates.length === 1, "host fallback must not derive HTTP 8000");
-assert(candidates[0].source === "host-default", "fallback host source mismatch");
-pass("hostFallbackUsesDefaultInstance");
+assert(candidates.length === 0, "host without local match or instance must not silently assume instance 00");
+pass("hostWithoutInstanceDoesNotGuess");
+
+candidates = await resolveAdtEndpointCandidates("sapdev.example.com", { files: [], instanceNumber: "02" });
+assert(candidates.length === 1, "manual instance should derive one ADT candidate");
+assert(candidates[0].url === "https://sapdev.example.com:44302", "manual instance 02 did not derive HTTPS 44302");
+assert(candidates[0].source === "host-default", "manual instance source mismatch");
+pass("manualInstanceDerivesAdtPort");
 
 let rejected = false;
 try {

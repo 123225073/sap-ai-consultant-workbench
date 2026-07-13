@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import {
   Archive,
   ArrowDown,
@@ -13,6 +13,7 @@ import {
   FileSpreadsheet,
   FileText,
   Folder,
+  FolderOpen,
   FolderPlus,
   MessageSquare,
   MoreHorizontal,
@@ -30,7 +31,8 @@ import {
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { ActionPermissionMode, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import { routeSapConnections, type SapConnectionRouteDecision } from "../shared/sapConnectionRouting";
 
 type NewProjectSapVersion = ProjectSummary["sapVersion"];
 
@@ -59,6 +61,13 @@ const sapEvidenceTypes: { id: SapObjectEvidenceType; label: string }[] = [
 ];
 
 const workComposerPlaceholder = "描述问题、补充资料或继续讨论；需要沉淀成果时，打开“成果动作”。";
+
+function workFolderLabel(caseItem: CaseSummary | undefined): string {
+  if (!caseItem) return "未知";
+  return caseItem.folderSource === "linked-local"
+    ? `电脑文件夹 · ${caseItem.linkedFolderName || caseItem.title}`
+    : `工作文件夹 · ${caseItem.title}`;
+}
 
 function verificationModeLabel(mode: "fake" | "cli" | "http" | "adt" | null | undefined): string {
   if (mode === "fake") return "模拟验证";
@@ -183,11 +192,16 @@ function projectKindLabel(project: ProjectSummary): string {
 }
 
 function sapSidebarStatus(project: ProjectSummary): { label: string; tone: "green" | "orange" | "blue" } {
-  const adt = project.config.adt;
-  if (adt.connectionStatus === "verified" && adt.minimalReadStatus === "verified" && adt.lastVerificationMode === "adt") {
-    return { label: "SAP 已验证", tone: "green" };
+  const connections = project.config.adtConnections.length > 0 ? project.config.adtConnections : [project.config.adt];
+  const verifiedCount = connections.filter((adt) => adt.connectionStatus === "verified" && adt.minimalReadStatus === "verified" && adt.lastVerificationMode === "adt").length;
+  const failedCount = connections.filter((adt) => adt.connectionStatus === "failed" || adt.minimalReadStatus === "failed" || adt.configStatus === "failed").length;
+  if (verifiedCount === connections.length) {
+    return { label: `SAP ${verifiedCount} 个可用`, tone: "green" };
   }
-  if (adt.connectionStatus === "failed" || adt.minimalReadStatus === "failed" || adt.configStatus === "failed") {
+  if (verifiedCount > 0) {
+    return { label: `SAP ${verifiedCount}/${connections.length} 可用`, tone: "orange" };
+  }
+  if (failedCount > 0) {
     return { label: "SAP 需检查", tone: "orange" };
   }
   return { label: "SAP 未验证", tone: "blue" };
@@ -241,19 +255,24 @@ function ConversationThreadRow({
   onCopyId: () => void;
   onStatus: (status: ConversationThreadStatus) => void;
 }) {
+  function closeMenu(event: ReactMouseEvent<HTMLButtonElement>) {
+    const menu = event.currentTarget.closest("details");
+    if (menu instanceof HTMLDetailsElement) menu.open = false;
+  }
+
   return (
     <div className={`conversation-row-shell${active ? " active" : ""}`}>
       <button type="button" className="conversation-row-main" onClick={onOpen}>
         <MessageSquare size={15} />
         <span><strong>{title}</strong><small>{subtitle}</small></span>
       </button>
-      <details className={`thread-menu${busy ? " busy" : ""}`}>
+      <details className={`thread-menu${busy ? " busy" : ""}`} data-dismiss-on-outside="true">
         <summary aria-label={`管理会话 ${title}`} aria-disabled={busy} title={busy ? "当前有回复正在生成，完成后可管理会话" : "管理会话"} onClick={(event) => { if (busy) event.preventDefault(); }}><MoreHorizontal size={16} /></summary>
         <div>
-          <button type="button" onClick={onCopyId}><Copy size={14} />复制会话 ID</button>
-          {status === "active" ? <button type="button" disabled={busy} onClick={() => onStatus("archived")}><Archive size={14} />归档</button> : null}
-          {status === "active" ? <button type="button" disabled={busy} onClick={() => onStatus("removed")}><Trash2 size={14} />移除</button> : null}
-          {status !== "active" ? <button type="button" disabled={busy} onClick={() => onStatus("active")}><RotateCcw size={14} />恢复</button> : null}
+          <button type="button" onClick={(event) => { closeMenu(event); onCopyId(); }}><Copy size={14} />复制会话 ID</button>
+          {status === "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("archived"); }}><Archive size={14} />归档</button> : null}
+          {status === "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("removed"); }}><Trash2 size={14} />移除</button> : null}
+          {status !== "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("active"); }}><RotateCcw size={14} />恢复</button> : null}
         </div>
       </details>
     </div>
@@ -488,6 +507,83 @@ function ComposerModelPicker({
   );
 }
 
+function sapConnectionLabel(connection: AdtConfig): string {
+  return `${connection.systemId || connection.alias || "SAP"} / Client ${connection.client || "未填"}`;
+}
+
+function SapConnectionPicker({
+  connections,
+  route,
+  mode,
+  selectedIds,
+  onModeChange,
+  onSelectedIdsChange
+}: {
+  connections: AdtConfig[];
+  route: SapConnectionRouteDecision;
+  mode: "auto" | "manual";
+  selectedIds: string[];
+  onModeChange: (mode: "auto" | "manual") => void;
+  onSelectedIdsChange: (ids: string[]) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const selectedConnections = connections.filter((connection) => selectedIds.includes(connection.id));
+  const autoConnections = connections.filter((connection) => route.connectionIds.includes(connection.id));
+  const label = mode === "auto"
+    ? `自动 · ${autoConnections.map(sapConnectionLabel).join("、") || "待匹配"}`
+    : selectedConnections.map(sapConnectionLabel).join("、") || "手动选择连接";
+
+  useEffect(() => {
+    if (!open) return;
+    const closePicker = (event: KeyboardEvent | PointerEvent) => {
+      if (event instanceof KeyboardEvent && event.key === "Escape") {
+        setOpen(false);
+        triggerRef.current?.focus();
+        return;
+      }
+      if (event instanceof PointerEvent && !panelRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", closePicker);
+    window.addEventListener("pointerdown", closePicker);
+    return () => {
+      window.removeEventListener("keydown", closePicker);
+      window.removeEventListener("pointerdown", closePicker);
+    };
+  }, [open]);
+
+  function toggleConnection(connectionId: string, checked: boolean) {
+    onModeChange("manual");
+    if (checked && !selectedIds.includes(connectionId) && selectedIds.length >= 6) return;
+    onSelectedIdsChange(checked
+      ? [...new Set([...selectedIds, connectionId])]
+      : selectedIds.filter((id) => id !== connectionId));
+  }
+
+  return <div className="sap-connection-picker">
+    <button ref={triggerRef} type="button" className={route.needsConfirmation && mode === "auto" ? "needs-confirmation" : ""} onClick={() => setOpen((current) => !current)} aria-expanded={open} aria-haspopup="dialog" title={route.reason}>
+      <Database size={15} /><span>{label}</span><ChevronDown size={14} />
+    </button>
+    {open ? <div ref={panelRef} className="sap-connection-picker-panel" role="dialog" aria-label="选择 SAP 只读连接">
+      <label className="sap-route-auto-option">
+        <input type="radio" name="sap-connection-mode" checked={mode === "auto"} onChange={() => onModeChange("auto")} />
+        <span><strong>根据当前问题自动选择</strong><small>{route.reason}</small></span>
+      </label>
+      <div className="sap-route-list">
+        <header><strong>手动指定连接</strong><small>可多选后执行交叉验证</small></header>
+        {connections.map((connection) => <label key={connection.id}>
+          <input type="checkbox" checked={mode === "manual" && selectedIds.includes(connection.id)} disabled={mode === "manual" && !selectedIds.includes(connection.id) && selectedIds.length >= 6} onChange={(event) => toggleConnection(connection.id, event.target.checked)} />
+          <span><strong>{sapConnectionLabel(connection)}</strong><small>{connection.alias || "未命名连接"}</small></span>
+        </label>)}
+        <small className="sap-route-limit">单次最多选择 6 个连接；更大范围请拆分任务，便于逐项核对证据。</small>
+      </div>
+    </div> : null}
+  </div>;
+}
+
 function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFileNode[]; level?: number; selectedPath: string | null; onPreview: (node: CaseFileNode) => void }) {
   return (
     <>
@@ -715,7 +811,9 @@ function App() {
   const [newCaseProjectId, setNewCaseProjectId] = useState("");
   const [newTaskFolderMode, setNewTaskFolderMode] = useState<"new" | "existing">("new");
   const [newTaskFolderName, setNewTaskFolderName] = useState("");
-  const [newTaskExistingCaseId, setNewTaskExistingCaseId] = useState("");
+  const [newTaskFolderSelectionToken, setNewTaskFolderSelectionToken] = useState("");
+  const [newTaskSelectedFolderName, setNewTaskSelectedFolderName] = useState("");
+  const [selectingTaskFolder, setSelectingTaskFolder] = useState(false);
   const [creatingCase, setCreatingCase] = useState(false);
   const [createTaskError, setCreateTaskError] = useState("");
   const [sapEvidenceType, setSapEvidenceType] = useState<SapObjectEvidenceType>("program");
@@ -723,6 +821,8 @@ function App() {
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
   const [sapEvidencePanelOpen, setSapEvidencePanelOpen] = useState(false);
   const [sapEvidenceBusy, setSapEvidenceBusy] = useState(false);
+  const [sapConnectionMode, setSapConnectionMode] = useState<"auto" | "manual">("auto");
+  const [manualSapConnectionIds, setManualSapConnectionIds] = useState<string[]>([]);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [knowledgeFocusItemId, setKnowledgeFocusItemId] = useState("");
@@ -743,6 +843,29 @@ function App() {
   const streamFrameRef = useRef<number | null>(null);
 
   const bridge = window.workbench;
+
+  useEffect(() => {
+    const closeOutsideMenus = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      document.querySelectorAll<HTMLDetailsElement>('details[data-dismiss-on-outside="true"][open]').forEach((menu) => {
+        if (target && !menu.contains(target)) menu.open = false;
+      });
+    };
+    const closeMenusOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      document.querySelectorAll<HTMLDetailsElement>('details[data-dismiss-on-outside="true"][open]').forEach((menu) => {
+        menu.open = false;
+        menu.querySelector<HTMLElement>("summary")?.focus();
+      });
+    };
+    window.addEventListener("pointerdown", closeOutsideMenus);
+    window.addEventListener("keydown", closeMenusOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOutsideMenus);
+      window.removeEventListener("keydown", closeMenusOnEscape);
+    };
+  }, []);
+
   const project = activeProject(state);
   const currentCase = activeCase(state);
   const currentWorkThread = activeWorkThread(state);
@@ -792,18 +915,28 @@ function App() {
   const selectedSafeDraftModel = useMemo(() => {
     return safeDraftOptions.find((option) => option.key === selectedModelKey) ?? safeDraftOptions[0] ?? null;
   }, [safeDraftOptions, selectedModelKey]);
-  const adtReady = Boolean(
-    project?.config.adt.readOnly &&
-    project.config.adt.connectionStatus === "verified" &&
-    project.config.adt.minimalReadStatus === "verified" &&
-    project.config.adt.lastVerificationMode === "adt"
-  );
+  const verifiedAdtConnections = useMemo(() => (project?.config.adtConnections ?? []).filter((connection) => (
+    connection.readOnly === true &&
+    connection.connectionStatus === "verified" &&
+    connection.minimalReadStatus === "verified" &&
+    connection.lastVerificationMode === "adt"
+  )), [project]);
+  const sapRoutingContext = useMemo(() => [
+    ...(currentWorkThread?.messages ?? []).slice(-12).map((item) => item.content),
+    message
+  ].join("\n").slice(-6000), [currentWorkThread?.messages, message]);
+  const sapRouteDecision = useMemo(() => routeSapConnections(
+    project?.config.adtConnections ?? [],
+    sapRoutingContext,
+    project?.config.activeAdtConnectionId ?? ""
+  ), [project, sapRoutingContext]);
+  const adtReady = verifiedAdtConnections.length > 0;
   const adtEvidenceStatus = project && !isSapBoundProject(project)
     ? "其他工作 · 不读取 SAP"
     : project?.config.adt
     ? adtReady
-      ? `${project.config.adt.alias || "SAP"} / Client ${project.config.adt.client || "-"} / readonly / ${verificationModeLabel(project.config.adt.lastVerificationMode)}`
-      : `${project.config.adt.alias || "SAP"} · 未完成只读验证`
+      ? sapRouteDecision.reason
+      : "当前 Project 还没有通过真实 T000 只读验证的 SAP 连接"
     : "未选择 SAP 项目";
   const codexAssistAvailable = Boolean(
     project?.config.codex.integrationType === "cli" &&
@@ -846,6 +979,16 @@ function App() {
     modelSelectionsRef.current.set(activeConversationKey, key);
     setSelectedModelKey(key);
   }
+
+  useEffect(() => {
+    setSapConnectionMode("auto");
+    setManualSapConnectionIds([]);
+  }, [project?.id]);
+
+  useEffect(() => {
+    const validIds = new Set(verifiedAdtConnections.map((connection) => connection.id));
+    setManualSapConnectionIds((ids) => ids.filter((id) => validIds.has(id)));
+  }, [verifiedAdtConnections.map((connection) => connection.id).join("|")]);
 
   useEffect(() => {
     if (!codexAssistAvailable && codexAssistEnabled) {
@@ -895,17 +1038,6 @@ function App() {
     const activeVisibleProjectId = project?.id && visibleProjects.some((item) => item.id === project.id) ? project.id : "";
     setNewCaseProjectId(activeVisibleProjectId || visibleProjects[0].id);
   }, [newCaseProjectId, project?.id, visibleProjects]);
-
-  useEffect(() => {
-    const selectedProject = visibleProjects.find((item) => item.id === newCaseProjectId);
-    if (!selectedProject?.cases.length) {
-      setNewTaskExistingCaseId("");
-      return;
-    }
-    if (!selectedProject.cases.some((item) => item.id === newTaskExistingCaseId)) {
-      setNewTaskExistingCaseId(selectedProject.cases[0].id);
-    }
-  }, [newCaseProjectId, newTaskExistingCaseId, visibleProjects]);
 
   useEffect(() => {
     const collapseContextPanel = () => {
@@ -958,13 +1090,13 @@ function App() {
   }, [bridge]);
 
   useEffect(() => {
-    if (createPanel !== "case") return;
+    if (!createPanel) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
       event.preventDefault();
       setCreatePanel(null);
       setCreateTaskError("");
-      window.setTimeout(() => newTaskButtonRef.current?.focus(), 0);
+      if (createPanel === "case") window.setTimeout(() => newTaskButtonRef.current?.focus(), 0);
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
@@ -1040,11 +1172,8 @@ function App() {
     setCreatingCase(true);
     setCreateTaskError("");
     try {
-      const targetCaseId = newTaskFolderMode === "existing"
-        ? (newTaskExistingCaseId || targetProject.cases[0]?.id)
-        : undefined;
-      if (newTaskFolderMode === "existing" && !targetCaseId) {
-        setCreateTaskError("当前 Project 没有可绑定的工作文件夹，请选择新建文件夹。");
+      if (newTaskFolderMode === "existing" && !newTaskFolderSelectionToken) {
+        setCreateTaskError("请先从电脑中选择一个已有文件夹。");
         return;
       }
       const response = await bridge.createWorkThread({
@@ -1052,7 +1181,7 @@ function App() {
         title,
         folderMode: newTaskFolderMode,
         folderName: newTaskFolderMode === "new" ? (newTaskFolderName.trim() || title) : undefined,
-        caseId: targetCaseId
+        folderSelectionToken: newTaskFolderMode === "existing" ? newTaskFolderSelectionToken : undefined
       });
       if (response.ok) {
         setState(response.data);
@@ -1060,16 +1189,41 @@ function App() {
         setNewCaseProjectId(targetProject.id);
         setNewCaseTitle("");
         setNewTaskFolderName("");
+        setNewTaskFolderSelectionToken("");
+        setNewTaskSelectedFolderName("");
         setCreatePanel(null);
         setNotice(newTaskFolderMode === "new"
           ? "任务已创建，并绑定到新工作文件夹。"
-          : "任务已创建，并绑定到已有工作文件夹。");
+          : "任务已创建并绑定电脑文件夹；原目录不会被自动读取或改写，任务成果由工作台安全保存。");
       } else {
         setCreateTaskError(response.error);
         setNotice(response.error);
       }
     } finally {
       setCreatingCase(false);
+    }
+  }
+
+  async function selectExistingTaskFolder() {
+    if (!bridge || selectingTaskFolder) return;
+    const targetProject = visibleProjects.find((item) => item.id === newCaseProjectId);
+    if (!targetProject) {
+      setCreateTaskError("请先选择任务所属 Project。");
+      return;
+    }
+    setSelectingTaskFolder(true);
+    setCreateTaskError("");
+    try {
+      const response = await bridge.selectLocalTaskFolder({ projectId: targetProject.id });
+      if (!response.ok) {
+        setCreateTaskError(response.error);
+        return;
+      }
+      if (response.data.cancelled) return;
+      setNewTaskFolderSelectionToken(response.data.selectionToken);
+      setNewTaskSelectedFolderName(response.data.folderName);
+    } finally {
+      setSelectingTaskFolder(false);
     }
   }
 
@@ -1619,16 +1773,36 @@ function App() {
         setNotice("读取 Function 证据需要填写 Function Group，例如 ZFG_MM001。");
         return;
       }
+      let connectionMode: "auto" | "manual" = sapConnectionMode;
+      let connectionIds = sapConnectionMode === "manual" ? manualSapConnectionIds : sapRouteDecision.connectionIds;
+      if (connectionMode === "manual" && connectionIds.length === 0) {
+        setNotice("请先选择至少一个已通过真实只读验证的 SAP 连接。");
+        return;
+      }
+      if (connectionMode === "auto" && sapRouteDecision.needsConfirmation) {
+        const labels = verifiedAdtConnections
+          .filter((connection) => connectionIds.includes(connection.id))
+          .map(sapConnectionLabel);
+        const confirmed = window.confirm(`${sapRouteDecision.reason}\n\n本次将读取：${labels.join("、")}。\n\n确认继续只读取证吗？`);
+        if (!confirmed) {
+          setNotice("已取消 SAP 只读取证，没有访问任何 SAP 系统。");
+          return;
+        }
+        connectionMode = "manual";
+      }
       const response = await bridge.readSapObjectEvidence({
         objectType: sapEvidenceType,
         objectName,
-        ...(functionGroup ? { functionGroup } : {})
+        ...(functionGroup ? { functionGroup } : {}),
+        connectionMode,
+        connectionIds,
+        queryContext: sapRoutingContext
       });
       if (response.ok) {
         setState(response.data.state);
         setSapEvidenceName("");
         setSapEvidenceFunctionGroup("");
-        setNotice(`已补充 SAP 只读证据：${response.data.summary.objectType} ${response.data.summary.objectName}；新文件可在右侧案件文件面板查看。`);
+        setNotice(`已从 ${response.data.summaries.length} 个 SAP 登录连接补充只读证据：${response.data.summary.objectType} ${response.data.summary.objectName}；新文件可在右侧工作文件夹查看。`);
       } else {
         setNotice(response.error);
       }
@@ -1768,6 +1942,22 @@ function App() {
           ? "已打开飞书授权页。请在浏览器中确认授权；完成后回到这里再次点击测试连接。"
           : `飞书 CLI 验证未通过：${firstError?.message ?? "请查看验证报告。"}`);
       return response.data.report;
+    }
+    setNotice(response.error);
+    return null;
+  }
+
+  async function discoverSapGuiConnections(): Promise<SapGuiDiscoveryReport | null> {
+    if (!bridge) {
+      setNotice("请在桌面应用中扫描本机 SAP Logon 配置。");
+      return null;
+    }
+    const response = await bridge.discoverSapGuiConnections();
+    if (response.ok) {
+      setNotice(response.data.entries.length > 0
+        ? `已从本机 SAP Logon 识别 ${response.data.entries.length} 个系统连接定义；导入前不会修改 Project。`
+        : "没有发现可导入的 SAP Logon 连接；可以手工填写 SID、实例号和应用服务器。");
+      return response.data;
     }
     setNotice(response.error);
     return null;
@@ -2219,7 +2409,7 @@ function App() {
                 </div>
               ) : null}
 
-              {createPanel === "project" ? <div className="create-dialog-backdrop">
+              {createPanel === "project" ? <div className="create-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setCreatePanel(null); }}>
                 <form className="quick-create create-dialog" role="dialog" aria-modal="true" aria-label="新建 Project" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
                 <div className="create-dialog-heading"><div><strong>新建 Project</strong><span>Project 隔离客户、SAP 版本、规范和知识</span></div><button type="button" className="icon-button" onClick={() => setCreatePanel(null)} aria-label="关闭"><X size={17} /></button></div>
                 <input ref={newProjectInputRef} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="项目名称，例如 SAP 演示 ECC" aria-label="项目名称" />
@@ -2234,11 +2424,11 @@ function App() {
                 <button type="submit" disabled={!newProjectName.trim() || !newProjectSystemLabel.trim()}><Plus size={15} />创建项目</button>
               </form></div> : null}
 
-              {createPanel === "case" ? <div className="create-dialog-backdrop"><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建任务">
+              {createPanel === "case" ? <div className="create-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); } }}><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建任务">
               <div className="create-dialog-heading"><div><strong>新建任务</strong><span>每个任务有独立会话，并绑定一个工作文件夹</span></div><button type="button" className="icon-button" onClick={() => { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); }} aria-label="关闭"><X size={17} /></button></div>
               <form className="quick-create case-create phase28-new-case-flow phase36-work-chat-project-folder-layout" onSubmit={(event) => { event.preventDefault(); void createCase(); }}>
                 <label><span>任务名称</span><input ref={newCaseInputRef} value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="例如：分析采购订单审批异常" aria-label="任务名称" disabled={!project || creatingCase} /></label>
-                <label><span>归属 Project</span><select value={newCaseProjectId} onChange={(event) => { setNewCaseProjectId(event.target.value); const next = visibleProjects.find((item) => item.id === event.target.value); setNewTaskExistingCaseId(next?.cases[0]?.id ?? ""); }} disabled={visibleProjects.length === 0 || creatingCase} aria-label="任务所属 Project">
+                <label><span>归属 Project</span><select value={newCaseProjectId} onChange={(event) => { setNewCaseProjectId(event.target.value); setNewTaskFolderSelectionToken(""); setNewTaskSelectedFolderName(""); }} disabled={visibleProjects.length === 0 || creatingCase} aria-label="任务所属 Project">
                   {visibleProjects.map((item) => (
                     <option key={item.id} value={item.id}>{projectKindLabel(item)} · {item.name} / {item.systemLabel}</option>
                   ))}
@@ -2250,12 +2440,16 @@ function App() {
                 {newTaskFolderMode === "new" ? (
                   <label><span>文件夹名称</span><input value={newTaskFolderName} onChange={(event) => setNewTaskFolderName(event.target.value)} placeholder="留空时与任务同名" aria-label="新工作文件夹名称" /></label>
                 ) : (
-                  <label><span>选择文件夹</span><select value={newTaskExistingCaseId || visibleProjects.find((item) => item.id === newCaseProjectId)?.cases[0]?.id || ""} onChange={(event) => setNewTaskExistingCaseId(event.target.value)} aria-label="已有工作文件夹">
-                    {(visibleProjects.find((item) => item.id === newCaseProjectId)?.cases ?? []).map((caseItem) => <option key={caseItem.id} value={caseItem.id}>{caseItem.title}</option>)}
-                  </select></label>
+                  <div className="local-folder-picker">
+                    <button type="button" onClick={() => void selectExistingTaskFolder()} disabled={selectingTaskFolder || creatingCase}>
+                      <FolderOpen size={16} />
+                      {selectingTaskFolder ? "正在打开" : newTaskFolderSelectionToken ? "重新选择" : "选择电脑文件夹"}
+                    </button>
+                    {newTaskSelectedFolderName ? <div className="local-folder-selection" title={newTaskSelectedFolderName}><Folder size={16} /><span>{newTaskSelectedFolderName}</span></div> : null}
+                  </div>
                 )}
                 {createTaskError ? <p className="create-task-error" role="alert">{createTaskError}</p> : null}
-                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim()} title="创建任务会话">
+                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim() || (newTaskFolderMode === "existing" && !newTaskFolderSelectionToken)} title="创建任务会话">
                   <Plus size={15} />
                   {creatingCase ? "创建中" : "创建任务"}
                 </button>
@@ -2275,6 +2469,15 @@ function App() {
                       </button>
                       <div className="project-actions">
                         <button
+                          aria-label={`配置 ${item.name}`}
+                          className="icon-button project-settings-button"
+                          onClick={() => void switchProject(item.id, "config")}
+                          title="打开此 Project 的 SAP、模型和本机能力配置"
+                          type="button"
+                        >
+                          <Settings size={16} />
+                        </button>
+                        <button
                           aria-label={`从侧边栏隐藏 ${item.name}`}
                           className="icon-button project-hide-button"
                           disabled={visibleProjects.length <= 1}
@@ -2293,7 +2496,7 @@ function App() {
                         return <ConversationThreadRow
                           key={thread.id}
                           title={thread.title}
-                          subtitle={`文件夹 · ${folder?.title ?? "未知"}`}
+                          subtitle={workFolderLabel(folder)}
                           active={activeView === "case" && thread.id === state?.activeWorkThreadId}
                           status={thread.status}
                           busy={sendingMessage}
@@ -2327,7 +2530,7 @@ function App() {
                         <span className="project-case-label">任务</span>
                         {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
                           const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
-                          return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={`文件夹 · ${folder?.title ?? "未知"}`} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
+                          return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={workFolderLabel(folder)} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
                         })}
                       </div> : null}
                     </section>
@@ -2357,7 +2560,7 @@ function App() {
                           <span className="project-case-label">示例任务</span>
                           {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
                             const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
-                            return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={`文件夹 · ${folder?.title ?? "未知"}`} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
+                            return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={workFolderLabel(folder)} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
                           })}
                         </div> : null}
                       </section>
@@ -2399,6 +2602,7 @@ function App() {
             onSave={saveProjectConfig}
             onSaveSecret={saveProjectSecret}
             onVerifyAdt={verifyAdtReadonly}
+            onDiscoverSapGui={discoverSapGuiConnections}
             onVerifyFeishu={verifyFeishuCli}
             onDiscoverFeishu={discoverFeishuCli}
             onInstallFeishu={installFeishuCli}
@@ -2488,7 +2692,7 @@ function App() {
           <div className="case-heading">
             <div>
               <h1>{currentWorkThread?.title ?? "当前任务"}</h1>
-              <p>{project ? `${projectKindLabel(project)} · ${project.name} · 文件夹：${currentCase?.title ?? "未绑定"}` : "请创建 SAP 项目或其他工作项目"}</p>
+              <p>{project ? `${projectKindLabel(project)} · ${project.name} · ${workFolderLabel(currentCase)}` : "请创建 SAP 项目或其他工作项目"}</p>
             </div>
             <div className="case-heading-actions">
               {adtReady ? <button type="button" className="context-panel-trigger" onClick={() => setSapEvidencePanelOpen((open) => !open)} aria-expanded={sapEvidencePanelOpen} title="从已验证 SAP 连接读取单个对象证据，不执行写入"><Database size={16} />{sapEvidencePanelOpen ? "收起取证" : "SAP 取证"}</button> : null}
@@ -2520,6 +2724,14 @@ function App() {
                   <Database size={15} />
                   <span>{adtEvidenceStatus}</span>
                 </div>
+                <SapConnectionPicker
+                  connections={verifiedAdtConnections}
+                  route={sapRouteDecision}
+                  mode={sapConnectionMode}
+                  selectedIds={manualSapConnectionIds}
+                  onModeChange={setSapConnectionMode}
+                  onSelectedIdsChange={setManualSapConnectionIds}
+                />
                 <select value={sapEvidenceType} onChange={(event) => setSapEvidenceType(event.target.value as SapObjectEvidenceType)} aria-label="SAP 对象类型">
                   {sapEvidenceTypes.map((item) => <option value={item.id} key={item.id}>{item.label}</option>)}
                 </select>
@@ -2527,7 +2739,7 @@ function App() {
                 {sapEvidenceType === "function" ? (
                   <input value={sapEvidenceFunctionGroup} onChange={(event) => setSapEvidenceFunctionGroup(event.target.value)} placeholder="函数组，例如 ZFG_MM001" aria-label="SAP 函数组" />
                 ) : null}
-                <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim()} title="把单个 SAP 只读对象证据写入当前工作文件夹">
+                <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim() || (sapConnectionMode === "manual" && manualSapConnectionIds.length === 0)} title="把单个 SAP 只读对象证据写入当前工作文件夹">
                   <Database size={15} />
                   {sapEvidenceBusy ? "取证中" : "补充 SAP 只读证据"}
                 </button>

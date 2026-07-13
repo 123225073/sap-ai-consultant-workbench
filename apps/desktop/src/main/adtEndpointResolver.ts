@@ -1,6 +1,7 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import type { SapGuiDiscoveryEntry, SapGuiDiscoveryReport } from "../shared/workbenchTypes";
 
 export type AdtEndpointResolutionSource =
   | "explicit-url"
@@ -33,15 +34,24 @@ interface SapGuiConfigFixture {
 
 interface ResolveOptions {
   files?: SapGuiConfigFixture[];
+  instanceNumber?: string;
 }
 
 const DEFAULT_INSTANCE_NUMBER = "00";
 const SAP_GUI_LANDSCAPE_FILE = "SAPUILandscape.xml";
 const SAP_GUI_GLOBAL_LANDSCAPE_FILE = "SAPUILandscapeGlobal.xml";
 const SAP_LOGON_INI_FILE = "saplogon.ini";
+const MAX_SAP_GUI_CONFIG_FILE_BYTES = 4 * 1024 * 1024;
+const MAX_SAP_GUI_DISCOVERY_ENTRIES = 500;
+const SAP_GUI_DISCOVERY_TIMEOUT_MS = 5_000;
+let localSapGuiReadInFlight: Promise<{ entries: SapGuiEntry[]; filesFound: number; warnings: string[] }> | null = null;
 
 function normalizeText(value: string): string {
   return value.trim().toLowerCase().replace(/\.$/, "");
+}
+
+function safeDiscoveredText(value: string | undefined, maxLength: number): string {
+  return (value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim().slice(0, maxLength);
 }
 
 function normalizeInstanceNumber(value: string | undefined): string | null {
@@ -139,6 +149,13 @@ function candidatesFromHostInput(value: string, source: AdtEndpointResolutionSou
   return adtCandidatesForHost(parsed.host, DEFAULT_INSTANCE_NUMBER, source);
 }
 
+function candidateFromHostAndInstance(value: string, instanceNumber: string): AdtEndpointCandidate[] {
+  const parsed = parseHostAndPort(value);
+  const normalizedInstance = normalizeInstanceNumber(instanceNumber);
+  if (!parsed || !isValidHost(parsed.host) || !normalizedInstance) return [];
+  return adtCandidatesForHost(parsed.host, normalizedInstance, "host-default");
+}
+
 function parseAttributes(tag: string): Record<string, string> {
   const attributes: Record<string, string> = {};
   const attributePattern = /([A-Za-z_:][-A-Za-z0-9_:.]*)="([^"]*)"/g;
@@ -151,7 +168,7 @@ function parseAttributes(tag: string): Record<string, string> {
 function parseLandscapeEntries(content: string): SapGuiEntry[] {
   const entries: SapGuiEntry[] = [];
   const serviceTags = content.match(/<Service\b[^>]*>/gi) ?? [];
-  for (const tag of serviceTags) {
+  for (const tag of serviceTags.slice(0, MAX_SAP_GUI_DISCOVERY_ENTRIES)) {
     const attrs = parseAttributes(tag);
     if ((attrs.type ?? "").toUpperCase() !== "SAPGUI") continue;
     const server = attrs.server ?? "";
@@ -198,7 +215,7 @@ function parseSapLogonIniEntries(content: string): SapGuiEntry[] {
   const messageServers = sections.get("MSSrvName") ?? new Map<string, string>();
   const entries: SapGuiEntry[] = [];
 
-  for (const [item, serverValue] of servers) {
+  for (const [item, serverValue] of Array.from(servers).slice(0, MAX_SAP_GUI_DISCOVERY_ENTRIES)) {
     const fallbackMessageServer = messageServers.get(item) ?? "";
     const hostValue = serverValue.toUpperCase() === "PUBLIC" && fallbackMessageServer ? fallbackMessageServer : serverValue;
     const parsed = parseHostAndPort(hostValue);
@@ -267,17 +284,55 @@ function uniqueStrings(values: string[]): string[] {
   });
 }
 
-async function readLocalSapGuiEntries(): Promise<SapGuiEntry[]> {
+async function readLocalSapGuiEntriesOnce(): Promise<{ entries: SapGuiEntry[]; filesFound: number; warnings: string[] }> {
   const entries: SapGuiEntry[] = [];
-  for (const item of defaultSapGuiConfigPaths()) {
+  const warnings = new Set<string>();
+  let filesFound = 0;
+  const controller = new AbortController();
+  const scan = Promise.all(defaultSapGuiConfigPaths().map(async (item) => {
     try {
-      const content = await readFile(item.filePath, "utf8");
-      entries.push(...(item.kind === "landscape" ? parseLandscapeEntries(content) : parseSapLogonIniEntries(content)));
-    } catch {
-      // Missing SAP GUI config files are normal on non-Windows or clean machines.
+      const metadata = await stat(item.filePath);
+      if (!metadata.isFile() || metadata.size > MAX_SAP_GUI_CONFIG_FILE_BYTES) {
+        if (metadata.size > MAX_SAP_GUI_CONFIG_FILE_BYTES) warnings.add("有本机 SAP Logon 配置文件超过 4 MB 安全上限，已跳过该文件。");
+        return;
+      }
+      const content = await readFile(item.filePath, { encoding: "utf8", signal: controller.signal });
+      filesFound += 1;
+      const parsed = item.kind === "landscape" ? parseLandscapeEntries(content) : parseSapLogonIniEntries(content);
+      entries.push(...parsed.slice(0, Math.max(0, MAX_SAP_GUI_DISCOVERY_ENTRIES - entries.length)));
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+      if (code === "ENOENT" || code === "ENOTDIR") return;
+      if (error instanceof Error && error.name === "AbortError") return;
+      warnings.add("部分本机 SAP Logon 配置无法读取，已跳过；请检查文件权限后重试。");
     }
+  }));
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      scan,
+      new Promise<void>((resolve) => {
+        timeout = setTimeout(() => {
+          controller.abort();
+          warnings.add("本机 SAP Logon 扫描超过 5 秒，已停止等待未完成文件。");
+          resolve();
+        }, SAP_GUI_DISCOVERY_TIMEOUT_MS);
+      })
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
-  return entries;
+  return { entries: entries.slice(0, MAX_SAP_GUI_DISCOVERY_ENTRIES), filesFound, warnings: Array.from(warnings) };
+}
+
+async function readLocalSapGuiEntries(): Promise<{ entries: SapGuiEntry[]; filesFound: number; warnings: string[] }> {
+  if (localSapGuiReadInFlight) return localSapGuiReadInFlight;
+  localSapGuiReadInFlight = readLocalSapGuiEntriesOnce();
+  try {
+    return await localSapGuiReadInFlight;
+  } finally {
+    localSapGuiReadInFlight = null;
+  }
 }
 
 function entriesFromFixtures(files: SapGuiConfigFixture[]): SapGuiEntry[] {
@@ -304,7 +359,7 @@ function explicitUrlCandidate(input: string): AdtEndpointCandidate | null {
     url: `${parsed.protocol}//${parsed.host}`,
     source: "explicit-url",
     host: parsed.hostname,
-    instanceNumber: normalizeInstanceNumber(parsed.port) ?? DEFAULT_INSTANCE_NUMBER
+    instanceNumber: normalizeInstanceNumber(parsed.port) ?? ""
   };
 }
 
@@ -317,7 +372,7 @@ export async function resolveAdtEndpointCandidates(input: string, options: Resol
     return explicit ? [explicit] : [];
   }
 
-  const localEntries = options.files ? entriesFromFixtures(options.files) : await readLocalSapGuiEntries();
+  const localEntries = options.files ? entriesFromFixtures(options.files) : (await readLocalSapGuiEntries()).entries;
   const fromLocalSapGui = candidatesFromEntries(trimmed, localEntries);
   if (fromLocalSapGui.length > 0) return fromLocalSapGui;
 
@@ -325,6 +380,36 @@ export async function resolveAdtEndpointCandidates(input: string, options: Resol
     const fromGuiPort = candidatesFromHostInput(trimmed, "sap-gui-port");
     if (fromGuiPort.length > 0) return uniqueCandidates(fromGuiPort);
   }
+  if (options.instanceNumber) {
+    return uniqueCandidates(candidateFromHostAndInstance(trimmed, options.instanceNumber));
+  }
+  return [];
+}
 
-  return uniqueCandidates(candidatesFromHostInput(trimmed, "host-default"));
+export async function discoverLocalSapGuiConnections(): Promise<SapGuiDiscoveryReport> {
+  const { entries, filesFound, warnings } = await readLocalSapGuiEntries();
+  const seen = new Set<string>();
+  const discovered: SapGuiDiscoveryEntry[] = [];
+  for (const entry of entries) {
+    const description = safeDiscoveredText(entry.description, 100);
+    const rawSystemId = safeDiscoveredText(entry.systemId, 3).toUpperCase();
+    const systemId = /^[A-Z0-9]{3}$/.test(rawSystemId) ? rawSystemId : "";
+    const key = `${entry.source}|${normalizeText(entry.host)}|${entry.instanceNumber}|${normalizeText(systemId)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    discovered.push({
+      id: key,
+      description: description || systemId || entry.host,
+      systemId,
+      host: normalizeHost(entry.host),
+      instanceNumber: entry.instanceNumber,
+      source: entry.source
+    });
+  }
+  return {
+    scannedAt: new Date().toISOString(),
+    filesFound,
+    warnings,
+    entries: discovered.sort((a, b) => a.systemId.localeCompare(b.systemId) || a.description.localeCompare(b.description, "zh-CN"))
+  };
 }
