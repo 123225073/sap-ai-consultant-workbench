@@ -5,8 +5,12 @@ import type { WorkspaceBackupResult, WorkspaceImportResult } from "../shared/wor
 
 const IMPORTABLE_ENTRIES = ["app-state.json", "app-state.backup.json", "projects", "secure-store"];
 const MAX_IMPORT_FILES = 50_000;
-const MAX_IMPORT_BYTES = 20 * 1024 * 1024 * 1024;
-const SUPPORTED_SCHEMA_VERSION = 2;
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_STATE_BYTES = 64 * 1024 * 1024;
+const MAX_THREADS_PER_SCOPE = 10_000;
+const MAX_TOTAL_MESSAGES = 200_000;
+const MAX_MESSAGE_CONTENT_CHARS = 200_000;
+const SUPPORTED_SCHEMA_VERSION = 3;
 
 interface ManifestFile {
   relativePath: string;
@@ -32,14 +36,52 @@ async function resolveWorkspaceSource(selection: string): Promise<string> {
 }
 
 async function assertSupportedState(workspaceRoot: string): Promise<void> {
-  const raw = await fs.readFile(path.join(workspaceRoot, "app-state.json"), "utf8");
-  const parsed = JSON.parse(raw) as { schemaVersion?: unknown; projects?: unknown };
+  const statePath = path.join(workspaceRoot, "app-state.json");
+  const stats = await fs.lstat(statePath);
+  if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_STATE_BYTES) {
+    throw new Error("旧工作台状态文件无效或超过 64 MB，已停止导入。");
+  }
+  const raw = await fs.readFile(statePath, "utf8");
+  let parsed: { schemaVersion?: unknown; projects?: unknown; workThreads?: unknown; chatThreads?: unknown };
+  try {
+    parsed = JSON.parse(raw) as typeof parsed;
+  } catch {
+    throw new Error("旧工作台状态文件不是有效 JSON，已停止导入。");
+  }
   const version = parsed.schemaVersion === undefined ? 1 : Number(parsed.schemaVersion);
   if (!Number.isInteger(version) || version < 1) throw new Error("旧工作台的状态版本无效，已停止导入。");
   if (version > SUPPORTED_SCHEMA_VERSION) {
     throw new Error(`旧工作台数据版本 ${version} 高于当前应用支持的版本 ${SUPPORTED_SCHEMA_VERSION}，请先升级应用。`);
   }
   if (!Array.isArray(parsed.projects)) throw new Error("旧工作台状态缺少项目列表，已停止导入。");
+  if (version >= 3) {
+    if (!Array.isArray(parsed.workThreads) || !Array.isArray(parsed.chatThreads)) {
+      throw new Error("旧工作台状态缺少任务或日常对话列表，已停止导入。");
+    }
+    let totalMessages = 0;
+    for (const [label, threads] of [["任务", parsed.workThreads], ["日常对话", parsed.chatThreads]] as const) {
+      if (threads.length > MAX_THREADS_PER_SCOPE) throw new Error(`${label}数量超过受控导入上限，已停止导入。`);
+      const ids = new Set<string>();
+      for (const value of threads) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label}数据结构无效，已停止导入。`);
+        const thread = value as { id?: unknown; messages?: unknown };
+        if (typeof thread.id !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(thread.id) || ids.has(thread.id)) {
+          throw new Error(`${label}包含无效或重复的会话 ID，已停止导入。`);
+        }
+        ids.add(thread.id);
+        if (!Array.isArray(thread.messages)) throw new Error(`${label}消息列表无效，已停止导入。`);
+        totalMessages += thread.messages.length;
+        if (totalMessages > MAX_TOTAL_MESSAGES) throw new Error("会话消息总量超过受控导入上限，已停止导入。");
+        for (const message of thread.messages) {
+          if (!message || typeof message !== "object" || Array.isArray(message)) throw new Error(`${label}消息结构无效，已停止导入。`);
+          const content = (message as { content?: unknown }).content;
+          if (typeof content !== "string" || content.length > MAX_MESSAGE_CONTENT_CHARS) {
+            throw new Error(`${label}包含无效或过长的消息，已停止导入。`);
+          }
+        }
+      }
+    }
+  }
 }
 
 async function collectManifestFiles(root: string): Promise<ManifestFile[]> {

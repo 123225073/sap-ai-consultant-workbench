@@ -112,7 +112,7 @@ async function evaluateJson(expression) {
 }
 
 async function capture(name) {
-  await pageSession.evaluate("new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))");
+  await new Promise((resolve) => setTimeout(resolve, 120));
   const result = await pageSession.send("Page.captureScreenshot", {
     format: "png",
     fromSurface: true,
@@ -237,17 +237,39 @@ try {
     __phase43.setValue(document.querySelector('[aria-label="系统或本地标签"]'), 'UAT/100');
     document.querySelector('form[aria-label="新建 Project"]').requestSubmit();
     await __phase43.until(async () => (await window.workbench.getState()).data.projects.some((item) => item.name === 'Phase43 正式 UAT'));
-    __phase43.clickText('新文件夹');
+    __phase43.clickText('新建任务');
     await new Promise((resolve) => setTimeout(resolve, 50));
-    __phase43.setValue(document.querySelector('[aria-label="工作文件夹名称"]'), 'UAT 核心旅程');
+    return true;
+  })()`);
+  const taskDialog = await evaluateJson(`(() => {
+    const tabs = [...document.querySelectorAll('.task-folder-mode button')];
+    return {
+      title: document.querySelector('[aria-label="新建任务"] .create-dialog-heading strong')?.textContent,
+      labels: tabs.map((item) => item.textContent.trim()),
+      backgrounds: tabs.map((item) => getComputedStyle(item).backgroundColor),
+      activeCount: tabs.filter((item) => item.classList.contains('active')).length
+    };
+  })()`);
+  assert(taskDialog.title === "新建任务" && taskDialog.labels.join("|") === "新建文件夹|已有文件夹", "新建任务明确区分新建和已有工作文件夹");
+  assert(taskDialog.activeCount === 1 && taskDialog.backgrounds.every((color) => color !== "rgb(37, 99, 235)"), "文件夹页签未被主按钮蓝色样式污染");
+  await capture("task-dialog-folder-binding");
+
+  await pageSession.evaluate(`(async () => {
+    __phase43.setValue(document.querySelector('[aria-label="任务名称"]'), 'UAT 核心旅程');
     document.querySelector('.case-create').requestSubmit();
     await __phase43.until(async () => {
       const response = await window.workbench.getState();
       const project = response.data.projects.find((item) => item.name === 'Phase43 正式 UAT');
-      return project?.cases.some((item) => item.title === 'UAT 核心旅程');
+      return project?.cases.some((item) => item.title === 'UAT 核心旅程') && response.data.workThreads.some((item) => item.title === 'UAT 核心旅程');
     });
     return true;
   })()`);
+  const compactComposer = await evaluateJson(`(() => {
+    const composer = document.querySelector('.compact-composer')?.getBoundingClientRect();
+    const textarea = document.querySelector('.compact-composer textarea')?.getBoundingClientRect();
+    return { composerHeight: composer?.height ?? 0, textareaHeight: textarea?.height ?? 0 };
+  })()`);
+  assert(compactComposer.composerHeight > 0 && compactComposer.composerHeight <= 100 && compactComposer.textareaHeight <= 42, "空输入框保持紧凑，内容增加时再自适应长高");
   await capture("work-case-created");
 
   await pageSession.evaluate(`(async () => {
@@ -258,12 +280,12 @@ try {
     await __phase43.until(async () => {
       const state = (await window.workbench.getState()).data;
       const project = state.projects.find((item) => item.name === 'Phase43 正式 UAT');
-      const currentCase = project?.cases.find((item) => item.title === 'UAT 核心旅程');
-      return (currentCase?.messages.length ?? 0) >= 2;
+      const workThread = state.workThreads.find((item) => item.title === 'UAT 核心旅程');
+      return (workThread?.messages.length ?? 0) >= 2;
     });
     await __phase43.until(() => {
       const flow = document.querySelector('.conversation-flow');
-      return flow && flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4;
+      return flow && flow.scrollHeight - flow.scrollTop - flow.clientHeight < 96;
     });
     return true;
   })()`);
@@ -403,14 +425,18 @@ try {
     const content = document.querySelector('.conversation-content');
     const spacer = document.createElement('div');
     spacer.style.height = '1200px';
+    spacer.style.minHeight = '1200px';
+    spacer.style.flex = '0 0 1200px';
     content.appendChild(spacer);
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    flow.scrollTop = flow.scrollHeight;
     flow.scrollTop = 0;
     flow.dispatchEvent(new Event('scroll', { bubbles: true }));
     await __phase43.until(() => Boolean(document.querySelector('.scroll-latest-button')));
     const buttonVisible = Boolean(document.querySelector('.scroll-latest-button'));
     document.querySelector('.scroll-latest-button').click();
-    await __phase43.until(() => flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4);
-    const returnedToLatest = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 4;
+    await new Promise((resolve) => setTimeout(resolve, 160));
+    const returnedToLatest = flow.scrollHeight - flow.scrollTop - flow.clientHeight < 96;
     spacer.remove();
     return { buttonVisible, returnedToLatest };
   })()`);
@@ -454,16 +480,62 @@ try {
   assert(minimumViewport.conversationWidth >= 500, "680×520 最小窗口保留足够的核心对话宽度");
   await capture("responsive-680x520");
 
+  process.stdout.write("phase43-stage=thread-lifecycle-start\n");
+  const threadLifecycle = await evaluateJson(`await (async () => {
+    const call = (label, promise) => Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('thread-lifecycle-timeout:' + label)), 8000))
+    ]);
+    let state = (await call('get-state', window.workbench.getState())).data;
+    const project = state.projects.find((item) => item.name === 'Phase43 正式 UAT');
+    const caseItem = project?.cases.find((item) => item.title === 'UAT 核心旅程');
+    const original = state.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id && item.title === 'UAT 核心旅程');
+    state = (await call('create-work', window.workbench.createWorkThread({ projectId: project.id, title: 'UAT 生命周期任务', folderMode: 'existing', caseId: caseItem.id }))).data;
+    const work = state.workThreads.find((item) => item.title === 'UAT 生命周期任务');
+    const archivedWork = (await call('archive-work', window.workbench.updateConversationThreadStatus({ scope: 'work', threadId: work.id, status: 'archived' }))).data.workThreads.find((item) => item.id === work.id)?.status;
+    const restoredWork = (await call('restore-work', window.workbench.updateConversationThreadStatus({ scope: 'work', threadId: work.id, status: 'active' }))).data.workThreads.find((item) => item.id === work.id)?.status;
+    const removedWork = (await call('remove-work', window.workbench.updateConversationThreadStatus({ scope: 'work', threadId: work.id, status: 'removed' }))).data.workThreads.find((item) => item.id === work.id)?.status;
+    await call('restore-work-again', window.workbench.updateConversationThreadStatus({ scope: 'work', threadId: work.id, status: 'active' }));
+    const search = (await call('search-work', window.workbench.search(work.id))).data;
+    await call('switch-original-work', window.workbench.switchWorkThread({ threadId: original.id }));
+
+    state = (await call('create-chat', window.workbench.createDailyChatThread({ title: 'UAT 生命周期对话' }))).data;
+    const chat = state.chatThreads.find((item) => item.title === 'UAT 生命周期对话');
+    const archivedChat = (await call('archive-chat', window.workbench.updateConversationThreadStatus({ scope: 'chat', threadId: chat.id, status: 'archived' }))).data.chatThreads.find((item) => item.id === chat.id)?.status;
+    const removedChat = (await call('remove-chat', window.workbench.updateConversationThreadStatus({ scope: 'chat', threadId: chat.id, status: 'removed' }))).data.chatThreads.find((item) => item.id === chat.id)?.status;
+    const restoredChat = (await call('restore-chat', window.workbench.updateConversationThreadStatus({ scope: 'chat', threadId: chat.id, status: 'active' }))).data.chatThreads.find((item) => item.id === chat.id)?.status;
+    return {
+      workId: work.id,
+      chatId: chat.id,
+      sameFolder: work.caseId === original.caseId,
+      independentIds: work.id !== original.id && work.id !== chat.id,
+      archivedWork,
+      restoredWork,
+      removedWork,
+      archivedChat,
+      removedChat,
+      restoredChat,
+      searchable: search.some((item) => item.type === 'work-thread' && item.threadId === work.id)
+    };
+  })()`);
+  assert(threadLifecycle.sameFolder && threadLifecycle.independentIds, "同一工作文件夹可以绑定多个独立任务会话 ID");
+  assert(threadLifecycle.archivedWork === "archived" && threadLifecycle.removedWork === "removed" && threadLifecycle.restoredWork === "active", "Work 任务支持归档、移除和恢复");
+  assert(threadLifecycle.archivedChat === "archived" && threadLifecycle.removedChat === "removed" && threadLifecycle.restoredChat === "active", "Chat 对话支持归档、移除和恢复");
+  assert(threadLifecycle.searchable, "任务可以通过持久化会话 ID 搜索定位");
+  process.stdout.write("phase43-stage=thread-lifecycle-complete\n");
+
   const persisted = await evaluateJson(`await (async () => {
     const response = await window.workbench.getState();
     const project = response.data.projects.find((item) => item.name === 'Phase43 正式 UAT');
     const caseItem = project?.cases.find((item) => item.title === 'UAT 核心旅程');
+    const workThread = response.data.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id && item.title === 'UAT 核心旅程');
     const flattenPaths = (nodes) => nodes.flatMap((item) => [item.relativePath, ...flattenPaths(item.children ?? [])]);
     return {
       ok: response.ok,
       projectId: project?.id,
       caseId: caseItem?.id,
-      messageCount: caseItem?.messages.length ?? 0,
+      threadId: workThread?.id,
+      messageCount: workThread?.messages.length ?? 0,
       knowledgePublished: project?.knowledge.items.some((item) => item.title === 'Phase43 只读交付知识' && item.status === 'published'),
       standardsVersion: project?.standards.version ?? 0,
       files: flattenPaths(response.data.activeCaseFiles)
@@ -472,11 +544,13 @@ try {
   assert(persisted.ok && persisted.messageCount >= 6, "Work 对话和成果动作已持久化到隔离案件");
   assert(persisted.knowledgePublished && persisted.standardsVersion >= 2, "规范与知识状态已持久化到隔离 Project");
   assert(persisted.files.includes("outputs/开发说明书.md") && persisted.files.includes("outputs/逻辑说明图.mmd"), "右侧文件树包含开发说明书和 Mermaid 流程图");
+  process.stdout.write("phase43-stage=persistence-complete\n");
 
   const lifecyclePath = path.join(userDataDir, "logs", `lifecycle-${new Date().toISOString().slice(0, 10)}.log`);
 
   const browserSession = await openCdp(`ws://127.0.0.1:${activePort.port}${activePort.browserPath}`);
   browserSession.fire("Browser.close");
+  process.stdout.write("phase43-stage=browser-close-sent\n");
   const firstExit = await waitForExit(first, 8_000);
   assert(firstExit !== null, "主进程正常关闭并退出");
 

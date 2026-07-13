@@ -705,6 +705,26 @@ export interface CreateLocalCaseInput {
   title: string;
 }
 
+export type ConversationThreadStatus = "active" | "archived" | "removed";
+
+export interface CreateWorkThreadInput {
+  projectId: string;
+  title: string;
+  folderMode: "new" | "existing";
+  folderName?: string;
+  caseId?: string;
+}
+
+export interface SwitchWorkThreadInput {
+  threadId: string;
+}
+
+export interface UpdateConversationThreadStatusInput {
+  scope: "work" | "chat";
+  threadId: string;
+  status: ConversationThreadStatus;
+}
+
 export interface DailyChatMessage {
   id: string;
   threadId: string;
@@ -721,9 +741,12 @@ export interface DailyChatMessage {
 export interface DailyChatThread {
   id: string;
   title: string;
+  status: ConversationThreadStatus;
   createdAt: string;
   updatedAt: string;
   lastOpenedAt: string;
+  archivedAt: string | null;
+  removedAt: string | null;
   messages: DailyChatMessage[];
 }
 
@@ -789,6 +812,7 @@ export interface ProjectConfig {
 export interface CaseWorkflowInput {
   projectId?: string;
   caseId?: string;
+  threadId?: string;
   content: string;
   taskMode: TaskMode;
   modelId: string;
@@ -832,6 +856,20 @@ export interface CaseSummary {
   folderName: string;
   currentSummary: string;
   knowledgeReferences: CaseKnowledgeReference[];
+  messages: CaseMessage[];
+}
+
+export interface WorkThread {
+  id: string;
+  projectId: string;
+  caseId: string;
+  title: string;
+  status: ConversationThreadStatus;
+  createdAt: string;
+  updatedAt: string;
+  lastOpenedAt: string;
+  archivedAt: string | null;
+  removedAt: string | null;
   messages: CaseMessage[];
 }
 
@@ -886,11 +924,12 @@ export interface CaseFilePreview {
 export interface SearchResult {
   id: string;
   title: string;
-  type: "project" | "case" | "file" | "knowledge";
+  type: "project" | "case" | "file" | "knowledge" | "work-thread" | "chat-thread";
   location: string;
   snippet: string;
   projectId?: string;
   caseId?: string | null;
+  threadId?: string | null;
   sourcePath?: string | null;
 }
 
@@ -899,8 +938,10 @@ export interface WorkbenchState {
   workspaceRoot: string;
   activeProjectId: string;
   activeCaseId: string;
+  activeWorkThreadId: string;
   activeChatThreadId: string;
   projects: ProjectSummary[];
+  workThreads: WorkThread[];
   chatThreads: DailyChatThread[];
   activeCaseFiles: CaseFileNode[];
   startupNotice?: string;

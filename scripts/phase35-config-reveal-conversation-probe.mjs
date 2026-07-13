@@ -68,8 +68,8 @@ assert(mainSource.includes("const parsedInput = parseAppendDailyChatMessageInput
 assert(modelConnector.includes("generateDailyChat"), "model connector daily chat generation missing");
 assert(modelConnector.includes("input.history ?? []") && mainSource.includes("getDailyChatModelHistory"), "daily chat must send bounded thread history to the selected model");
 assert(workspaceStore.includes("slice(-12)") && workspaceStore.includes("totalLength + content.length > 12000"), "daily chat history bounds are missing");
-assert(workspaceStore.includes("message.projectId === projectId") && workspaceStore.includes("message.providerId === providerId") && workspaceStore.includes("message.modelId === modelId"), "daily chat history must be isolated by project, provider, and model");
-assert(mainSource.includes("request.threadId, projectId, provider.id, activeModelId"), "daily chat history isolation keys are not passed from main");
+assert(workspaceStore.includes('message.role === "user"') && workspaceStore.includes('message.responseMode === "model-success"'), "daily chat history must preserve the visible thread across model switches");
+assert(mainSource.includes("request.threadId, projectId, provider.id, activeModelId"), "daily chat history thread key is not passed from main");
 assert(modelConnector.includes("不要声称已读取本机文件、SAP、飞书或案件资料"), "daily chat system boundary prompt missing");
 assert(preloadSource.includes("createDailyChatThread") && preloadSource.includes("appendDailyChatMessage"), "preload daily chat bridge missing");
 assert(rendererTypes.includes("switchDailyChatThread") && rendererTypes.includes("AppendDailyChatMessageInput"), "renderer daily chat bridge type missing");
@@ -92,10 +92,10 @@ assert(dailyChatSendRegion.includes("projectId: selectedSafeDraftModel ? project
 assert(dailyChatSendRegion.includes("providerId: selectedSafeDraftModel?.provider.id"), "daily chat should pass explicit model channel provenance");
 assert(!dailyChatSendRegion.includes("caseId:"), "daily chat must not pass a case binding");
 assert(appSource.includes("conversation-sidebar-section"), "conversation sidebar section missing");
-assert(appSource.includes("new-case-project-picker"), "new case project picker missing");
-assert(appSource.includes("newCaseProjectId") && appSource.includes("targetProject.id"), "new case must use selected project");
-assert(appSource.includes("project-case-label"), "project-bound cases must be visibly labeled as cases");
-assert(styles.includes(".conversation-sidebar-section") && styles.includes(".new-case-project-picker") && styles.includes(".daily-chat-boundary"), "new sidebar/chat styles missing");
+assert(appSource.includes('aria-label="新建任务"'), "new task dialog missing");
+assert(appSource.includes("newCaseProjectId") && appSource.includes("bridge.createWorkThread"), "new task must use the selected project");
+assert(appSource.includes("task-folder-mode") && appSource.includes('setNewTaskFolderMode("existing")'), "new task must support new and existing folder binding");
+assert(styles.includes(".conversation-sidebar-section") && styles.includes(".task-folder-mode") && styles.includes(".daily-chat-boundary"), "new sidebar/chat styles missing");
 pass("codexLikeCaseUx");
 
 const dailyChatRegion = workspaceStore.match(/async createDailyChatThread[\s\S]*?async switchProject/)?.[0] ?? "";

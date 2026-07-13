@@ -37,10 +37,10 @@ for (const [name, marker, source] of [
   ["new case input ref", "newCaseInputRef", sources.app],
   ["focus action", "focusNewCaseInput", sources.app],
   ["flow marker", "phase28-new-case-flow", sources.app],
-  ["renderer bridge call", "bridge.createLocalCase", sources.app],
-  ["Chinese placeholder", "输入工作文件夹名称", sources.app],
-  ["Chinese action", "创建文件夹", sources.app],
-  ["created notice", "新工作文件夹已创建", sources.app],
+  ["renderer bridge call", "bridge.createWorkThread", sources.app],
+  ["task dialog", 'aria-label="新建任务"', sources.app],
+  ["folder binding modes", "task-folder-mode", sources.app],
+  ["existing folder binding", 'setNewTaskFolderMode("existing")', sources.app],
   ["active view switch", 'setActiveView("case")', sources.app],
   ["case action style", "case-create button:not(:disabled)", sources.styles],
   ["main IPC", "workbench:create-local-case", sources.main],
@@ -104,16 +104,19 @@ function assert(condition, message) {
 const store = new WorkspaceStore(${JSON.stringify(isolatedRepoRoot)});
 const projectState = await store.createLocalProject({ name: "Phase28 Project", sapVersion: "S4", systemLabel: "LOCAL/028" });
 const projectId = projectState.activeProjectId;
-const caseState = await store.createLocalCase({ projectId, title: "Phase28 正式新案件" });
-const project = caseState.projects.find((item) => item.id === projectId);
-const caseItem = project?.cases.find((item) => item.title === "Phase28 正式新案件");
+const taskState = await store.createWorkThread({ projectId, title: "Phase28 正式任务", folderMode: "new", folderName: "Phase28 工作文件夹" });
+const project = taskState.projects.find((item) => item.id === projectId);
+const caseItem = project?.cases.find((item) => item.title === "Phase28 工作文件夹");
+const workThread = taskState.workThreads.find((item) => item.title === "Phase28 正式任务");
 assert(project, "project missing after create case");
 assert(caseItem, "created case missing");
-assert(caseState.activeProjectId === projectId, "created case did not keep project active");
-assert(caseState.activeCaseId === caseItem.id, "created case did not become active");
-assert(caseState.activeCaseFiles.some((node) => node.name === "README.md"), "new case file tree missing README");
-assert(caseState.activeCaseFiles.some((node) => node.name === "conversation.md"), "new case file tree missing conversation");
-pass("runtimeCreateCaseUsable");
+assert(workThread, "created work thread missing");
+assert(taskState.activeProjectId === projectId, "created task did not keep project active");
+assert(taskState.activeCaseId === caseItem.id, "created task folder did not become active");
+assert(taskState.activeWorkThreadId === workThread.id, "created task conversation did not become active");
+assert(taskState.activeCaseFiles.some((node) => node.name === "README.md"), "new task file tree missing README");
+assert(taskState.activeCaseFiles.some((node) => node.name === "conversation.md"), "new task file tree missing conversation");
+pass("runtimeCreateTaskUsable");
 `;
 
 try {

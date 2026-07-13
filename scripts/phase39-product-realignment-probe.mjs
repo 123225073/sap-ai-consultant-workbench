@@ -166,9 +166,9 @@ await store.appendDailyChatMessage({
 });
 const providerAHistory = await store.getDailyChatModelHistory(chatThreadId, project.id, "provider-a", "model-a");
 const providerBHistory = await store.getDailyChatModelHistory(chatThreadId, project.id, "provider-b", "model-b");
-assert(providerAHistory.length === 2 && providerAHistory.every((item) => item.content.startsWith("A ")), "provider A history leaked another channel");
-assert(providerBHistory.length === 2 && providerBHistory.every((item) => item.content.startsWith("B ")), "provider B history leaked another channel");
-pass("dailyChatHistoryIsolatedByProviderAndModel");
+assert(providerAHistory.length === 4 && providerAHistory.map((item) => item.content).join("|") === "A user message|A assistant message|B user message|B assistant message", "model switch lost the visible conversation context");
+assert(JSON.stringify(providerBHistory) === JSON.stringify(providerAHistory), "conversation context changed with the selected provider or model");
+pass("dailyChatHistoryContinuesAcrossModelSwitches");
 
 const [appSource, configSource, storeSource, mainSource, preloadSource, rendererTypes, styles, modelConnector, preflight] = await Promise.all([
   readFile(path.join(repoRoot, "apps/desktop/src/renderer/App.tsx"), "utf8"),

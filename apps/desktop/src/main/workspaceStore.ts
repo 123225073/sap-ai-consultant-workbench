@@ -49,7 +49,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, DailyChatMessage, DailyChatThread, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatMessage, DailyChatThread, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkThread } from "../shared/workbenchTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
@@ -58,8 +58,10 @@ interface StoredState {
   schemaVersion: number;
   activeProjectId: string;
   activeCaseId: string;
+  activeWorkThreadId: string;
   activeChatThreadId: string;
   projects: ProjectSummary[];
+  workThreads: WorkThread[];
   chatThreads: DailyChatThread[];
 }
 
@@ -95,8 +97,9 @@ const DEMO_PROJECT_ID = "demo-s4hana";
 const DEMO_CASE_ID = "demo001";
 const STARTER_PROJECT_ID = "local-workspace";
 const STARTER_CASE_ID = "inbox";
+const DEFAULT_WORK_THREAD_ID = "work-inbox";
 const DEFAULT_CHAT_THREAD_ID = "daily-chat-default";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const MAX_PROJECT_CONFIG_BYTES = 16 * 1024 * 1024;
 
 class IncompatibleStateVersionError extends Error {
@@ -120,6 +123,14 @@ function migrateStoredState(value: unknown): StoredState {
   let migrated = { ...(value as StoredState) };
   if (sourceVersion === 1) {
     migrated = { ...migrated, schemaVersion: 2 };
+  }
+  if (sourceVersion <= 2) {
+    migrated = {
+      ...migrated,
+      schemaVersion: 3,
+      activeWorkThreadId: "",
+      workThreads: []
+    };
   }
   return migrated;
 }
@@ -301,9 +312,12 @@ function demoChatThread(): DailyChatThread {
   return {
     id: DEFAULT_CHAT_THREAD_ID,
     title: "日常对话",
+    status: "active",
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: nowIso(),
+    archivedAt: null,
+    removedAt: null,
     messages: [
       {
         id: "seed-chat-assistant-1",
@@ -362,10 +376,40 @@ function starterChatThread(): DailyChatThread {
   return {
     id: DEFAULT_CHAT_THREAD_ID,
     title: "日常对话",
+    status: "active",
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
+    archivedAt: null,
+    removedAt: null,
     messages: []
+  };
+}
+
+function createWorkThreadRecord(
+  projectId: string,
+  caseItem: CaseSummary,
+  title: string,
+  existingThreadIds: Iterable<string>,
+  preferredId?: string
+): WorkThread {
+  const createdAt = nowIso();
+  const availableIds = new Set(existingThreadIds);
+  const id = preferredId && !availableIds.has(preferredId)
+    ? preferredId
+    : uniqueEntityId("work", availableIds);
+  return {
+    id,
+    projectId,
+    caseId: caseItem.id,
+    title,
+    status: "active",
+    createdAt,
+    updatedAt: createdAt,
+    lastOpenedAt: createdAt,
+    archivedAt: null,
+    removedAt: null,
+    messages: caseItem.messages.map((message) => ({ ...message }))
   };
 }
 
@@ -591,6 +635,48 @@ export function parseCreateLocalCaseInput(input: unknown): CreateLocalCaseInput 
   };
 }
 
+export function parseCreateWorkThreadInput(input: unknown): CreateWorkThreadInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new Error("新建任务请求无效。");
+  }
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["projectId", "title", "folderMode", "folderName", "caseId"].includes(key))) {
+    throw new Error("新建任务请求包含不支持的字段。");
+  }
+  const candidate = input as Partial<CreateWorkThreadInput>;
+  const folderMode = candidate.folderMode === "existing" ? "existing" : "new";
+  const result: CreateWorkThreadInput = {
+    projectId: assertStrictLifecycleId("Project ID", candidate.projectId),
+    title: assertSafeLifecycleText("任务名称", candidate.title, 120),
+    folderMode
+  };
+  if (folderMode === "existing") {
+    result.caseId = assertStrictLifecycleId("工作文件夹 ID", candidate.caseId);
+  } else {
+    result.folderName = assertSafeLifecycleText("工作文件夹名称", candidate.folderName || candidate.title, 120);
+  }
+  return result;
+}
+
+function parseSwitchWorkThreadInput(input: unknown): SwitchWorkThreadInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("切换任务请求无效。");
+  const keys = Object.keys(input);
+  if (keys.length !== 1 || keys[0] !== "threadId") throw new Error("切换任务请求只能包含 threadId。");
+  return { threadId: assertStrictLifecycleId("任务会话 ID", (input as Partial<SwitchWorkThreadInput>).threadId) };
+}
+
+function parseUpdateConversationThreadStatusInput(input: unknown): UpdateConversationThreadStatusInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("会话状态请求无效。");
+  const candidate = input as Partial<UpdateConversationThreadStatusInput>;
+  if (candidate.scope !== "work" && candidate.scope !== "chat") throw new Error("会话类型无效。");
+  if (candidate.status !== "active" && candidate.status !== "archived" && candidate.status !== "removed") throw new Error("会话状态无效。");
+  return {
+    scope: candidate.scope,
+    threadId: assertStrictLifecycleId("会话 ID", candidate.threadId),
+    status: candidate.status
+  };
+}
+
 export function parseCreateDailyChatThreadInput(input: unknown): CreateDailyChatThreadInput {
   if (input === undefined || input === null) return {};
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -779,9 +865,12 @@ function createLocalChatThreadRecord(input: CreateDailyChatThreadInput, existing
   return {
     id,
     title,
+    status: "active",
     createdAt,
     updatedAt: createdAt,
     lastOpenedAt: createdAt,
+    archivedAt: null,
+    removedAt: null,
     messages
   };
 }
@@ -813,12 +902,15 @@ function createLocalProjectRecord(input: CreateLocalProjectInput, existingProjec
 function emptyState(): StoredState {
   const chatThread = starterChatThread();
   const project = starterProject();
+  const workThread = createWorkThreadRecord(project.id, project.cases[0], "收件箱", [], DEFAULT_WORK_THREAD_ID);
   return {
     schemaVersion: SCHEMA_VERSION,
     activeProjectId: project.id,
     activeCaseId: project.cases[0].id,
+    activeWorkThreadId: workThread.id,
     activeChatThreadId: chatThread.id,
     projects: [project],
+    workThreads: [workThread],
     chatThreads: [chatThread]
   };
 }
@@ -1298,9 +1390,42 @@ function normalizeDailyChatThread(value: unknown, fallback: DailyChatThread): Da
   return {
     id,
     title: text(candidate.title, fallback.title).slice(0, 80) || fallback.title,
+    status: normalizeConversationThreadStatus(candidate.status),
     createdAt: text(candidate.createdAt, fallback.createdAt),
     updatedAt: text(candidate.updatedAt, fallback.updatedAt),
     lastOpenedAt: text(candidate.lastOpenedAt, fallback.lastOpenedAt),
+    archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : null,
+    removedAt: typeof candidate.removedAt === "string" ? candidate.removedAt : null,
+    messages
+  };
+}
+
+function normalizeConversationThreadStatus(value: unknown): ConversationThreadStatus {
+  if (value === "archived" || value === "removed") return value;
+  return "active";
+}
+
+function normalizeWorkThread(value: unknown, fallback: WorkThread): WorkThread {
+  const candidate = value && typeof value === "object" ? value as Partial<WorkThread> : fallback;
+  const id = safeId(candidate.id, fallback.id);
+  const caseId = safeId(candidate.caseId, fallback.caseId);
+  const messages = Array.isArray(candidate.messages)
+    ? candidate.messages.flatMap((message) => {
+        const normalized = normalizeCaseMessage(message, caseId);
+        return normalized ? [normalized] : [];
+      })
+    : fallback.messages.map((message) => ({ ...message, caseId }));
+  return {
+    id,
+    projectId: safeId(candidate.projectId, fallback.projectId),
+    caseId,
+    title: text(candidate.title, fallback.title).slice(0, 120) || fallback.title,
+    status: normalizeConversationThreadStatus(candidate.status),
+    createdAt: text(candidate.createdAt, fallback.createdAt),
+    updatedAt: text(candidate.updatedAt, fallback.updatedAt),
+    lastOpenedAt: text(candidate.lastOpenedAt, fallback.lastOpenedAt),
+    archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : null,
+    removedAt: typeof candidate.removedAt === "string" ? candidate.removedAt : null,
     messages
   };
 }
@@ -1415,6 +1540,19 @@ function chatThreadFingerprint(state: StoredState): unknown {
   return threads.map((thread) => ({
     id: thread.id,
     title: thread.title,
+    status: thread.status,
+    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0
+  }));
+}
+
+function workThreadFingerprint(state: StoredState): unknown {
+  const threads = Array.isArray(state.workThreads) ? state.workThreads : [];
+  return threads.map((thread) => ({
+    id: thread.id,
+    projectId: thread.projectId,
+    caseId: thread.caseId,
+    title: thread.title,
+    status: thread.status,
     messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0
   }));
 }
@@ -1490,6 +1628,12 @@ export class WorkspaceStore {
       const project = state.projects.find((item) => item.id === DEMO_PROJECT_ID);
       const caseItem = project?.cases.find((item) => item.id === DEMO_CASE_ID);
       if (project && caseItem) {
+        let thread = state.workThreads.find((item) => item.projectId === project.id && item.caseId === caseItem.id);
+        if (!thread) {
+          thread = createWorkThreadRecord(project.id, caseItem, caseItem.title, state.workThreads.map((item) => item.id));
+          state.workThreads.unshift(thread);
+        }
+        state.activeWorkThreadId = thread.id;
         syncProjectLocalStorage(project, caseItem);
         await this.writeProjectMetadata(project);
       }
@@ -1511,6 +1655,12 @@ export class WorkspaceStore {
       state.activeCaseId = DEMO_CASE_ID;
       const caseItem = project.cases.find((item) => item.id === DEMO_CASE_ID);
       if (caseItem) {
+        let thread = state.workThreads.find((item) => item.projectId === project.id && item.caseId === caseItem.id);
+        if (!thread) {
+          thread = createWorkThreadRecord(project.id, caseItem, caseItem.title, state.workThreads.map((item) => item.id));
+          state.workThreads.unshift(thread);
+        }
+        state.activeWorkThreadId = thread.id;
         syncProjectLocalStorage(project, caseItem);
         await this.writeProjectMetadata(project);
       }
@@ -1535,8 +1685,11 @@ export class WorkspaceStore {
         syncProjectLocalStorage(project, firstCase);
       }
       state.projects.unshift(project);
+      const workThread = createWorkThreadRecord(project.id, project.cases[0], project.cases[0]?.title ?? "新任务", state.workThreads.map((item) => item.id));
+      state.workThreads.unshift(workThread);
       state.activeProjectId = project.id;
       state.activeCaseId = project.cases[0]?.id ?? "";
+      state.activeWorkThreadId = workThread.id;
       await this.saveState(state);
       await this.writeProjectMetadata(project);
       await this.ensureCaseFiles(state);
@@ -1555,13 +1708,122 @@ export class WorkspaceStore {
       }
       const caseItem = createLocalCaseRecord(project.id, caseInput.title, project.cases.map((item) => item.id));
       project.cases.unshift(caseItem);
+      const workThread = createWorkThreadRecord(project.id, caseItem, caseInput.title, state.workThreads.map((item) => item.id));
+      state.workThreads.unshift(workThread);
       project.updatedAt = nowIso();
       syncProjectLocalStorage(project, caseItem);
       state.activeProjectId = project.id;
       state.activeCaseId = caseItem.id;
+      state.activeWorkThreadId = workThread.id;
       await this.saveState(state);
       await this.writeProjectMetadata(project);
       await this.ensureCaseFiles(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async createWorkThread(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const threadInput = parseCreateWorkThreadInput(input);
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === threadInput.projectId);
+      if (!project || project.isVisible === false) throw new Error("目标 Project 已不存在或已隐藏。");
+      let caseItem: CaseSummary | undefined;
+      if (threadInput.folderMode === "existing") {
+        caseItem = project.cases.find((item) => item.id === threadInput.caseId);
+        if (!caseItem) throw new Error("选择的工作文件夹已不存在。");
+      } else {
+        caseItem = createLocalCaseRecord(project.id, threadInput.folderName ?? threadInput.title, project.cases.map((item) => item.id));
+        project.cases.unshift(caseItem);
+      }
+      const thread = createWorkThreadRecord(project.id, caseItem, threadInput.title, state.workThreads.map((item) => item.id));
+      thread.messages = [];
+      caseItem.messages = thread.messages.map((message) => ({ ...message }));
+      state.workThreads.unshift(thread);
+      state.activeProjectId = project.id;
+      state.activeCaseId = caseItem.id;
+      state.activeWorkThreadId = thread.id;
+      project.updatedAt = nowIso();
+      syncProjectLocalStorage(project, caseItem);
+      await this.ensureCaseFiles(state);
+      await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+      await this.saveState(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async switchWorkThread(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const { threadId } = parseSwitchWorkThreadInput(input);
+      const state = await this.loadOrCreateState();
+      const thread = state.workThreads.find((item) => item.id === threadId);
+      if (!thread || thread.status !== "active") throw new Error("任务会话已归档、移除或不存在。");
+      const project = state.projects.find((item) => item.id === thread.projectId);
+      const caseItem = project?.cases.find((item) => item.id === thread.caseId);
+      if (!project || !caseItem || project.isVisible === false) throw new Error("任务绑定的 Project 或工作文件夹已不可用。");
+      thread.lastOpenedAt = nowIso();
+      caseItem.messages = thread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+      caseItem.lastOpenedAt = thread.lastOpenedAt;
+      state.activeProjectId = project.id;
+      state.activeCaseId = caseItem.id;
+      state.activeWorkThreadId = thread.id;
+      syncProjectLocalStorage(project, caseItem);
+      await this.ensureCaseFiles(state);
+      await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+      await this.saveState(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async updateConversationThreadStatus(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const statusInput = parseUpdateConversationThreadStatusInput(input);
+      const state = await this.loadOrCreateState();
+      const threads = statusInput.scope === "work" ? state.workThreads : state.chatThreads;
+      const thread = threads.find((item) => item.id === statusInput.threadId);
+      if (!thread) throw new Error("会话已不存在。");
+      const changedAt = nowIso();
+      thread.status = statusInput.status;
+      thread.updatedAt = changedAt;
+      thread.archivedAt = statusInput.status === "archived" ? changedAt : null;
+      thread.removedAt = statusInput.status === "removed" ? changedAt : null;
+
+      if (statusInput.scope === "work" && state.activeWorkThreadId === thread.id && statusInput.status !== "active") {
+        let next = state.workThreads.find((item) => item.id !== thread.id && item.status === "active");
+        if (!next) {
+          const current = thread as WorkThread;
+          const project = state.projects.find((item) => item.id === current.projectId);
+          const caseItem = project?.cases.find((item) => item.id === current.caseId);
+          if (!project || !caseItem) throw new Error("无法为当前任务建立后续会话。");
+          next = createWorkThreadRecord(project.id, caseItem, "新任务", state.workThreads.map((item) => item.id));
+          next.messages = [];
+          state.workThreads.unshift(next);
+        }
+        state.activeWorkThreadId = next.id;
+        state.activeProjectId = next.projectId;
+        state.activeCaseId = next.caseId;
+        const nextCase = state.projects.find((item) => item.id === next!.projectId)?.cases.find((item) => item.id === next!.caseId);
+        if (nextCase) nextCase.messages = (next as WorkThread).messages.map((message) => ({ ...message, caseId: nextCase.id }));
+      }
+      if (statusInput.scope === "chat" && state.activeChatThreadId === thread.id && statusInput.status !== "active") {
+        let next = state.chatThreads.find((item) => item.id !== thread.id && item.status === "active");
+        if (!next) {
+          next = createLocalChatThreadRecord({}, state.chatThreads.map((item) => item.id));
+          state.chatThreads.unshift(next);
+        }
+        state.activeChatThreadId = next.id;
+      }
+      if (statusInput.scope === "work") {
+        const activeThread = state.workThreads.find((item) => item.id === state.activeWorkThreadId && item.status === "active");
+        const activeProject = activeThread ? state.projects.find((item) => item.id === activeThread.projectId) : undefined;
+        const activeCase = activeProject?.cases.find((item) => item.id === activeThread?.caseId);
+        if (activeThread && activeProject && activeCase) {
+          await this.writeCaseMarkdown(state, activeCase, buildCaseMaintenanceArtifacts(activeProject, activeCase), activeThread.id);
+        }
+      }
+      await this.saveState(state);
       await this.refreshSearchIndex(state);
       return this.withFiles(state);
     });
@@ -1584,8 +1846,8 @@ export class WorkspaceStore {
       const { threadId } = parseSwitchDailyChatThreadInput(input);
       const state = await this.loadOrCreateState();
       const thread = state.chatThreads.find((item) => item.id === threadId);
-      if (!thread) {
-        throw new Error("日常对话已不存在。");
+      if (!thread || thread.status !== "active") {
+        throw new Error("日常对话已归档、移除或不存在。");
       }
       thread.lastOpenedAt = nowIso();
       state.activeChatThreadId = thread.id;
@@ -1601,11 +1863,14 @@ export class WorkspaceStore {
         throw new Error("请输入日常对话内容。");
       }
       const state = await this.loadOrCreateState();
+      const visibleThreadId = state.activeChatThreadId;
       let thread = state.chatThreads.find((item) => item.id === (chatInput.threadId ?? state.activeChatThreadId));
-      if (!thread) {
+      if (!thread || thread.status !== "active") {
+        if (chatInput.threadId) throw new Error("发送时选择的日常对话已归档、移除或不存在，回复未写入其他会话。");
         thread = createLocalChatThreadRecord({ title: chatTitleFromContent(chatInput.content) }, state.chatThreads.map((item) => item.id));
         state.chatThreads.unshift(thread);
       }
+      const targetRemainsVisible = visibleThreadId === thread.id || !state.chatThreads.some((item) => item.id === visibleThreadId && item.status === "active");
       const hadUserMessages = thread.messages.some((item) => item.role === "user");
       const actualModelId = assistantReply?.responseMode === "model-success"
         ? assistantReply.modelId
@@ -1644,8 +1909,10 @@ export class WorkspaceStore {
         thread.title = chatTitleFromContent(chatInput.content);
       }
       thread.updatedAt = nowIso();
-      thread.lastOpenedAt = thread.updatedAt;
-      state.activeChatThreadId = thread.id;
+      if (targetRemainsVisible) {
+        thread.lastOpenedAt = thread.updatedAt;
+        state.activeChatThreadId = thread.id;
+      }
       await this.saveState(state);
       return this.withFiles(state);
     });
@@ -1660,13 +1927,11 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     const thread = state.chatThreads.find((item) => item.id === (threadId ?? state.activeChatThreadId));
     if (!thread) return [];
+    void projectId;
+    void providerId;
+    void modelId;
     const candidates = thread.messages
-      .filter((message) => (
-        message.projectId === projectId &&
-        message.providerId === providerId &&
-        message.modelId === modelId &&
-        (message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
-      ))
+      .filter((message) => message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
       .slice(-12);
     const selected: Array<{ role: "user" | "assistant"; content: string }> = [];
     let totalLength = 0;
@@ -1694,10 +1959,18 @@ export class WorkspaceStore {
       if (!activeCase) {
         throw new Error("目标 Project 没有可用的本地工作文件夹。");
       }
-      activeCase.lastOpenedAt = nowIso();
-      syncProjectLocalStorage(project, activeCase);
+      const activeThread = state.workThreads.find((item) => item.projectId === project.id && item.caseId === activeCase.id && item.status === "active")
+        ?? state.workThreads.find((item) => item.projectId === project.id && item.status === "active");
+      const targetCase = activeThread ? project.cases.find((item) => item.id === activeThread.caseId) ?? activeCase : activeCase;
+      targetCase.lastOpenedAt = nowIso();
+      if (activeThread) {
+        activeThread.lastOpenedAt = targetCase.lastOpenedAt;
+        targetCase.messages = activeThread.messages.map((message) => ({ ...message, caseId: targetCase.id }));
+        state.activeWorkThreadId = activeThread.id;
+      }
+      syncProjectLocalStorage(project, targetCase);
       state.activeProjectId = project.id;
-      state.activeCaseId = activeCase.id;
+      state.activeCaseId = targetCase.id;
       await this.saveState(state);
       await this.writeProjectMetadata(project);
       await this.ensureCaseFiles(state);
@@ -1788,6 +2061,12 @@ export class WorkspaceStore {
         throw new Error("目标工作文件夹不属于所选 Project。");
       }
       caseItem.lastOpenedAt = nowIso();
+      const workThread = state.workThreads.find((item) => item.projectId === project.id && item.caseId === caseItem.id && item.status === "active");
+      if (workThread) {
+        workThread.lastOpenedAt = caseItem.lastOpenedAt;
+        caseItem.messages = workThread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+        state.activeWorkThreadId = workThread.id;
+      }
       syncProjectLocalStorage(project, caseItem);
       state.activeProjectId = project.id;
       state.activeCaseId = caseItem.id;
@@ -1802,11 +2081,12 @@ export class WorkspaceStore {
   async bindCaseWorkflowTarget(input: unknown): Promise<CaseWorkflowInput> {
     const workflowInput = parseCaseWorkflowInput(input);
     const state = await this.loadOrCreateState();
-    const { project, caseItem } = this.resolveWorkflowTarget(state, workflowInput);
+    const { project, caseItem, workThread } = this.resolveWorkflowTarget(state, workflowInput);
     return {
       ...workflowInput,
       projectId: project.id,
-      caseId: caseItem.id
+      caseId: caseItem.id,
+      threadId: workThread.id
     };
   }
 
@@ -1819,7 +2099,14 @@ export class WorkspaceStore {
     assertNoSensitiveCaseContent(workflowInput.content);
 
     const state = await this.loadOrCreateState();
-    const { project, caseItem: currentCase } = this.resolveWorkflowTarget(state, workflowInput);
+    const visibleSelection = {
+      projectId: state.activeProjectId,
+      caseId: state.activeCaseId,
+      threadId: state.activeWorkThreadId
+    };
+    const { project, caseItem: currentCase, workThread } = this.resolveWorkflowTarget(state, workflowInput);
+    const targetRemainsVisible = visibleSelection.threadId === workThread.id;
+    currentCase.messages = workThread.messages.map((message) => ({ ...message, caseId: currentCase.id }));
     await this.ensureCaseFilesForCase(state, project, currentCase);
     const existingFiles = this.flattenCaseFileNodes(await this.readCaseTreeForCase(project, currentCase))
       .filter((node) => node.kind === "file")
@@ -1858,9 +2145,29 @@ export class WorkspaceStore {
     currentCase.currentSummary = artifacts.currentSummary;
     currentCase.summary = artifacts.currentSummary;
     project.knowledge = appendKnowledgeCandidatesFromCase(project, currentCase, artifacts.generatedFiles);
+    workThread.messages = currentCase.messages.map((message) => ({ ...message, caseId: currentCase.id }));
+    workThread.updatedAt = nowIso();
+    if (targetRemainsVisible) workThread.lastOpenedAt = workThread.updatedAt;
     project.updatedAt = nowIso();
-    await this.writeCaseMarkdown(state, currentCase, artifacts);
+    await this.writeCaseMarkdown(state, currentCase, artifacts, workThread.id);
     await this.writeProjectKnowledge(project);
+    if (targetRemainsVisible) {
+      state.activeWorkThreadId = workThread.id;
+      state.activeProjectId = project.id;
+      state.activeCaseId = currentCase.id;
+    } else {
+      const visibleThread = state.workThreads.find((thread) => thread.id === visibleSelection.threadId && thread.status === "active");
+      const visibleProject = visibleThread
+        ? state.projects.find((item) => item.id === visibleThread.projectId)
+        : state.projects.find((item) => item.id === visibleSelection.projectId);
+      const visibleCase = visibleProject?.cases.find((item) => item.id === (visibleThread?.caseId ?? visibleSelection.caseId));
+      if (visibleThread && visibleProject && visibleCase) {
+        visibleCase.messages = visibleThread.messages.map((message) => ({ ...message, caseId: visibleCase.id }));
+        state.activeProjectId = visibleProject.id;
+        state.activeCaseId = visibleCase.id;
+        state.activeWorkThreadId = visibleThread.id;
+      }
+    }
     await this.saveState(state);
     await this.refreshSearchIndex(state);
     return this.withFiles(state);
@@ -1920,10 +2227,46 @@ export class WorkspaceStore {
 
   async search(query: string): Promise<SearchResult[]> {
     const state = await this.loadOrCreateState();
-    await this.refreshSearchIndex(state);
     const files = await this.readCaseTree(state);
     const safeOutputSummaries = await this.readAllSafeOutputSummaries(state, files);
-    return searchWorkbench(this.database, state.projects, files, safeOutputSummaries, query);
+    const normalized = query.trim().toLowerCase();
+    const threadResults: SearchResult[] = normalized ? [
+      ...state.workThreads.flatMap((thread) => {
+        const recentUserText = [...thread.messages].reverse().find((message) => message.role === "user")?.content.slice(0, 240) ?? "";
+        const matchingMessage = [...thread.messages].reverse().find((message) => message.content.toLowerCase().includes(normalized));
+        if (!thread.title.toLowerCase().includes(normalized) && !thread.id.toLowerCase().includes(normalized) && !matchingMessage) return [];
+        const project = state.projects.find((item) => item.id === thread.projectId);
+        const caseItem = project?.cases.find((item) => item.id === thread.caseId);
+        return [{
+          id: `work-thread-${thread.id}`,
+          title: thread.title,
+          type: "work-thread" as const,
+          location: `${project?.name ?? "未知 Project"} · ${caseItem?.title ?? "未知工作文件夹"}`,
+          snippet: matchingMessage?.content.slice(0, 240) || recentUserText || `任务会话 ID：${thread.id} · ${thread.status === "active" ? "使用中" : thread.status === "archived" ? "已归档" : "已移除"}`,
+          projectId: thread.projectId,
+          caseId: thread.caseId,
+          threadId: thread.id,
+          sourcePath: null
+        }];
+      }),
+      ...state.chatThreads.flatMap((thread) => {
+        const recentUserText = [...thread.messages].reverse().find((message) => message.role === "user")?.content.slice(0, 240) ?? "";
+        const matchingMessage = [...thread.messages].reverse().find((message) => message.content.toLowerCase().includes(normalized));
+        if (!thread.title.toLowerCase().includes(normalized) && !thread.id.toLowerCase().includes(normalized) && !matchingMessage) return [];
+        return [{
+          id: `chat-thread-${thread.id}`,
+          title: thread.title,
+          type: "chat-thread" as const,
+          location: "独立日常对话",
+          snippet: matchingMessage?.content.slice(0, 240) || recentUserText || `会话 ID：${thread.id} · ${thread.status === "active" ? "使用中" : thread.status === "archived" ? "已归档" : "已移除"}`,
+          threadId: thread.id,
+          caseId: null,
+          sourcePath: null
+        }];
+      })
+    ].slice(0, 6) : [];
+    const indexedResults = await searchWorkbench(this.database, state.projects, files, safeOutputSummaries, query);
+    return [...threadResults, ...indexedResults].slice(0, 12);
   }
 
   async prepareSafeModelDraftRequest(input: unknown, options: { allowFakeModelExecution?: boolean } = {}): Promise<PreparedSafeModelDraftRequest | null> {
@@ -2077,20 +2420,21 @@ export class WorkspaceStore {
     return project.config;
   }
 
-  async getActiveProjectConfig(): Promise<{ projectId: string; caseId: string; config: ProjectConfig }> {
+  async getActiveProjectConfig(): Promise<{ projectId: string; caseId: string; threadId: string; config: ProjectConfig }> {
     const state = await this.loadOrCreateState();
     const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
     const caseItem = this.getActiveCase(state);
-    return { projectId: project.id, caseId: caseItem.id, config: project.config };
+    return { projectId: project.id, caseId: caseItem.id, threadId: state.activeWorkThreadId, config: project.config };
   }
 
-  async appendSapObjectEvidence(result: SapObjectEvidenceConnectorResult, targetCase?: { projectId: string; caseId: string }): Promise<SapObjectEvidenceResult> {
+  async appendSapObjectEvidence(result: SapObjectEvidenceConnectorResult, targetCase?: { projectId: string; caseId: string; threadId: string }): Promise<SapObjectEvidenceResult> {
     return this.runExclusive(async () => {
     const state = await this.loadOrCreateState();
     await this.ensureCaseFiles(state);
     const fallbackCase = this.getActiveCase(state);
     const projectId = targetCase?.projectId ?? fallbackCase.projectId;
     const caseId = targetCase?.caseId ?? fallbackCase.id;
+    const threadId = targetCase?.threadId ?? state.activeWorkThreadId;
     const project = state.projects.find((item) => item.id === projectId);
     if (!project) {
       throw new Error("SAP 证据目标 Project 已不存在。");
@@ -2099,6 +2443,16 @@ export class WorkspaceStore {
     if (!currentCase) {
       throw new Error("SAP 证据目标工作文件夹已不存在。");
     }
+    const targetThread = state.workThreads.find((thread) => thread.id === threadId && thread.status === "active");
+    if (!targetThread || targetThread.projectId !== project.id || targetThread.caseId !== currentCase.id) {
+      throw new Error("SAP 证据目标任务已归档、移除或与工作文件夹不一致，证据未写入其他任务。");
+    }
+    const visibleSelection = {
+      projectId: state.activeProjectId,
+      caseId: state.activeCaseId,
+      threadId: state.activeWorkThreadId
+    };
+    currentCase.messages = targetThread.messages.map((message) => ({ ...message, caseId: currentCase.id }));
     syncProjectLocalStorage(project, currentCase);
     const record = normalizeSapObjectEvidenceResult(result);
     const generatedFiles = renderSapObjectEvidenceFiles(record);
@@ -2124,6 +2478,8 @@ export class WorkspaceStore {
     );
 
     currentCase.messages.push(assistantMessage);
+    targetThread.messages = currentCase.messages.map((message) => ({ ...message, caseId: currentCase.id }));
+    targetThread.updatedAt = nowIso();
     currentCase.currentSummary = `已加入 ${record.summary.objectType} ${record.summary.objectName} 的 SAP 只读证据；用户审核后，案件结论可以引用该证据。`;
     currentCase.summary = currentCase.currentSummary;
     currentCase.updatedAt = nowIso();
@@ -2172,8 +2528,17 @@ export class WorkspaceStore {
       metadata
     };
 
+    await this.writeCaseMarkdown(state, currentCase, artifacts, targetThread.id);
+    const visibleThread = state.workThreads.find((thread) => thread.id === visibleSelection.threadId && thread.status === "active");
+    const visibleProject = visibleThread ? state.projects.find((item) => item.id === visibleThread.projectId) : undefined;
+    const visibleCase = visibleProject?.cases.find((item) => item.id === visibleThread?.caseId);
+    if (visibleThread && visibleProject && visibleCase) {
+      visibleCase.messages = visibleThread.messages.map((message) => ({ ...message, caseId: visibleCase.id }));
+      state.activeProjectId = visibleProject.id;
+      state.activeCaseId = visibleCase.id;
+      state.activeWorkThreadId = visibleThread.id;
+    }
     await this.saveState(state);
-    await this.writeCaseMarkdown(state, currentCase, artifacts);
     await this.refreshSearchIndex(state);
     return {
       state: await this.withFiles(state),
@@ -2826,10 +3191,12 @@ export class WorkspaceStore {
   private shouldPersistNormalizedState(parsed: StoredState, normalized: StoredState): boolean {
     if (parsed.schemaVersion !== normalized.schemaVersion) return true;
     if (parsed.activeProjectId !== normalized.activeProjectId || parsed.activeCaseId !== normalized.activeCaseId) return true;
+    if (parsed.activeWorkThreadId !== normalized.activeWorkThreadId) return true;
     if (parsed.activeChatThreadId !== normalized.activeChatThreadId) return true;
     if (JSON.stringify(caseReferenceFingerprint(parsed)) !== JSON.stringify(caseReferenceFingerprint(normalized))) return true;
     if (JSON.stringify(projectVisibilityFingerprint(parsed)) !== JSON.stringify(projectVisibilityFingerprint(normalized))) return true;
     if (JSON.stringify(chatThreadFingerprint(parsed)) !== JSON.stringify(chatThreadFingerprint(normalized))) return true;
+    if (JSON.stringify(workThreadFingerprint(parsed)) !== JSON.stringify(workThreadFingerprint(normalized))) return true;
     const parsedProject = Array.isArray(parsed.projects) ? parsed.projects.find((project) => project.id === normalized.activeProjectId) : undefined;
     const normalizedProject = normalized.projects.find((project) => project.id === normalized.activeProjectId);
     if (!parsedProject || !normalizedProject) return true;
@@ -2882,8 +3249,13 @@ export class WorkspaceStore {
         messages: []
       }))
       .sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt || b.createdAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt || a.createdAt).getTime());
+    if (!normalizedChatThreads.some((thread) => thread.status === "active")) {
+      normalizedChatThreads.unshift(fallbackChatThread);
+    }
     const requestedChatThreadId = safeId(state.activeChatThreadId, fallbackChatThread.id);
-    const activeChatThread = normalizedChatThreads.find((thread) => thread.id === requestedChatThreadId) ?? normalizedChatThreads[0] ?? fallbackChatThread;
+    const activeChatThread = normalizedChatThreads.find((thread) => thread.id === requestedChatThreadId && thread.status === "active")
+      ?? normalizedChatThreads.find((thread) => thread.status === "active")
+      ?? fallbackChatThread;
     const sourceProjects = Array.isArray(state.projects) ? state.projects : [];
     const normalizedProjects = (sourceProjects.length > 0 ? sourceProjects : [starterProject()]).map((project) => {
       const projectId = safeId(project.id, STARTER_PROJECT_ID);
@@ -2919,6 +3291,43 @@ export class WorkspaceStore {
         config: this.sanitizeProjectConfig(normalizedProject, normalizedProject.config, { preserveVerification: true })
       });
     });
+    const validCases = new Map(normalizedProjects.flatMap((project) => project.cases.map((caseItem) => [`${project.id}:${caseItem.id}`, { project, caseItem }] as const)));
+    const sourceWorkThreads = Array.isArray(state.workThreads) ? state.workThreads : [];
+    const normalizedWorkThreads = sourceWorkThreads.flatMap((thread, index) => {
+      const raw = thread && typeof thread === "object" ? thread as Partial<WorkThread> : {};
+      const target = typeof raw.projectId === "string" && typeof raw.caseId === "string"
+        ? validCases.get(`${raw.projectId}:${raw.caseId}`)
+        : undefined;
+      if (!target) return [];
+      const fallback = createWorkThreadRecord(
+        target.project.id,
+        target.caseItem,
+        target.caseItem.title,
+        [],
+        index === 0 ? DEFAULT_WORK_THREAD_ID : `work-${index + 1}`
+      );
+      return [normalizeWorkThread(thread, fallback)];
+    });
+    const existingWorkIds = new Set(normalizedWorkThreads.map((thread) => thread.id));
+    for (const project of normalizedProjects) {
+      for (const caseItem of project.cases) {
+        if (normalizedWorkThreads.some((thread) => thread.projectId === project.id && thread.caseId === caseItem.id)) continue;
+        const preferredId = `work-${caseItem.id}`;
+        const migrated = createWorkThreadRecord(project.id, caseItem, caseItem.title, existingWorkIds, preferredId);
+        existingWorkIds.add(migrated.id);
+        normalizedWorkThreads.push(migrated);
+      }
+    }
+    if (!normalizedWorkThreads.some((thread) => thread.status === "active")) {
+      const project = normalizedProjects[0];
+      const caseItem = project?.cases[0];
+      if (project && caseItem) {
+        const fallback = createWorkThreadRecord(project.id, caseItem, "新任务", existingWorkIds);
+        fallback.messages = [];
+        normalizedWorkThreads.push(fallback);
+      }
+    }
+    normalizedWorkThreads.sort((a, b) => new Date(b.lastOpenedAt || b.updatedAt || b.createdAt).getTime() - new Date(a.lastOpenedAt || a.updatedAt || a.createdAt).getTime());
     if (!normalizedProjects.some((project) => project.isVisible !== false) && normalizedProjects[0]) {
       normalizedProjects[0].isVisible = true;
     }
@@ -2930,15 +3339,29 @@ export class WorkspaceStore {
         .filter((project) => project.isVisible !== false)
         .sort((a, b) => a.visibleOrder - b.visibleOrder || a.name.localeCompare(b.name, "zh-CN"))[0] ?? requestedProject ?? normalizedProjects[0] ?? starterProject();
     const requestedCaseId = safeId(state.activeCaseId, activeProject.cases[0]?.id ?? STARTER_CASE_ID);
-    const activeCase = activeProject.cases.find((caseItem) => caseItem.id === requestedCaseId) ?? activeProject.cases[0] ?? starterCase(activeProject.id);
-    syncProjectLocalStorage(activeProject, activeCase);
+    const requestedWorkThreadId = safeId(state.activeWorkThreadId, "");
+    const activeWorkThread = normalizedWorkThreads.find((thread) => thread.id === requestedWorkThreadId && thread.projectId === activeProject.id && thread.status === "active")
+      ?? normalizedWorkThreads.find((thread) => thread.projectId === activeProject.id && thread.caseId === requestedCaseId && thread.status === "active")
+      ?? normalizedWorkThreads.find((thread) => thread.projectId === activeProject.id && thread.status === "active")
+      ?? normalizedWorkThreads.find((thread) => thread.status === "active");
+    const effectiveProject = activeWorkThread
+      ? normalizedProjects.find((project) => project.id === activeWorkThread.projectId) ?? activeProject
+      : activeProject;
+    const activeCase = effectiveProject.cases.find((caseItem) => caseItem.id === activeWorkThread?.caseId)
+      ?? effectiveProject.cases.find((caseItem) => caseItem.id === requestedCaseId)
+      ?? effectiveProject.cases[0]
+      ?? starterCase(effectiveProject.id);
+    if (activeWorkThread) activeCase.messages = activeWorkThread.messages.map((message) => ({ ...message, caseId: activeCase.id }));
+    syncProjectLocalStorage(effectiveProject, activeCase);
     return {
       ...state,
       schemaVersion: SCHEMA_VERSION,
-      activeProjectId: activeProject.id,
+      activeProjectId: effectiveProject.id,
       activeCaseId: activeCase.id,
+      activeWorkThreadId: activeWorkThread?.id ?? "",
       activeChatThreadId: activeChatThread.id,
       projects: normalizedProjects,
+      workThreads: normalizedWorkThreads,
       chatThreads: normalizedChatThreads
     };
   }
@@ -3196,17 +3619,24 @@ export class WorkspaceStore {
     return caseItem;
   }
 
-  private resolveWorkflowTarget(state: StoredState, input: CaseWorkflowInput): { project: ProjectSummary; caseItem: CaseSummary } {
+  private resolveWorkflowTarget(state: StoredState, input: CaseWorkflowInput): { project: ProjectSummary; caseItem: CaseSummary; workThread: WorkThread } {
     const hasProjectId = Boolean(input.projectId);
     const hasCaseId = Boolean(input.caseId);
     if (hasProjectId !== hasCaseId) {
       throw new Error("案件请求必须同时指定 Project 和工作文件夹。");
     }
 
+    const requestedThread = input.threadId
+      ? state.workThreads.find((thread) => thread.id === input.threadId && thread.status === "active")
+      : state.workThreads.find((thread) => thread.id === state.activeWorkThreadId && thread.status === "active");
+    if (input.threadId && !requestedThread) throw new Error("发送时选择的任务会话已归档、移除或不存在。");
+
     if (!input.projectId || !input.caseId) {
-      const caseItem = this.getActiveCase(state);
-      const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
-      return { project, caseItem };
+      const workThread = requestedThread ?? state.workThreads.find((thread) => thread.status === "active");
+      if (!workThread) throw new Error("当前没有可用任务会话，请先新建任务。");
+      const project = state.projects.find((item) => item.id === workThread.projectId) ?? this.ensureFallbackProject(state);
+      const caseItem = project.cases.find((item) => item.id === workThread.caseId) ?? this.getActiveCase(state);
+      return { project, caseItem, workThread };
     }
 
     const project = state.projects.find((item) => item.id === input.projectId);
@@ -3217,7 +3647,13 @@ export class WorkspaceStore {
     if (!caseItem) {
       throw new Error("发送时选择的工作文件夹已不存在，结果未写入其他位置。");
     }
-    return { project, caseItem };
+    if (requestedThread && (requestedThread.projectId !== project.id || requestedThread.caseId !== caseItem.id)) {
+      throw new Error("任务会话与发送时指定的 Project 或工作文件夹不一致，已阻止写入其他任务。");
+    }
+    const workThread = requestedThread
+      ?? state.workThreads.find((thread) => thread.projectId === project.id && thread.caseId === caseItem.id && thread.status === "active");
+    if (!workThread) throw new Error("发送时选择的任务会话已不存在，结果未写入其他位置。");
+    return { project, caseItem, workThread };
   }
 
   private caseRoot(state: StoredState): string {
@@ -3640,12 +4076,32 @@ export class WorkspaceStore {
     });
   }
 
-  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts): Promise<void> {
+  private async writeCaseMarkdown(state: StoredState, caseItem: CaseSummary, artifacts: CaseWorkflowArtifacts, threadId?: string): Promise<void> {
     const project = state.projects.find((item) => item.id === caseItem.projectId) ?? this.ensureFallbackProject(state);
     const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
     const generatedWrites = artifacts.generatedFiles.map(async (file) => {
       await this.writeGeneratedFile(caseRoot, file);
     });
+    const thread = threadId
+      ? state.workThreads.find((item) => item.id === threadId && item.projectId === project.id && item.caseId === caseItem.id)
+      : state.workThreads.find((item) => item.id === state.activeWorkThreadId && item.projectId === project.id && item.caseId === caseItem.id);
+    const threadRoot = thread
+      ? this.assertInsideWorkspace(path.join(caseRoot, "technical", "conversations", thread.id))
+      : null;
+    if (threadRoot) await fs.mkdir(threadRoot, { recursive: true });
+    const threadWrites = thread && threadRoot ? [
+      this.writeJsonAtomic(path.join(threadRoot, "messages.json"), thread.messages),
+      this.writeTextAtomic(path.join(threadRoot, "conversation.md"), artifacts.conversation),
+      this.writeTextAtomic(path.join(threadRoot, "timeline.md"), artifacts.timeline),
+      this.writeJsonAtomic(path.join(threadRoot, "metadata.json"), {
+        threadId: thread.id,
+        title: thread.title,
+        status: thread.status,
+        projectId: thread.projectId,
+        caseId: thread.caseId,
+        updatedAt: thread.updatedAt
+      })
+    ] : [];
 
     await Promise.all([
       this.writeProjectMetadata(project),
@@ -3655,6 +4111,7 @@ export class WorkspaceStore {
       this.writeTextAtomic(path.join(caseRoot, "timeline.md"), artifacts.timeline),
       this.writeTextAtomic(path.join(caseRoot, "context_pack.md"), artifacts.contextPack),
       this.writeJsonAtomic(path.join(caseRoot, "metadata.json"), artifacts.metadata),
+      ...threadWrites,
       ...generatedWrites
     ]);
   }
@@ -3674,8 +4131,10 @@ export class WorkspaceStore {
       workspaceRoot: this.workspaceRoot,
       activeProjectId: state.activeProjectId,
       activeCaseId: state.activeCaseId,
+      activeWorkThreadId: state.activeWorkThreadId,
       activeChatThreadId: state.activeChatThreadId,
       projects: state.projects,
+      workThreads: state.workThreads,
       chatThreads: state.chatThreads,
       activeCaseFiles: await this.readCaseTree(state),
       ...(startupNotice ? { startupNotice } : {})

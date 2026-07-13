@@ -925,7 +925,7 @@ async function appendDailyChatMessage(store: WorkspaceStore, secretStore: Secure
 
 async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<SapObjectEvidenceResult> {
   const request = parseSapObjectEvidenceRequest(input);
-  const { projectId, caseId, config } = await store.getActiveProjectConfig();
+  const { projectId, caseId, threadId, config } = await store.getActiveProjectConfig();
   const configCheck = await validateAdtConfig(config);
   if (!configCheck.ok) {
     throw new Error(`${configCheck.message} ${configCheck.suggestion}`);
@@ -958,7 +958,7 @@ async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureS
       const evidence = await connector.readObjectEvidence({ ...adtInputWithoutPassword(config, candidate.url), password }, request, {
         allowFakeEvidence
       });
-      return store.appendSapObjectEvidence(evidence, { projectId, caseId });
+      return store.appendSapObjectEvidence(evidence, { projectId, caseId, threadId });
     } catch (error) {
       lastError = error;
     }
@@ -1035,6 +1035,9 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   }));
   ipcMain.handle("workbench:create-local-project", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalProject(input)));
   ipcMain.handle("workbench:create-local-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createLocalCase(input)));
+  ipcMain.handle("workbench:create-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createWorkThread(input)));
+  ipcMain.handle("workbench:switch-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchWorkThread(input)));
+  ipcMain.handle("workbench:update-conversation-thread-status", (event, input: unknown) => trustedResponse(event, appRoot, () => store.updateConversationThreadStatus(input)));
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
   ipcMain.handle("workbench:switch-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchDailyChatThread(input)));
   ipcMain.handle("workbench:append-daily-chat-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendDailyChatMessage(store, secretStore, input)));

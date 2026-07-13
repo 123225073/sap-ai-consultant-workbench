@@ -68,7 +68,7 @@ console.log("optionalCodexCapability=ok");
 assert.ok(appSource.includes("function sapSidebarStatus"), "左侧项目缺少 SAP 验证状态");
 assert.ok(appSource.includes('label: "SAP 未验证"'), "左侧项目缺少 SAP 未验证文案");
 assert.ok(!appSource.includes('className="case-context-strip"'), "输入区不应重复显示 SAP 配置状态");
-assert.ok(appSource.includes('placeholder="搜索项目或文件"'), "左侧搜索文案没有保持精简");
+assert.ok(appSource.includes('placeholder="搜索任务、对话或文件"'), "左侧搜索文案没有覆盖任务、对话和文件");
 console.log("workStatusAndComposerDeclutter=ok");
 
 console.log("phase41-product-feedback-ui-probe=ok");

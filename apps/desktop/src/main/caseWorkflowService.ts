@@ -173,6 +173,7 @@ export function parseCaseWorkflowInput(input: unknown): CaseWorkflowInput {
   return {
     projectId: optionalWorkflowTargetId("Project ID", candidate.projectId),
     caseId: optionalWorkflowTargetId("Case ID", candidate.caseId),
+    threadId: optionalWorkflowTargetId("任务会话 ID", candidate.threadId),
     content,
     taskMode: actionId ? CASE_ACTION_TASK_MODES[actionId] : normalizeTaskMode(candidate.taskMode),
     modelId: modelHint.modelId,

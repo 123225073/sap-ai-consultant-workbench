@@ -53,7 +53,11 @@ for (const [name, marker, source] of [
 }
 pass("phase37Markers");
 
-const workComposerRegion = appSource.match(/<form className="composer"[\s\S]*?<\/form>/)?.[0] ?? "";
+const workComposerStart = appSource.indexOf('<form className={`composer compact-composer');
+const workComposerEnd = workComposerStart >= 0 ? appSource.indexOf("</form>", workComposerStart) : -1;
+const workComposerRegion = workComposerStart >= 0 && workComposerEnd > workComposerStart
+  ? appSource.slice(workComposerStart, workComposerEnd)
+  : "";
 assert(workComposerRegion.includes("case-action-control"), "work composer must render the on-demand case action selector");
 assert(workComposerRegion.includes("case-action-run-button"), "work composer must render the case action command");
 assert(workComposerRegion.includes("permission-mode-control"), "work composer must render the execution preference inside the action panel");

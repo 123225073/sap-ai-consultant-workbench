@@ -120,6 +120,9 @@ $allowedIpc = @(
   "workbench:import-workspace",
   "workbench:create-local-project",
   "workbench:create-local-case",
+  "workbench:create-work-thread",
+  "workbench:switch-work-thread",
+  "workbench:update-conversation-thread-status",
   "workbench:create-daily-chat-thread",
   "workbench:switch-daily-chat-thread",
   "workbench:append-daily-chat-message",
@@ -1300,7 +1303,7 @@ $phase28NewCaseMarkers = @(
   @{ Pattern = "newCaseInputRef"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "focusNewCaseInput"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "phase28-new-case-flow"; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "bridge.createLocalCase"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "bridge.createWorkThread"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "case-create button:not(:disabled)"; Path = "apps/desktop/src/renderer/styles.css" },
   @{ Pattern = "workbench:create-local-case"; Path = "apps/desktop/src/main/main.ts" },
   @{ Pattern = "createLocalCase"; Path = "apps/desktop/src/preload/preload.ts" },
@@ -1377,7 +1380,7 @@ $phase35Markers = @(
   @{ Pattern = "groupDailyChatThreads"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = 'activeView === "chat"'; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "project-case-label"; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "new-case-project-picker"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "task-folder-mode"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "conversation-sidebar-section"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "phase35-config-reveal-conversation-probe"; Path = "scripts/phase35-config-reveal-conversation-probe.mjs" }
 )
@@ -1597,11 +1600,14 @@ foreach ($marker in $codexMarkers) {
   }
 }
 
-$codexDangerHits = rg -n -- "danger-full-access|workspace-write|dangerously-bypass|resume|fork|archive|delete|cloud|app-server|remote-control|mcp-server|\\.codex[/\\]sessions|history|readFile\(" apps/desktop/src/main/codexCliConnector.ts apps/desktop/src/preload apps/desktop/src/renderer
-if ($LASTEXITCODE -eq 0) {
+$codexDangerHits = rg -n -- "danger-full-access|workspace-write|dangerously-bypass|resume|fork|archive|delete|cloud|app-server|remote-control|mcp-server|\\.codex[/\\]sessions|history|readFile\(" apps/desktop/src/main/codexCliConnector.ts
+$codexConnectorExitCode = $LASTEXITCODE
+$codexUiDangerHits = rg -n -i -- "codex.{0,80}(resume|fork|archive|delete|cloud|app-server|remote-control|mcp-server|sessions|history|readFile)" apps/desktop/src/preload apps/desktop/src/renderer
+if ($codexConnectorExitCode -eq 0 -or $LASTEXITCODE -eq 0) {
   $codexDangerHits | ForEach-Object { Write-Host $_ }
+  $codexUiDangerHits | ForEach-Object { Write-Host $_ }
   throw "Codex connector or renderer contains forbidden command/history markers."
-} elseif ($LASTEXITCODE -gt 1) {
+} elseif ($codexConnectorExitCode -gt 1 -or $LASTEXITCODE -gt 1) {
   throw "Codex dangerous marker scan failed."
 }
 

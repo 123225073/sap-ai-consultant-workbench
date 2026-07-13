@@ -156,14 +156,15 @@ SAPAIWorkbench/
 |---|---|---|
 | SAP 项目 | `Project`，且 `sapVersion` 为 `S4` 或 `ECC` | 管理 SAP 连接、Client、规范、知识和工作文件夹。 |
 | 其他工作 | `Project`，且 `sapVersion` 为 `UNKNOWN` | 用于非 SAP 或暂不绑定 SAP 配置的本地工作；不触发 ADT 读取。 |
-| 工作文件夹 | `Case` + `case_folder` | 一个正式任务对应一个真实本地文件夹。UI 用“工作文件夹”，代码可继续使用 `Case`。 |
+| 任务 | `WorkThread` | Work 下的独立会话，包含稳定 ID、消息和 active / archived / removed 生命周期，并绑定一个 Case。 |
+| 工作文件夹 | `Case` + `case_folder` | 真实本地成果容器。任务可新建或复用已有 Case；多个 WorkThread 可绑定同一 Case。 |
 | Chat | `DailyChatThread` | 独立日常对话，不保存到 Project/Case 文件夹，不读取 SAP。 |
 | 案件动作 | `CaseAction` + 绑定的 `SkillPackage` | 固定按钮，用来把当前对话和文件沉淀成笔记、文档、图、候选知识或交付物。 |
 | 权限模式 | `ActionPermissionMode` | 按项目 / 案件生效，不按单个 Skill 生效。 |
 | 右侧文件页签 | `activeCaseFiles` + `CaseFileNode` | 默认读取当前工作文件夹的真实本地文件树。 |
 | 右侧项目配置页签 | `ProjectConfig` 摘要 | 只做紧凑摘要和入口，完整编辑仍进入配置中心。 |
 
-这个映射是本阶段的 module/interface 取舍：UI 的 interface 面向用户使用“工作文件夹”，implementation 继续复用已有 Case 文件保存、预览、检索和安全校验能力。
+这个映射把“对话”和“成果容器”分开：`WorkThread` 是会话事实源，`Case` 继续复用已有文件保存、预览、检索和安全校验能力。共享 Case 时，每个线程在 `technical/conversations/<threadId>/` 保留独立快照，顶层 `conversation.md` 只同步当前打开的任务。
 
 ### 6.1 Project
 

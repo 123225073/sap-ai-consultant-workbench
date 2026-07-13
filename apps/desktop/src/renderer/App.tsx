@@ -5,6 +5,7 @@ import {
   BookOpen,
   Bot,
   ChevronDown,
+  Copy,
   Database,
   Eye,
   EyeOff,
@@ -14,19 +15,22 @@ import {
   Folder,
   FolderPlus,
   MessageSquare,
+  MoreHorizontal,
   PanelLeft,
   Plus,
   Search,
   Send,
   Settings,
   ShieldCheck,
+  RotateCcw,
+  Trash2,
   WandSparkles,
   X,
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
-import type { ActionPermissionMode, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseWorkflowInput, CodexVerificationReport, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { ActionPermissionMode, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 
 type NewProjectSapVersion = ProjectSummary["sapVersion"];
 
@@ -87,7 +91,9 @@ function readableHistoricalText(value: string, fallback: string): string {
 
 function searchResultLabel(result: SearchResult): string {
   if (result.id.startsWith("file-summary-")) return "安全摘要";
-  return result.type === "project" ? "项目" : result.type === "case" ? "案件" : result.type === "knowledge" ? "知识" : "文件";
+  if (result.type === "work-thread") return "任务";
+  if (result.type === "chat-thread") return "对话";
+  return result.type === "project" ? "项目" : result.type === "case" ? "工作文件夹" : result.type === "knowledge" ? "知识" : "文件";
 }
 
 function fileIcon(node: CaseFileNode) {
@@ -157,6 +163,11 @@ function activeChatThread(state: WorkbenchState | null): DailyChatThread | undef
   return state?.chatThreads.find((thread) => thread.id === state.activeChatThreadId) ?? state?.chatThreads[0];
 }
 
+function activeWorkThread(state: WorkbenchState | null): WorkThread | undefined {
+  return state?.workThreads.find((thread) => thread.id === state.activeWorkThreadId)
+    ?? state?.workThreads.find((thread) => thread.status === "active");
+}
+
 function isSapBoundProject(project: ProjectSummary | undefined): boolean {
   return project?.sapVersion === "S4" || project?.sapVersion === "ECC";
 }
@@ -182,7 +193,7 @@ function sapSidebarStatus(project: ProjectSummary): { label: string; tone: "gree
   return { label: "SAP 未验证", tone: "blue" };
 }
 
-function threadTimestamp(thread: DailyChatThread): string {
+function threadTimestamp(thread: Pick<DailyChatThread, "lastOpenedAt" | "updatedAt" | "createdAt">): string {
   return thread.lastOpenedAt || thread.updatedAt || thread.createdAt;
 }
 
@@ -200,7 +211,7 @@ function sidebarDateGroup(value: string): string {
 }
 
 function groupDailyChatThreads(threads: DailyChatThread[]): { label: string; threads: DailyChatThread[] }[] {
-  const sortedThreads = [...threads].sort((a, b) => new Date(threadTimestamp(b)).getTime() - new Date(threadTimestamp(a)).getTime());
+  const sortedThreads = threads.filter((thread) => thread.status === "active").sort((a, b) => new Date(threadTimestamp(b)).getTime() - new Date(threadTimestamp(a)).getTime());
   const groups = new Map<string, DailyChatThread[]>();
   for (const thread of sortedThreads) {
     const group = sidebarDateGroup(threadTimestamp(thread));
@@ -209,6 +220,44 @@ function groupDailyChatThreads(threads: DailyChatThread[]): { label: string; thr
   return ["今天", "昨天", "近 7 天", "更早"]
     .map((label) => ({ label, threads: groups.get(label) ?? [] }))
     .filter((group) => group.threads.length > 0);
+}
+
+function ConversationThreadRow({
+  title,
+  subtitle,
+  active,
+  status,
+  busy,
+  onOpen,
+  onCopyId,
+  onStatus
+}: {
+  title: string;
+  subtitle: string;
+  active: boolean;
+  status: ConversationThreadStatus;
+  busy: boolean;
+  onOpen: () => void;
+  onCopyId: () => void;
+  onStatus: (status: ConversationThreadStatus) => void;
+}) {
+  return (
+    <div className={`conversation-row-shell${active ? " active" : ""}`}>
+      <button type="button" className="conversation-row-main" onClick={onOpen}>
+        <MessageSquare size={15} />
+        <span><strong>{title}</strong><small>{subtitle}</small></span>
+      </button>
+      <details className={`thread-menu${busy ? " busy" : ""}`}>
+        <summary aria-label={`管理会话 ${title}`} aria-disabled={busy} title={busy ? "当前有回复正在生成，完成后可管理会话" : "管理会话"} onClick={(event) => { if (busy) event.preventDefault(); }}><MoreHorizontal size={16} /></summary>
+        <div>
+          <button type="button" onClick={onCopyId}><Copy size={14} />复制会话 ID</button>
+          {status === "active" ? <button type="button" disabled={busy} onClick={() => onStatus("archived")}><Archive size={14} />归档</button> : null}
+          {status === "active" ? <button type="button" disabled={busy} onClick={() => onStatus("removed")}><Trash2 size={14} />移除</button> : null}
+          {status !== "active" ? <button type="button" disabled={busy} onClick={() => onStatus("active")}><RotateCcw size={14} />恢复</button> : null}
+        </div>
+      </details>
+    </div>
+  );
 }
 
 type ComposerModelOption = {
@@ -368,7 +417,6 @@ function ComposerModelPicker({
       >
         <Bot size={16} />
         <strong>{selected?.model.displayName ?? "选择模型"}</strong>
-        {selected ? <em>{selected.provider.name}</em> : null}
         <ChevronDown size={15} />
       </button>
       {open ? (
@@ -665,7 +713,11 @@ function App() {
   const [newProjectSystemLabel, setNewProjectSystemLabel] = useState("Local");
   const [newCaseTitle, setNewCaseTitle] = useState("");
   const [newCaseProjectId, setNewCaseProjectId] = useState("");
+  const [newTaskFolderMode, setNewTaskFolderMode] = useState<"new" | "existing">("new");
+  const [newTaskFolderName, setNewTaskFolderName] = useState("");
+  const [newTaskExistingCaseId, setNewTaskExistingCaseId] = useState("");
   const [creatingCase, setCreatingCase] = useState(false);
+  const [createTaskError, setCreateTaskError] = useState("");
   const [sapEvidenceType, setSapEvidenceType] = useState<SapObjectEvidenceType>("program");
   const [sapEvidenceName, setSapEvidenceName] = useState("");
   const [sapEvidenceFunctionGroup, setSapEvidenceFunctionGroup] = useState("");
@@ -678,6 +730,9 @@ function App() {
   const searchInputRef = useRef<HTMLInputElement>(null);
   const newProjectInputRef = useRef<HTMLInputElement>(null);
   const newCaseInputRef = useRef<HTMLInputElement>(null);
+  const newTaskButtonRef = useRef<HTMLButtonElement>(null);
+  const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const searchRequestRef = useRef(0);
   const workflowContextRef = useRef("");
   const messageDraftsRef = useRef(new Map<string, string>());
   const modelSelectionsRef = useRef(new Map<string, string>());
@@ -690,10 +745,11 @@ function App() {
   const bridge = window.workbench;
   const project = activeProject(state);
   const currentCase = activeCase(state);
+  const currentWorkThread = activeWorkThread(state);
   const activeChat = activeChatThread(state);
   const activeConversationKey = activeView === "chat"
     ? `chat:${activeChat?.id ?? "new"}`
-    : `case:${project?.id ?? ""}:${currentCase?.id ?? ""}`;
+    : `work:${currentWorkThread?.id ?? "new"}`;
   const activeConversationKeyRef = useRef(activeConversationKey);
   activeConversationKeyRef.current = activeConversationKey;
   const visibleProjects = useMemo(() => {
@@ -725,6 +781,10 @@ function App() {
     [visibleProjects]
   );
   const chatGroups = useMemo(() => groupDailyChatThreads(state?.chatThreads ?? []), [state?.chatThreads]);
+  const archivedChatThreads = useMemo(() => (state?.chatThreads ?? []).filter((thread) => thread.status === "archived"), [state?.chatThreads]);
+  const removedChatThreads = useMemo(() => (state?.chatThreads ?? []).filter((thread) => thread.status === "removed"), [state?.chatThreads]);
+  const archivedWorkThreads = useMemo(() => (state?.workThreads ?? []).filter((thread) => thread.status === "archived"), [state?.workThreads]);
+  const removedWorkThreads = useMemo(() => (state?.workThreads ?? []).filter((thread) => thread.status === "removed"), [state?.workThreads]);
   const catalogModelOptions = useMemo(() => enabledCatalogModelOptions(project), [project]);
   const safeDraftOptions = useMemo(() => safeDraftModelOptions(project), [project]);
   const safeDraftOptionSignature = safeDraftOptions.map((option) => option.key).join("|");
@@ -770,7 +830,7 @@ function App() {
           return lastModelReply?.providerId ? modelOptionKey(lastModelReply.providerId, lastModelReply.modelId) : "";
         })()
       : (() => {
-          const lastModelReply = [...(currentCase?.messages ?? [])].reverse().find((item) => item.role === "assistant" && item.modelId !== "local-workflow");
+          const lastModelReply = [...(currentWorkThread?.messages ?? [])].reverse().find((item) => item.role === "assistant" && item.modelId !== "local-workflow");
           if (!lastModelReply) return "";
           return lastModelReply.providerId
             ? modelOptionKey(lastModelReply.providerId, lastModelReply.modelId)
@@ -794,16 +854,16 @@ function App() {
   }, [codexAssistAvailable, codexAssistEnabled]);
 
   useEffect(() => {
-    const lastPermission = [...(currentCase?.messages ?? [])]
+    const lastPermission = [...(currentWorkThread?.messages ?? [])]
       .reverse()
       .find((item) => item.permissionModeUsed)?.permissionModeUsed;
     setActionPermissionMode(lastPermission ?? "request_approval");
-  }, [currentCase?.id]);
+  }, [currentWorkThread?.id]);
 
   useEffect(() => {
     const contextKey = activeView === "chat"
       ? `chat:${activeChat?.id ?? ""}`
-      : `case:${project?.id ?? ""}:${currentCase?.id ?? ""}`;
+      : `work:${currentWorkThread?.id ?? ""}`;
     if (workflowContextRef.current && workflowContextRef.current !== contextKey) {
       messageDraftsRef.current.set(workflowContextRef.current, message);
       setMessage(messageDraftsRef.current.get(contextKey) ?? "");
@@ -814,7 +874,7 @@ function App() {
       setCodexAssistEnabled(false);
     }
     workflowContextRef.current = contextKey;
-  }, [activeView, activeChat?.id, project?.id, currentCase?.id]);
+  }, [activeView, activeChat?.id, currentWorkThread?.id]);
 
   useEffect(() => {
     const protectDraft = (event: BeforeUnloadEvent) => {
@@ -837,6 +897,17 @@ function App() {
   }, [newCaseProjectId, project?.id, visibleProjects]);
 
   useEffect(() => {
+    const selectedProject = visibleProjects.find((item) => item.id === newCaseProjectId);
+    if (!selectedProject?.cases.length) {
+      setNewTaskExistingCaseId("");
+      return;
+    }
+    if (!selectedProject.cases.some((item) => item.id === newTaskExistingCaseId)) {
+      setNewTaskExistingCaseId(selectedProject.cases[0].id);
+    }
+  }, [newCaseProjectId, newTaskExistingCaseId, visibleProjects]);
+
+  useEffect(() => {
     const collapseContextPanel = () => {
       if (window.innerWidth <= 1180) setFilesPanelVisible(false);
     };
@@ -846,15 +917,14 @@ function App() {
 
   async function applyCaseWorkflowResponse<T extends WorkbenchState>(
     responsePromise: Promise<{ ok: true; data: T } | { ok: false; error: string }>,
-    target: { projectId: string; caseId: string; caseTitle: string }
+    target: { projectId: string; caseId: string; threadId: string; caseTitle: string }
   ): Promise<"active" | "background" | null> {
     const response = await responsePromise;
     if (response.ok) {
       setState(response.data);
-      const targetStillActive = response.data.activeProjectId === target.projectId && response.data.activeCaseId === target.caseId;
-      const completedProject = response.data.projects.find((item) => item.id === target.projectId);
-      const completedCase = completedProject?.cases.find((item) => item.id === target.caseId);
-      const reply = [...(completedCase?.messages ?? [])].reverse().find((item) => item.role === "assistant");
+      const targetStillActive = response.data.activeWorkThreadId === target.threadId;
+      const completedThread = response.data.workThreads.find((item) => item.id === target.threadId);
+      const reply = [...(completedThread?.messages ?? [])].reverse().find((item) => item.role === "assistant");
       const fallbackModel = selectedSafeDraftModel && reply && reply.modelId !== selectedSafeDraftModel.model.id && reply.modelId !== "local-workflow"
         ? reply.modelId
         : null;
@@ -864,7 +934,7 @@ function App() {
           : "当前工作文件夹及本地输出文件已更新。");
         return "active";
       }
-      setNotice(`请求已完成，结果只写入发送时的工作文件夹「${target.caseTitle}」。`);
+      setNotice(`请求已完成，结果只写入发送时的任务会话及工作文件夹「${target.caseTitle}」。`);
       return "background";
     } else {
       setNotice(response.error);
@@ -888,13 +958,29 @@ function App() {
   }, [bridge]);
 
   useEffect(() => {
+    if (createPanel !== "case") return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setCreatePanel(null);
+      setCreateTaskError("");
+      window.setTimeout(() => newTaskButtonRef.current?.focus(), 0);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [createPanel]);
+
+  useEffect(() => {
     if (!bridge || !searchQuery.trim()) {
+      searchRequestRef.current += 1;
       setSearchResults([]);
       return;
     }
 
+    const requestId = ++searchRequestRef.current;
     const timeout = window.setTimeout(() => {
       bridge.search(searchQuery).then((response) => {
+        if (requestId !== searchRequestRef.current) return;
         if (response.ok) setSearchResults(response.data);
         else setNotice(response.error);
       });
@@ -933,35 +1019,53 @@ function App() {
   async function createCase() {
     if (creatingCase) return;
     if (!bridge) {
-      setNotice("请在桌面应用中创建本地案件。");
+      setCreateTaskError("请在桌面应用中创建任务。");
       return;
     }
     if (visibleProjects.length === 0) {
-      setNotice("请先创建或选择一个本地项目，再新建案件。");
+      setCreateTaskError("请先创建或选择一个本地项目，再新建任务。");
       return;
     }
     const targetProject = visibleProjects.find((item) => item.id === newCaseProjectId);
     if (!targetProject) {
-      setNotice("请先为新工作文件夹选择一个 SAP 项目或其他工作项目。");
+      setCreateTaskError("请先为新任务选择一个 SAP 项目或其他工作项目。");
       return;
     }
     const title = newCaseTitle.trim();
     if (!title) {
-      setNotice("请输入工作文件夹名称。");
+      setCreateTaskError("请输入任务名称。");
       newCaseInputRef.current?.focus();
       return;
     }
     setCreatingCase(true);
+    setCreateTaskError("");
     try {
-      const response = await bridge.createLocalCase({ projectId: targetProject.id, title });
+      const targetCaseId = newTaskFolderMode === "existing"
+        ? (newTaskExistingCaseId || targetProject.cases[0]?.id)
+        : undefined;
+      if (newTaskFolderMode === "existing" && !targetCaseId) {
+        setCreateTaskError("当前 Project 没有可绑定的工作文件夹，请选择新建文件夹。");
+        return;
+      }
+      const response = await bridge.createWorkThread({
+        projectId: targetProject.id,
+        title,
+        folderMode: newTaskFolderMode,
+        folderName: newTaskFolderMode === "new" ? (newTaskFolderName.trim() || title) : undefined,
+        caseId: targetCaseId
+      });
       if (response.ok) {
         setState(response.data);
         setActiveView("case");
         setNewCaseProjectId(targetProject.id);
         setNewCaseTitle("");
+        setNewTaskFolderName("");
         setCreatePanel(null);
-        setNotice("新工作文件夹已创建，并已切换到当前工作。右侧文件页签会显示它的本地文件。");
+        setNotice(newTaskFolderMode === "new"
+          ? "任务已创建，并绑定到新工作文件夹。"
+          : "任务已创建，并绑定到已有工作文件夹。");
       } else {
+        setCreateTaskError(response.error);
         setNotice(response.error);
       }
     } finally {
@@ -1006,9 +1110,87 @@ function App() {
     }
   }
 
+  async function switchWorkTask(threadId: string) {
+    if (!canLeaveCurrentCenter()) return;
+    if (!bridge) {
+      setNotice("请在桌面应用中切换任务。");
+      return;
+    }
+    const response = await bridge.switchWorkThread({ threadId });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setSelectedPreviewPath(null);
+      setFilePreview(null);
+      setFilePreviewError(null);
+      setNotice("");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function updateThreadStatus(scope: "work" | "chat", threadId: string, status: ConversationThreadStatus) {
+    if (!bridge) {
+      setNotice("请在桌面应用中管理会话。");
+      return;
+    }
+    const response = await bridge.updateConversationThreadStatus({ scope, threadId, status });
+    if (response.ok) {
+      setState(response.data);
+      if (scope === "work") setActiveView("case");
+      else setActiveView("chat");
+      setNotice(status === "active" ? "会话已恢复。" : status === "archived" ? "会话已归档，可随时恢复。" : "会话已从常用列表移除，本地记录仍然保留。");
+    } else {
+      setNotice(response.error);
+    }
+  }
+
+  async function restoreAndOpenThread(scope: "work" | "chat", threadId: string) {
+    if (!bridge) return;
+    const response = await bridge.updateConversationThreadStatus({ scope, threadId, status: "active" });
+    if (!response.ok) {
+      setNotice(response.error);
+      return;
+    }
+    setState(response.data);
+    if (scope === "work") await switchWorkTask(threadId);
+    else await switchDailyChat(threadId);
+  }
+
+  async function copyThreadId(threadId: string) {
+    try {
+      await navigator.clipboard.writeText(threadId);
+      setNotice(`会话 ID 已复制：${threadId}`);
+    } catch {
+      setNotice(`会话 ID：${threadId}`);
+    }
+  }
+
   async function openSearchResult(result: SearchResult) {
     if (!bridge) {
       setNotice("请在桌面应用中打开本地搜索结果。");
+      return;
+    }
+    if (result.type === "chat-thread" && result.threadId) {
+      const thread = state?.chatThreads.find((item) => item.id === result.threadId);
+      if (thread && thread.status !== "active") {
+        setNotice("该日常对话已归档或移除，请在左侧“会话管理”中明确恢复后再打开。");
+        return;
+      }
+      await switchDailyChat(result.threadId);
+      setSearchQuery("");
+      setSearchResults([]);
+      return;
+    }
+    if (result.type === "work-thread" && result.threadId) {
+      const thread = state?.workThreads.find((item) => item.id === result.threadId);
+      if (thread && thread.status !== "active") {
+        setNotice("该任务已归档或移除，请在左侧“任务管理”中明确恢复后再打开。");
+        return;
+      }
+      await switchWorkTask(result.threadId);
+      setSearchQuery("");
+      setSearchResults([]);
       return;
     }
     const targetProjectId = result.projectId
@@ -1070,8 +1252,9 @@ function App() {
   function focusNewCaseInput() {
     setActiveView("case");
     setCreatePanel("case");
+    setCreateTaskError("");
     if (!project) {
-      setNotice("请先创建或选择一个 SAP 项目或其他工作项目，再新建工作文件夹。");
+      setNotice("请先创建或选择一个 SAP 项目或其他工作项目，再新建任务。");
       return;
     }
     window.setTimeout(() => newCaseInputRef.current?.focus(), 0);
@@ -1228,11 +1411,18 @@ function App() {
 
   useEffect(() => {
     scrollConversationToLatest();
-  }, [activeChat?.messages.length, currentCase?.messages.length, streamingTurn?.assistantContent.length, streamingTurn?.contextKey]);
+  }, [activeChat?.messages.length, currentWorkThread?.messages.length, streamingTurn?.assistantContent.length, streamingTurn?.contextKey]);
 
   useEffect(() => () => {
     if (streamFrameRef.current !== null) window.cancelAnimationFrame(streamFrameRef.current);
   }, []);
+
+  useEffect(() => {
+    const textarea = composerTextareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "0px";
+    textarea.style.height = `${Math.min(Math.max(textarea.scrollHeight, 36), 180)}px`;
+  }, [message, activeConversationKey]);
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -1250,8 +1440,8 @@ function App() {
       setNotice(activeView === "chat" ? "请输入日常对话内容。" : "请输入案件问题或补充说明。");
       return;
     }
-    if (activeView !== "chat" && (!project || !currentCase)) {
-      setNotice("请先选择一个 Project 和工作文件夹。");
+    if (activeView !== "chat" && (!project || !currentCase || !currentWorkThread)) {
+      setNotice("请先选择一个任务会话及其工作文件夹。");
       return;
     }
     const submittedMessage = message;
@@ -1301,12 +1491,13 @@ function App() {
         }
         return;
       }
-      if (!project || !currentCase) return;
-      const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
-      const streamContextKey = `case:${target.projectId}:${target.caseId}`;
+      if (!project || !currentCase || !currentWorkThread) return;
+      const target = { projectId: project.id, caseId: currentCase.id, threadId: currentWorkThread.id, caseTitle: currentCase.title };
+      const streamContextKey = `work:${target.threadId}`;
       const caseInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
+        threadId: target.threadId,
         content: submittedMessage,
         taskMode: "problem-analysis",
         modelId: selectedSafeDraftModel?.model.id ?? "local-workflow",
@@ -1349,12 +1540,12 @@ function App() {
       setNotice("浏览器预览不会执行案件动作；请用桌面应用操作。");
       return;
     }
-    if (!project || !currentCase) {
-      setNotice("请先选择一个 Project 和工作文件夹。");
+    if (!project || !currentCase || !currentWorkThread) {
+      setNotice("请先选择一个任务会话及其工作文件夹。");
       return;
     }
-    const target = { projectId: project.id, caseId: currentCase.id, caseTitle: currentCase.title };
-    const streamContextKey = `case:${target.projectId}:${target.caseId}`;
+    const target = { projectId: project.id, caseId: currentCase.id, threadId: currentWorkThread.id, caseTitle: currentCase.title };
+    const streamContextKey = `work:${target.threadId}`;
     setSendingMessage(true);
     try {
       const content = [
@@ -1368,6 +1559,7 @@ function App() {
       const actionInput: CaseWorkflowInput = {
         projectId: target.projectId,
         caseId: target.caseId,
+        threadId: target.threadId,
         content,
         taskMode: selectedCaseAction.taskMode,
         modelId: selectedSafeDraftModel?.model.id ?? "local-workflow",
@@ -1928,7 +2120,7 @@ function App() {
               </>
             ) : (
               <>
-                <button onClick={focusNewCaseInput} title={project ? "填写名称后在所选项目下创建工作文件夹" : "请先创建或选择一个项目"}><FolderPlus size={18} />新文件夹</button>
+                <button ref={newTaskButtonRef} onClick={focusNewCaseInput} title={project ? "创建任务并绑定新建或已有工作文件夹" : "请先创建或选择一个项目"}><Plus size={18} />新建任务</button>
                 <button className={activeView === "config" ? "active" : ""} onClick={() => navigateView("config")} title="打开当前项目配置中心"><Settings size={18} />配置中心</button>
                 <button className={activeView === "standards" ? "active" : ""} onClick={() => navigateView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
                 <button className={activeView === "knowledge" ? "active" : ""} onClick={() => navigateView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
@@ -1938,7 +2130,7 @@ function App() {
 
           <label className="sidebar-search">
             <Search size={15} />
-            <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索项目或文件" aria-label="搜索工作台" />
+            <input ref={searchInputRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="搜索任务、对话或文件" aria-label="搜索工作台" />
           </label>
 
           {searchResults.length > 0 ? (
@@ -1967,14 +2159,33 @@ function App() {
                 <div className="conversation-group" key={group.label}>
                   <span className="conversation-group-label">{group.label}</span>
                   {group.threads.map((thread) => (
-                    <button type="button" onClick={() => void switchDailyChat(thread.id)} className={thread.id === state?.activeChatThreadId && activeView === "chat" ? "conversation-row active" : "conversation-row"} key={thread.id} title="打开独立日常对话">
-                      <MessageSquare size={15} />
-                      <span>{readableHistoricalText(thread.title, "历史对话（编码异常）")}</span>
-                      <small>独立对话 · 无文件夹</small>
-                    </button>
+                    <ConversationThreadRow
+                      key={thread.id}
+                      title={readableHistoricalText(thread.title, "历史对话（编码异常）")}
+                      subtitle="独立对话 · 无文件夹"
+                      active={thread.id === state?.activeChatThreadId && activeView === "chat"}
+                      status={thread.status}
+                      busy={sendingMessage}
+                      onOpen={() => void switchDailyChat(thread.id)}
+                      onCopyId={() => void copyThreadId(thread.id)}
+                      onStatus={(status) => void updateThreadStatus("chat", thread.id, status)}
+                    />
                   ))}
                 </div>
               ))}
+              {archivedChatThreads.length || removedChatThreads.length ? <details className="thread-history-section"><summary>会话管理 · {archivedChatThreads.length + removedChatThreads.length}</summary>
+                {[...archivedChatThreads, ...removedChatThreads].map((thread) => <ConversationThreadRow
+                  key={thread.id}
+                  title={readableHistoricalText(thread.title, "历史对话（编码异常）")}
+                  subtitle={thread.status === "archived" ? "已归档" : "已移除 · 本地保留"}
+                  active={false}
+                  status={thread.status}
+                  busy={sendingMessage}
+                  onOpen={() => void restoreAndOpenThread("chat", thread.id)}
+                  onCopyId={() => void copyThreadId(thread.id)}
+                  onStatus={(status) => void updateThreadStatus("chat", thread.id, status)}
+                />)}
+              </details> : null}
             </section>
           ) : (
             <>
@@ -2023,24 +2234,32 @@ function App() {
                 <button type="submit" disabled={!newProjectName.trim() || !newProjectSystemLabel.trim()}><Plus size={15} />创建项目</button>
               </form></div> : null}
 
-              {createPanel === "case" ? <div className="create-dialog-backdrop"><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建工作文件夹">
-              <div className="create-dialog-heading"><div><strong>新建工作文件夹</strong><span>选择归属 Project 后创建本地案件目录</span></div><button type="button" className="icon-button" onClick={() => setCreatePanel(null)} aria-label="关闭"><X size={17} /></button></div>
+              {createPanel === "case" ? <div className="create-dialog-backdrop"><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建任务">
+              <div className="create-dialog-heading"><div><strong>新建任务</strong><span>每个任务有独立会话，并绑定一个工作文件夹</span></div><button type="button" className="icon-button" onClick={() => { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); }} aria-label="关闭"><X size={17} /></button></div>
               <form className="quick-create case-create phase28-new-case-flow phase36-work-chat-project-folder-layout" onSubmit={(event) => { event.preventDefault(); void createCase(); }}>
-                <input ref={newCaseInputRef} value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="输入工作文件夹名称" aria-label="工作文件夹名称" disabled={!project || creatingCase} />
-                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim()} title={!project ? "请先创建或选择项目" : !newCaseTitle.trim() ? "请输入工作文件夹名称" : "在所选项目下创建工作文件夹"}>
-                  <FolderPlus size={15} />
-                  {creatingCase ? "创建中" : "创建文件夹"}
-                </button>
-              </form>
-
-              <div className="new-case-project-picker">
-                <span>新工作文件夹归属</span>
-                <select value={newCaseProjectId} onChange={(event) => setNewCaseProjectId(event.target.value)} disabled={visibleProjects.length === 0 || creatingCase} aria-label="新工作文件夹项目/配置">
+                <label><span>任务名称</span><input ref={newCaseInputRef} value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="例如：分析采购订单审批异常" aria-label="任务名称" disabled={!project || creatingCase} /></label>
+                <label><span>归属 Project</span><select value={newCaseProjectId} onChange={(event) => { setNewCaseProjectId(event.target.value); const next = visibleProjects.find((item) => item.id === event.target.value); setNewTaskExistingCaseId(next?.cases[0]?.id ?? ""); }} disabled={visibleProjects.length === 0 || creatingCase} aria-label="任务所属 Project">
                   {visibleProjects.map((item) => (
                     <option key={item.id} value={item.id}>{projectKindLabel(item)} · {item.name} / {item.systemLabel}</option>
                   ))}
-                </select>
-              </div>
+                </select></label>
+                <div className="task-folder-mode" role="tablist" aria-label="工作文件夹绑定方式">
+                  <button type="button" className={newTaskFolderMode === "new" ? "active" : ""} onClick={() => setNewTaskFolderMode("new")} role="tab" aria-selected={newTaskFolderMode === "new"}>新建文件夹</button>
+                  <button type="button" className={newTaskFolderMode === "existing" ? "active" : ""} onClick={() => setNewTaskFolderMode("existing")} role="tab" aria-selected={newTaskFolderMode === "existing"}>已有文件夹</button>
+                </div>
+                {newTaskFolderMode === "new" ? (
+                  <label><span>文件夹名称</span><input value={newTaskFolderName} onChange={(event) => setNewTaskFolderName(event.target.value)} placeholder="留空时与任务同名" aria-label="新工作文件夹名称" /></label>
+                ) : (
+                  <label><span>选择文件夹</span><select value={newTaskExistingCaseId || visibleProjects.find((item) => item.id === newCaseProjectId)?.cases[0]?.id || ""} onChange={(event) => setNewTaskExistingCaseId(event.target.value)} aria-label="已有工作文件夹">
+                    {(visibleProjects.find((item) => item.id === newCaseProjectId)?.cases ?? []).map((caseItem) => <option key={caseItem.id} value={caseItem.id}>{caseItem.title}</option>)}
+                  </select></label>
+                )}
+                {createTaskError ? <p className="create-task-error" role="alert">{createTaskError}</p> : null}
+                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim()} title="创建任务会话">
+                  <Plus size={15} />
+                  {creatingCase ? "创建中" : "创建任务"}
+                </button>
+              </form>
               </div></div> : null}
 
               <div className="project-list work-project-list">
@@ -2068,14 +2287,21 @@ function App() {
                       </div>
                     </div>
                     {item.id === state?.activeProjectId ? <div className="case-list">
-                      <span className="project-case-label">工作文件夹</span>
-                      {item.cases.length ? item.cases.map((caseItem) => (
-                        <button type="button" onClick={() => void switchCase(item.id, caseItem.id)} className={activeView === "case" && caseItem.id === state?.activeCaseId && item.id === state?.activeProjectId ? "case-row active" : "case-row"} key={caseItem.id}>
-                          <Folder size={14} />
-                          <span className="case-row-title">{caseItem.title}</span>
-                          <time>{formatTime(caseItem.updatedAt)}</time>
-                        </button>
-                      )) : <p className="sidebar-empty-note">暂无工作文件夹</p>}
+                      <span className="project-case-label">任务</span>
+                      {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
+                        const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
+                        return <ConversationThreadRow
+                          key={thread.id}
+                          title={thread.title}
+                          subtitle={`文件夹 · ${folder?.title ?? "未知"}`}
+                          active={activeView === "case" && thread.id === state?.activeWorkThreadId}
+                          status={thread.status}
+                          busy={sendingMessage}
+                          onOpen={() => void switchWorkTask(thread.id)}
+                          onCopyId={() => void copyThreadId(thread.id)}
+                          onStatus={(status) => void updateThreadStatus("work", thread.id, status)}
+                        />;
+                      })}
                     </div> : null}
                   </section>
                 ))}
@@ -2098,14 +2324,11 @@ function App() {
                         </button>
                       </div>
                       {item.id === state?.activeProjectId ? <div className="case-list">
-                        <span className="project-case-label">本地工作文件夹</span>
-                        {item.cases.map((caseItem) => (
-                          <button type="button" onClick={() => void switchCase(item.id, caseItem.id)} className={activeView === "case" && caseItem.id === state?.activeCaseId && item.id === state?.activeProjectId ? "case-row active" : "case-row"} key={caseItem.id}>
-                            <Folder size={14} />
-                            <span className="case-row-title">{caseItem.title}</span>
-                            <time>{formatTime(caseItem.updatedAt)}</time>
-                          </button>
-                        ))}
+                        <span className="project-case-label">任务</span>
+                        {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
+                          const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
+                          return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={`文件夹 · ${folder?.title ?? "未知"}`} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
+                        })}
                       </div> : null}
                     </section>
                   ))}
@@ -2131,20 +2354,35 @@ function App() {
                           </button>
                         </div>
                         {item.id === state?.activeProjectId ? <div className="case-list">
-                          <span className="project-case-label">示例工作文件夹</span>
-                          {item.cases.map((caseItem) => (
-                            <button type="button" onClick={() => void switchCase(item.id, caseItem.id)} className={activeView === "case" && caseItem.id === state?.activeCaseId && item.id === state?.activeProjectId ? "case-row active" : "case-row"} key={caseItem.id}>
-                              <Folder size={14} />
-                              <span className="case-row-title">{caseItem.title}</span>
-                              <time>{formatTime(caseItem.updatedAt)}</time>
-                            </button>
-                          ))}
+                          <span className="project-case-label">示例任务</span>
+                          {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
+                            const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
+                            return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={`文件夹 · ${folder?.title ?? "未知"}`} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
+                          })}
                         </div> : null}
                       </section>
                     ))}
                   </div>
                 </section>
               ) : null}
+
+              {archivedWorkThreads.length || removedWorkThreads.length ? <details className="thread-history-section work-thread-history"><summary>任务管理 · {archivedWorkThreads.length + removedWorkThreads.length}</summary>
+                {[...archivedWorkThreads, ...removedWorkThreads].map((thread) => {
+                  const owner = state?.projects.find((item) => item.id === thread.projectId);
+                  const folder = owner?.cases.find((caseItem) => caseItem.id === thread.caseId);
+                  return <ConversationThreadRow
+                    key={thread.id}
+                    title={thread.title}
+                    subtitle={`${thread.status === "archived" ? "已归档" : "已移除"} · ${owner?.name ?? "未知 Project"} / ${folder?.title ?? "未知文件夹"}`}
+                    active={false}
+                    status={thread.status}
+                    busy={sendingMessage}
+                    onOpen={() => void restoreAndOpenThread("work", thread.id)}
+                    onCopyId={() => void copyThreadId(thread.id)}
+                    onStatus={(status) => void updateThreadStatus("work", thread.id, status)}
+                  />;
+                })}
+              </details> : null}
             </>
           )}
 
@@ -2233,8 +2471,8 @@ function App() {
               {showScrollToLatest ? <button type="button" className="scroll-latest-button" onClick={() => scrollConversationToLatest(true)} aria-label="回到最新消息" title="回到最新消息"><ArrowDown size={17} /></button> : null}
             </div>
 
-            <form className="composer daily-chat-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-              <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="日常对话输入" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
+            <form className="composer daily-chat-composer compact-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+              <textarea ref={composerTextareaRef} rows={1} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="日常对话输入" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
               <div className="composer-footer">
                 <div className="composer-tools" />
                 <div className="composer-actions composer-model-actions">
@@ -2249,8 +2487,8 @@ function App() {
         <section className="conversation-panel">
           <div className="case-heading">
             <div>
-              <h1>{currentCase?.title ?? "当前工作文件夹"}</h1>
-              <p>{project ? `${projectKindLabel(project)} · ${project.name} · ${project.systemLabel}` : "请创建 SAP 项目或其他工作项目"}</p>
+              <h1>{currentWorkThread?.title ?? "当前任务"}</h1>
+              <p>{project ? `${projectKindLabel(project)} · ${project.name} · 文件夹：${currentCase?.title ?? "未绑定"}` : "请创建 SAP 项目或其他工作项目"}</p>
             </div>
             <div className="case-heading-actions">
               {adtReady ? <button type="button" className="context-panel-trigger" onClick={() => setSapEvidencePanelOpen((open) => !open)} aria-expanded={sapEvidencePanelOpen} title="从已验证 SAP 连接读取单个对象证据，不执行写入"><Database size={16} />{sapEvidencePanelOpen ? "收起取证" : "SAP 取证"}</button> : null}
@@ -2266,16 +2504,16 @@ function App() {
 
           <div className="conversation-flow" ref={conversationFlowRef} onScroll={handleConversationScroll}>
             <div className="conversation-content">
-              {(currentCase?.messages ?? []).map((item) => (
+              {(currentWorkThread?.messages ?? []).map((item) => (
                 <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
               ))}
-              {streamingTurn?.scope === "case" && streamingTurn.contextKey === `case:${project?.id ?? ""}:${currentCase?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
+              {streamingTurn?.scope === "case" && streamingTurn.contextKey === `work:${currentWorkThread?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
               <div className="conversation-end" ref={conversationEndRef} aria-hidden="true" />
             </div>
             {showScrollToLatest ? <button type="button" className="scroll-latest-button" onClick={() => scrollConversationToLatest(true)} aria-label="回到最新消息" title="回到最新消息"><ArrowDown size={17} /></button> : null}
           </div>
 
-          <form className="composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+          <form className={`composer compact-composer${caseActionConfirmationVisible || sapEvidencePanelOpen ? " expanded" : ""}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
             {isSapBoundProject(project) && adtReady && sapEvidencePanelOpen ? (
               <div className="sap-evidence-bar">
                 <div className="sap-evidence-status" title="当前 SAP 只读取证上下文；本功能不写入 SAP">
@@ -2295,7 +2533,7 @@ function App() {
                 </button>
               </div>
             ) : null}
-            <textarea value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="继续追问" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
+            <textarea ref={composerTextareaRef} rows={1} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="继续追问" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
             {caseActionConfirmationVisible ? (
               <div className="action-confirmation-preview" role="region" aria-label="案件动作确认">
                 <div className="action-confirmation-settings">
