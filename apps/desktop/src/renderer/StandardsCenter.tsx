@@ -54,16 +54,21 @@ function StandardsCenter({ project, projects, notice, onBack, onDirtyChange, onC
   const [saving, setSaving] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const requestSequence = useRef(0);
+  const loadedProjectId = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const requestId = ++requestSequence.current;
     let cancelled = false;
     const projectId = project?.id;
 
-    setView(null);
-    setDraft(null);
+    const projectChanged = loadedProjectId.current !== projectId;
+    loadedProjectId.current = projectId;
+    if (projectChanged) {
+      setView(null);
+      setDraft(null);
+      setSourceProjectId("");
+    }
     setLoadError(null);
-    setSourceProjectId("");
 
     if (!projectId) {
       setLoading(false);
@@ -229,7 +234,7 @@ function StandardsCenter({ project, projects, notice, onBack, onDirtyChange, onC
     );
   }
 
-  if (loading || !currentView || !currentDraft || !selectedCategory) {
+  if (!currentView || !currentDraft || !selectedCategory) {
     return (
       <section className="standards-workspace">
         <div className="standards-main">
@@ -237,7 +242,7 @@ function StandardsCenter({ project, projects, notice, onBack, onDirtyChange, onC
             <button className="icon-button" onClick={leaveStandardsCenter} aria-label="返回案件"><ArrowLeft size={18} /></button>
             <div>
               <h1>规范中心</h1>
-              <p>{project.name} · 正在读取项目规范...</p>
+              <p>{project.name} · {loading ? "正在读取项目规范..." : "项目规范尚未就绪，请稍候。"}</p>
             </div>
           </div>
         </div>

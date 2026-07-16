@@ -21,6 +21,8 @@ const screenshotRecords = [];
 const checks = [];
 let first = null;
 let pageSession = null;
+let electronStdout = "";
+let electronStderr = "";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -210,8 +212,14 @@ try {
   ], {
     cwd: desktopRoot,
     env: sanitizedEnvironment(),
-    stdio: "ignore",
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true
+  });
+  first.stdout?.on("data", (chunk) => {
+    electronStdout = `${electronStdout}${chunk}`.slice(-1_000_000);
+  });
+  first.stderr?.on("data", (chunk) => {
+    electronStderr = `${electronStderr}${chunk}`.slice(-1_000_000);
   });
 
   const activePortPath = path.join(userDataDir, "DevToolsActivePort");
@@ -510,12 +518,45 @@ try {
   }
 
   await pageSession.evaluate(`(async () => {
+    __phase43.clickText('能力中心');
+    await __phase43.until(() => document.querySelectorAll('.capability-tabs [role="tab"]').length === 5);
+    return true;
+  })()`);
+  const capabilityTabs = await evaluateJson(`[...document.querySelectorAll('.capability-tabs [role="tab"]')].map((tab) => __phase43.normalize(tab.textContent))`);
+  assert(
+    ["插件", "Skills", "MCP", "提示词", "记忆"].every((label) => capabilityTabs.includes(label)),
+    "能力中心显示插件、Skills、MCP、提示词和记忆五个页签"
+  );
+  for (const label of capabilityTabs) {
+    await pageSession.evaluate(`(async () => {
+      __phase43.clickText(${JSON.stringify(label)}, '.capability-tabs [role="tab"]');
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return true;
+    })()`);
+    const selectedCount = await pageSession.evaluate("[...document.querySelectorAll('.capability-tabs [role=tab]')].filter((tab) => tab.getAttribute('aria-selected') === 'true').length");
+    assert(selectedCount === 1, `能力中心页签 ${label} 只有一个选中状态`);
+  }
+  await pageSession.evaluate(`(async () => {
+    __phase43.clickText('MCP', '.capability-tabs [role="tab"]');
+    await __phase43.until(() => [...document.querySelectorAll('button')].some((button) => __phase43.normalize(button.textContent).includes('添加连接')));
+    __phase43.clickText('添加连接');
+    await __phase43.until(() => Boolean(document.querySelector('.capability-modal-backdrop')));
+    document.querySelector('.capability-modal-backdrop').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    await __phase43.until(() => !document.querySelector('.capability-modal-backdrop'));
+    return true;
+  })()`);
+  assert(await pageSession.evaluate("!document.querySelector('.capability-modal-backdrop')"), "能力中心弹窗可点击空白区域关闭");
+  await capture("capability-center-mcp");
+
+  await pageSession.evaluate(`(async () => {
     __phase43.clickText('规范中心');
     await __phase43.until(() => Boolean(document.querySelector('.standards-editor textarea')));
     const textarea = document.querySelector('.standards-editor textarea');
     __phase43.setValue(textarea, textarea.value + '\\nPhase43 UAT：交付前必须核对只读边界。');
     __phase43.clickText('保存当前项目版本');
     await __phase43.until(() => document.body.innerText.includes('当前项目规范已保存'));
+    await __phase43.until(() => document.querySelectorAll('.standards-category-list button').length >= 8);
+    await __phase43.until(() => Boolean(document.querySelector('.standards-toolbar')?.textContent.includes('差异')));
     return true;
   })()`);
   const standardsState = await evaluateJson(`({
@@ -523,7 +564,10 @@ try {
     categoryCount: document.querySelectorAll('.standards-category-list button').length,
     hasDiff: Boolean(document.querySelector('.standards-toolbar')?.textContent.includes('差异'))
   })`);
-  assert(standardsState.heading === "规范中心" && standardsState.categoryCount >= 8 && standardsState.hasDiff, "规范中心可编辑、保存并展示差异");
+  assert(
+    standardsState.heading === "规范中心" && standardsState.categoryCount >= 8 && standardsState.hasDiff,
+    `规范中心可编辑、保存并展示差异：${JSON.stringify(standardsState)}`
+  );
   await capture("standards-saved-diff");
 
   await pageSession.evaluate(`(async () => {
@@ -761,6 +805,12 @@ try {
   process.stdout.write(`phase43-desktop-release-uat=ok\n`);
   process.stdout.write(`phase43-uat-evidence=${outputRoot}\n`);
 } finally {
+  if (electronStdout) {
+    try { await writeFile(path.join(outputRoot, "electron-stdout.log"), electronStdout, "utf8"); } catch { /* best-effort diagnostics */ }
+  }
+  if (electronStderr) {
+    try { await writeFile(path.join(outputRoot, "electron-stderr.log"), electronStderr, "utf8"); } catch { /* best-effort diagnostics */ }
+  }
   if (pageSession) {
     try { pageSession.close(); } catch { /* already closed */ }
   }

@@ -1,6 +1,6 @@
 # SAP AI 顾问工作台项目上下文
 
-最后更新：2026-07-07
+最后更新：2026-07-16
 
 ## 用途
 
@@ -16,11 +16,15 @@
 
 这个仓库已经不是空的文档仓库。当前实现位于 `apps/desktop`，技术路线是 Electron + React + TypeScript，根目录已有 `dev`、`build`、`check`、`start` 脚本。
 
-创建本上下文文件时：
+截至 2026-07-16：
 
-- 当前 branch 是 `codex/phase-22-published-knowledge-case-context`。
-- 工作区已有前序开发留下的未提交改动，包括后续 phase 文档和 probe 脚本。
-- 本机 PATH 中没有检测到 `gh`，因此 GitHub issue 操作没有在本机完成验证。
+- 当前主开发 branch 是 `codex/production-readiness`，已完成到 Phase 49 的任务会话、模型流式体验、Project SAP landscape 和本地文件夹绑定能力。
+- Work/Chat 核心回复直接调用用户配置的模型渠道，不经过 Codex CLI。
+- Phase 50-56 已实现独立 Agent Runtime 首个基线：Work/Chat 回合进入本地 Thread/Turn/Item 事件账本，Work 支持受控工具循环，长会话使用可追溯 checkpoint，明确提出的长期要求只生成待确认记忆。
+- 能力中心已提供 `插件 | Skills | MCP | 提示词 | 记忆` 五个页签；Skill、声明式 Plugin、分层提示词和已确认记忆按 Project/Case 范围进入新回合。
+- MCP 稳定版只开放 HTTPS Streamable HTTP 的连接配置、测试和 tools/resources/prompts 发现。任何外部工具都不会进入 Work 自动执行目录；Server 的 `readOnlyHint` 只作展示，不能提权。外部 MCP 执行、STDIO、任意脚本和受限子 Agent 尚未正式开放。
+- Codex 只作为公开源码参考和可选兼容工具，不是 Work/Chat、能力中心或 Agent Runtime 的运行依赖。
+- 工作区可能存在前序任务留下的未提交改动。每次开始前必须检查并保留，不得为了文档或 Runtime 工作回滚无关文件。
 
 每次开始工作前，都要重新检查当前状态：
 
@@ -39,9 +43,13 @@ npm run check
 | 3 | `docs/product-prototype/TECHNICAL_IMPLEMENTATION.md` | 架构、本地存储、连接器、案件动作、权限模式、知识流、搜索和验证策略。 |
 | 4 | `docs/architecture/FIRST_PRINCIPLES_STRATEGY.md` | 第一性原理产品方向和阶段门禁。 |
 | 5 | `docs/architecture/ADVERSARIAL_AUDIT_MATRIX.md` | 每个功能都要对照的安全和产品审计矩阵。 |
-| 6 | `docs/superpowers/specs/` | 具体 phase 的冻结设计说明。 |
-| 7 | `docs/superpowers/plans/` | 历史和当前实现计划。读取相关 phase，但必须判断是否仍然是当前状态。 |
-| 8 | `docs/architecture/reviews/` | 对抗式 review、验证证据和剩余风险。 |
+| 6 | `docs/architecture/INDEPENDENT_AGENT_RUNTIME.md` | 独立运行时的消息链路、工具、上下文、记忆、Skill、MCP 和子 Agent 总体架构。 |
+| 7 | `docs/adr/0002-independent-agent-runtime.md` | 核心 AI 不依赖 Codex 中转的长期决策。 |
+| 8 | `docs/research/2026-07-15-codex-runtime-primary-source-study.md` | 基于 OpenAI 官方文档和固定源码 commit 的 Codex Runtime 研究证据。 |
+| 9 | `docs/superpowers/specs/2026-07-15-capability-center-skills-mcp-prompt-memory-design.md` | Phase 51-54 能力中心、Skills、MCP、提示词和分层记忆的完整方案。 |
+| 10 | `docs/superpowers/specs/` | 具体 phase 的冻结设计说明。 |
+| 11 | `docs/superpowers/plans/` | 历史和当前实现计划。读取相关 phase，但必须判断是否仍然是当前状态。 |
+| 12 | `docs/architecture/reviews/` | 对抗式 review、验证证据和剩余风险。 |
 
 如果 plan 文件和源码不一致，先检查源码、最新 review 和 probe 证据，再下结论。
 
@@ -51,6 +59,7 @@ npm run check
 |---|---|
 | `docs/product-prototype/` | 产品基线：原型索引、PRD、技术实现、新线程交接和原型图。 |
 | `docs/architecture/` | 长期架构原则、审计矩阵、多 Agent 执行模型和功能 review 模板。 |
+| `docs/research/` | 基于官方文档、开放规范和固定源码 commit 的研究记录。 |
 | `docs/architecture/reviews/` | Phase review 记录，包含范围、风险、验证命令、实际结果和剩余风险。 |
 | `docs/superpowers/plans/` | 按 phase 拆分的实现计划。部分早期文件是历史快照。 |
 | `docs/superpowers/specs/` | 功能实现前冻结范围的设计说明。 |
@@ -84,6 +93,15 @@ npm run check
 | Published knowledge | 用户确认后的正式知识，可被后续案件复用。 |
 | Standards | 项目自己的 ABAP、文档、图示和输出规则，从模板或其他项目复制后独立演进。 |
 | Safe model context | 传给模型的受限上下文，防止泄露密钥、原始 SAP 源码和未受控案件文件。 |
+| Agent Runtime | 运行在 Electron main process 的核心 AI 执行层，当前负责 Thread/Turn/Item、模型流、本地内置只读工具循环、上下文、checkpoint、Skill 和记忆；MCP 执行与受限子 Agent 是后续受控能力。 |
+| Event ledger | Agent Runtime 的本地事件账本，是回合和工具执行的事实源；`conversation.md` 等文件是面向用户的投影。 |
+| 能力中心 | 管理 Plugin、Skills、MCP、提示词和记忆的独立页面；它是配置入口，不是新的运行时。 |
+| Plugin / 插件包 | 本产品的声明式能力包，可组合 Skills、MCP 预设、提示词、模板和元数据；第一版不允许注入第三方 UI 代码或任意执行入口。 |
+| Memory | 用于恢复任务的工作摘要、项目约定或用户偏好，不等于聊天历史，也不等于已发布知识。 |
+| Memory candidate | 系统建议保存、但尚未由用户确认的记忆；不能自动成为正式知识或跨会话事实。 |
+| Prompt Profile | 按安全、产品、个人、Project、Case 和 Skill 层级组合的提示词配置；低优先级内容不能覆盖安全硬规则。 |
+| Skill | 可复用工作说明和资源包；只描述怎么做，不自行获得文件、网络、SAP 或命令权限。 |
+| MCP | 连接外部工具和资源的开放协议；MCP Server 提供的能力仍受本产品权限和安全边界控制。 |
 | Feishu handoff | 飞书/Lark 流程的本地草稿或交接产物。除非另行设计并授权，否则不是自动云端发布。 |
 
 ## 不可突破的产品规则
@@ -104,6 +122,11 @@ npm run check
 - 右侧默认展示当前工作文件夹文件；只有用户明确切换或点击项目配置时，才展示项目配置摘要或进入配置中心。
 - 新 UI 不要求用户在发消息前选择任务模式；默认自由对话，固定案件动作负责沉淀成果。
 - 案件动作可以绑定内置或导入 Skill，但执行权限按项目 / 案件权限模式管理。
+- 核心 Agent Runtime 必须独立于 Codex CLI、Codex SDK 和 Codex app-server；缺少 Codex 不得影响核心能力。
+- 记忆候选不能自动成为正式知识；跨 Project 检索必须显式隔离并带来源。
+- Skill、MCP 和子 Agent 都只能通过 main process 的 Tool Registry 与 Policy Engine 获得受控能力；当前稳定版没有给外部 MCP 和子 Agent 注册执行能力。
+- Plugin 第一版只能是声明式能力包；扩展故障或停用不得影响不使用该能力的 Chat/Work。
+- Prompt instruction 和 Memory fact 必须分层处理；Memory、MCP 输出和 Skill 文本不能覆盖系统安全规则。
 - 「完全访问」只表示当前项目 / 案件范围内尽量自动执行，不允许绕过 SAP 写入、批量删除、外部发布和密钥导出的硬确认。
 
 ## 当前实现形态
@@ -126,6 +149,7 @@ npm run check
 - 多 SAP 连接必须先在 Project 范围内路由；未唯一匹配时先由用户确认，禁止静默猜测实例号 `00` 或读取错误系统。
 - Feishu CLI command 必须固定，并显式指定 profile。
 - Model execution 必须使用已验证 provider 和 safe context。
+- Provider 流式输出、AgentRuntime、Tool Runtime 和 EventStore 已接入 Work/Chat；OpenAI Responses API、受限子 Agent 和更完整的中断续跑仍属于后续增强，不能宣称已达到 Codex App 的全部编排能力。
 - 文件访问必须限制在当前 Case/Project 边界内。
 
 ## Agent 开发流程

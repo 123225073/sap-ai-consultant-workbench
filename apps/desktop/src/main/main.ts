@@ -5,10 +5,10 @@ import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtRe
 import { discoverLocalSapGuiConnections, resolveAdtEndpointCandidates, type AdtEndpointCandidate } from "./adtEndpointResolver";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, discoverFeishuCli, installFeishuCli, saveFeishuCliProfile, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createCodexCliConnector, createCodexValidationFailureReport, type CodexCliConnectorInput } from "./codexCliConnector";
-import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput } from "./modelProviderConnector";
+import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput, type ModelToolLoopEvent } from "./modelProviderConnector";
 import { SecureSecretStore } from "./secureSecretStore";
 import { isChatCapableModel, parseAppendDailyChatMessageInput, parseCreateWorkThreadInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
-import { safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
+import { applyAgentContextToSafeModelDraft, safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { readControlledKnowledgeTextFile } from "./controlledTextFileImportService";
 import {
   createKnowledgeImportInputFromTextFile,
@@ -21,6 +21,19 @@ import { createAppLifecycleLogger } from "./appLifecycleLogger";
 import { installLocalAiCapability, parseLocalAiInstallInput, scanLocalAiCapabilities } from "./localAiCapabilityService";
 import { assertPublicModelEndpoint, isDemoModelHost, isUnsafeModelHost } from "./modelEndpointSecurity";
 import { createWorkspaceBackup, importWorkspace } from "./workspaceTransferService";
+import { AgentRuntime } from "./agentRuntime";
+import { AgentToolService } from "./agentToolService";
+import { AgentContextService } from "./agentContextService";
+import { CapabilityCenterService } from "./capabilityCenterService";
+import { ContextEngine } from "./contextEngine";
+import { McpConnectionManager } from "./mcpConnectionManager";
+import { PromptMemoryService } from "./promptMemoryService";
+import { PluginPackageService } from "./pluginPackageService";
+import { SkillPackageService } from "./skillPackageService";
+import { assertNoSensitiveCaseContent } from "./caseWorkflowService";
+import { parseCancelAgentTurnInput, type AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
+import { ExclusiveWorkflowQueue } from "./exclusiveWorkflowQueue";
+import type { CreateCapabilityMemoryInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
 import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 import { routeSapConnections } from "../shared/sapConnectionRouting";
 
@@ -41,10 +54,12 @@ const SENSITIVE_ERROR_PATTERNS = [
 ];
 const FEISHU_DEVELOPER_CONSOLE_URL = "https://open.feishu.cn/app";
 const FEISHU_AUTHORIZATION_HOST_SUFFIXES = ["feishu.cn", "larksuite.com", "larkoffice.com"] as const;
-const caseWorkflowQueues = new Map<string, Promise<void>>();
+const caseWorkflowQueue = new ExclusiveWorkflowQueue();
 const activeSapEvidenceRuns = new Set<string>();
 const SAP_EVIDENCE_TOTAL_TIMEOUT_MS = 90_000;
 const AI_STREAM_EVENT_CHANNEL = "workbench:ai-conversation-stream";
+const AGENT_RUNTIME_EVENT_CHANNEL = "workbench:agent-runtime-event";
+const agentRunOwners = new Map<string, number>();
 
 type ModelDeltaHandler = (delta: string, providerName: string, modelId: string) => void;
 
@@ -73,20 +88,13 @@ function streamEventSender(event: IpcMainInvokeEvent, requestId: string, scope: 
   return handler;
 }
 
-async function runCaseWorkflowExclusive<T>(key: string, operation: () => Promise<T>): Promise<T> {
-  const previous = caseWorkflowQueues.get(key) ?? Promise.resolve();
-  let release: () => void = () => undefined;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const tail = previous.catch(() => undefined).then(() => current);
-  caseWorkflowQueues.set(key, tail);
-  await previous.catch(() => undefined);
+async function runOwnedAgentRequest<T>(event: IpcMainInvokeEvent, requestId: string, operation: () => Promise<T>): Promise<T> {
+  if (agentRunOwners.has(requestId)) throw new Error("AI 请求标识正在使用，请重新发送。");
+  agentRunOwners.set(requestId, event.sender.id);
   try {
     return await operation();
   } finally {
-    release();
-    if (caseWorkflowQueues.get(key) === tail) caseWorkflowQueues.delete(key);
+    if (agentRunOwners.get(requestId) === event.sender.id) agentRunOwners.delete(requestId);
   }
 }
 
@@ -863,25 +871,60 @@ async function verifyCodexCli(store: WorkspaceStore, projectId: unknown): Promis
   return { report, state };
 }
 
-async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown, onDelta?: ModelDeltaHandler): Promise<WorkbenchState> {
+async function appendCaseMessage(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  agentToolService: AgentToolService,
+  requestId: string,
+  agentTurnId: string,
+  input: unknown,
+  onDelta?: ModelDeltaHandler,
+  signal?: AbortSignal,
+  onToolEvent?: (event: ModelToolLoopEvent) => void | Promise<void>
+): Promise<{ state: WorkbenchState; modelFailed: boolean; modelErrorMessage: string | null }> {
   const targetedInput = await store.bindCaseWorkflowTarget(input);
+  const threadId = targetedInput.threadId;
+  const projectId = targetedInput.projectId;
+  const caseId = targetedInput.caseId;
+  if (!threadId || !projectId || !caseId) throw new Error("当前任务缺少 Project、工作文件夹或会话标识。");
   const workflowKey = `${targetedInput.projectId}:${targetedInput.caseId}`;
-  return runCaseWorkflowExclusive(workflowKey, async () => {
-  const prepared = await store.prepareSafeModelDraftRequest(targetedInput, {
-    allowFakeModelExecution: process.env.WORKBENCH_ALLOW_FAKE_MODEL_EXECUTION === "1"
-  });
-  let modelDraft: SafeModelDraftRun | undefined;
-  let codexAssist: CodexCaseAssistRun | undefined;
+  return caseWorkflowQueue.run(workflowKey, async () => {
+    const prepared = await store.prepareSafeModelDraftRequest(targetedInput, {
+      allowFakeModelExecution: process.env.WORKBENCH_ALLOW_FAKE_MODEL_EXECUTION === "1"
+    });
+    let modelDraft: SafeModelDraftRun | undefined;
+    let codexAssist: CodexCaseAssistRun | undefined;
 
   if (prepared) {
+    let effectiveContext = prepared.context;
     try {
+      const conversationMessages = await store.getWorkAgentContextHistory(threadId);
+      const assembledContext = await agentContextService.build({
+        requestId,
+        target: {
+          threadId,
+          projectId,
+          caseId
+        },
+        userContent: targetedInput.content,
+        conversationMessages
+      });
+      effectiveContext = applyAgentContextToSafeModelDraft(prepared.context, assembledContext);
       await assertPublicModelEndpoint(prepared.baseUrl);
       const apiKey = await secretStore.resolveProjectSecret(prepared.projectId, {
         kind: "api-key",
         providerId: prepared.providerId
       });
       const connector = createModelProviderConnector(prepared.baseUrl, prepared.providerType);
+      let toolSession;
+      try {
+        toolSession = await agentToolService.createSession({ threadId, projectId, caseId });
+      } catch {
+        toolSession = undefined;
+      }
       let emittedDelta = false;
+      let toolActivityStarted = false;
       const generate = (modelId: string) => connector.generateSafeDraft({
         id: prepared.providerId,
         name: prepared.providerName,
@@ -889,7 +932,13 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         baseUrl: prepared.baseUrl,
         apiKey,
         modelId,
-        context: prepared.context,
+        context: effectiveContext,
+        toolSession,
+        onToolEvent: async (event) => {
+          if (event.type === "tool-call" || event.type === "tool-result") toolActivityStarted = true;
+          await onToolEvent?.(event);
+        },
+        signal,
         onDelta: onDelta ? (delta) => {
           emittedDelta = true;
           onDelta(delta, prepared.providerName, modelId);
@@ -902,7 +951,7 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         const config = await store.getProjectConfig(prepared.projectId);
         const provider = config.apiProviders.find((item) => item.id === prepared.providerId);
         const fallbackModelId = provider?.lastVerifiedModelId;
-        if (!emittedDelta && fallbackModelId && fallbackModelId !== prepared.modelId && mayRetryWithVerifiedModel(error)) {
+        if (!emittedDelta && !toolActivityStarted && fallbackModelId && fallbackModelId !== prepared.modelId && mayRetryWithVerifiedModel(error)) {
           draft = await generate(fallbackModelId);
         } else {
           throw error;
@@ -914,16 +963,17 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         modelId: safeModelDraftDisplayValue("模型名称", draft.modelId, "已验证模型"),
         generatedAt: draft.generatedAt,
         content: draft.content,
-        contextAudit: prepared.context.audit
+        contextAudit: effectiveContext.audit
       };
     } catch (error) {
+      if (signal?.aborted) throw error;
       modelDraft = {
         status: "failed",
         providerName: safeModelDraftDisplayValue("模型渠道", prepared.providerName, "已验证模型渠道"),
         modelId: safeModelDraftDisplayValue("模型名称", prepared.modelId, "已验证模型"),
         generatedAt: new Date().toISOString(),
         errorMessage: safeErrorMessage(error),
-        contextAudit: prepared.context.audit
+        contextAudit: effectiveContext.audit
       };
     }
   }
@@ -940,12 +990,19 @@ async function appendCaseMessage(store: WorkspaceStore, secretStore: SecureSecre
         });
       }
     } catch (error) {
+      if (signal?.aborted) throw error;
       codexAssist = codexCaseAssistFailure(error);
     }
   }
 
-    return store.appendMessage(targetedInput, modelDraft, codexAssist);
-  });
+    signal?.throwIfAborted();
+    const state = await store.appendMessage(targetedInput, modelDraft, codexAssist, agentTurnId);
+    return {
+      state,
+      modelFailed: modelDraft?.status === "failed",
+      modelErrorMessage: modelDraft?.status === "failed" ? modelDraft.errorMessage : null
+    };
+  }, signal);
 }
 
 function isProviderReadyForDailyChat(provider: ApiProviderConfig): boolean {
@@ -959,7 +1016,15 @@ function isProviderReadyForDailyChat(provider: ApiProviderConfig): boolean {
   );
 }
 
-async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore: SecureSecretStore, request: AppendDailyChatMessageInput, onDelta?: ModelDeltaHandler): Promise<DailyChatAssistantReply | undefined> {
+async function prepareDailyChatAssistantReply(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  requestId: string,
+  request: AppendDailyChatMessageInput,
+  onDelta?: ModelDeltaHandler,
+  signal?: AbortSignal
+): Promise<DailyChatAssistantReply | undefined> {
   if (!request.projectId || !request.providerId || !request.content.trim()) return undefined;
   try {
     const projectId = request.projectId;
@@ -972,15 +1037,30 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
     await assertPublicModelEndpoint(provider.baseUrl);
     const apiKey = await secretStore.resolveProjectSecret(projectId, { kind: "api-key", providerId: provider.id });
     const connector = createModelProviderConnector(provider.baseUrl, provider.providerType);
+    const conversationMessages = await store.getDailyChatAgentContextHistory(request.threadId, projectId, provider.id);
+    const assembledContext = await agentContextService.build({
+      requestId,
+      target: {
+        threadId: request.threadId ?? `daily-${requestId}`,
+        projectId: null,
+        caseId: null
+      },
+      userContent: request.content,
+      conversationMessages
+    });
     let emittedDelta = false;
     const generate = async (activeModelId: string) => {
-      const history = await store.getDailyChatModelHistory(request.threadId, projectId, provider.id, activeModelId);
       return connector.generateDailyChat({
         ...modelProviderInputWithoutKey(provider),
         apiKey,
         modelId: activeModelId,
         content: request.content,
-        history,
+        systemInstructions: assembledContext.instructions,
+        confirmedContext: assembledContext.items
+          .filter((item) => item.kind !== "recent-message")
+          .map((item) => item.content),
+        history: assembledContext.history.map(({ role, content }) => ({ role, content })),
+        signal,
         onDelta: onDelta ? (delta) => {
           emittedDelta = true;
           onDelta(delta, provider.name, activeModelId);
@@ -1007,6 +1087,7 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
       providerName: provider.name
     };
   } catch (error) {
+    if (signal?.aborted) throw error;
     return {
       content: `模型调用失败：${safeErrorMessage(error)}。你的问题已作为本地日常对话记录保存。`,
       modelId: request.modelId ?? "local-chat",
@@ -1018,12 +1099,147 @@ async function prepareDailyChatAssistantReply(store: WorkspaceStore, secretStore
   }
 }
 
-async function appendDailyChatMessage(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown, onDelta?: ModelDeltaHandler): Promise<WorkbenchState> {
+async function appendDailyChatMessage(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  requestId: string,
+  agentTurnId: string,
+  input: unknown,
+  onDelta?: ModelDeltaHandler,
+  signal?: AbortSignal
+): Promise<WorkbenchState> {
   const parsedInput = parseAppendDailyChatMessageInput(input);
   const workflowKey = `daily-chat:${parsedInput.threadId ?? "active"}`;
-  return runCaseWorkflowExclusive(workflowKey, async () => {
-    const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, parsedInput, onDelta);
-    return store.appendDailyChatMessage(parsedInput, assistantReply);
+  return caseWorkflowQueue.run(workflowKey, async () => {
+    const assistantReply = await prepareDailyChatAssistantReply(store, secretStore, agentContextService, requestId, parsedInput, onDelta, signal);
+    signal?.throwIfAborted();
+    return store.appendDailyChatMessage(parsedInput, assistantReply, agentTurnId);
+  }, signal);
+}
+
+async function runTrackedCaseMessage(
+  runtime: AgentRuntime,
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  agentToolService: AgentToolService,
+  requestId: string,
+  input: unknown,
+  onDelta?: ModelDeltaHandler
+): Promise<WorkbenchState> {
+  const target = await store.bindCaseWorkflowTarget(input);
+  if (!target.threadId || !target.projectId || !target.caseId) throw new Error("当前任务缺少 Project、工作文件夹或会话标识。");
+  assertNoSensitiveCaseContent(target.content);
+  return runtime.runTurn({
+    requestId,
+    scope: "work",
+    legacyThreadId: target.threadId,
+    projectId: target.projectId,
+    caseId: target.caseId,
+    providerId: target.providerId ?? null,
+    modelId: target.modelId || null,
+    userContent: target.content
+  }, async ({ signal, turn, emitDelta, emitItem }) => {
+    const execution = await appendCaseMessage(store, secretStore, agentContextService, agentToolService, requestId, turn.id, target, (delta, providerName, modelId) => {
+      emitDelta(delta, providerName, modelId);
+      onDelta?.(delta, providerName, modelId);
+    }, signal, async (event) => {
+      if (event.type === "tool-call") {
+        const argumentJson = JSON.stringify(event.call.arguments);
+        await emitItem("tool-call", {
+          callId: event.call.callId,
+          toolName: event.call.name,
+          argumentKeys: Object.keys(event.call.arguments).slice(0, 40),
+          argumentBytes: Buffer.byteLength(argumentJson, "utf8"),
+          argumentsValid: !event.call.argumentsError
+        }, `${turn.id}:tool-call:${event.call.callId}`);
+        return;
+      }
+      if (event.type === "tool-decision") {
+        await emitItem("tool-decision", {
+          callId: event.callId,
+          toolName: event.toolName,
+          outcome: event.outcome,
+          message: event.message
+        }, `${turn.id}:tool-decision:${event.callId}`);
+        return;
+      }
+      await emitItem("tool-result", {
+        callId: event.result.callId,
+        toolName: event.result.name,
+        content: event.result.content.slice(0, 12_000),
+        isError: event.result.isError,
+        trust: event.result.trust
+      }, `${turn.id}:tool-result:${event.result.callId}`);
+    });
+    const state = execution.state;
+    await agentContextService.captureExplicitUserMemory({
+      requestId,
+      target: { threadId: target.threadId!, projectId: target.projectId!, caseId: target.caseId! },
+      userContent: target.content
+    }).catch(() => null);
+    const thread = state.workThreads.find((item) => item.id === target.threadId);
+    const assistant = thread ? [...thread.messages].reverse().find((message) => message.role === "assistant" && message.agentTurnId === turn.id) : undefined;
+    const project = state.projects.find((item) => item.id === target.projectId);
+    const providerName = project?.config.apiProviders.find((item) => item.id === assistant?.providerId)?.name ?? null;
+    return {
+      value: state,
+      assistantContent: assistant?.content ?? "",
+      providerName,
+      providerId: assistant?.providerId ?? target.providerId ?? null,
+      modelId: assistant?.modelId ?? target.modelId ?? null,
+      terminalStatus: execution.modelFailed ? "failed" : "completed",
+      errorCode: execution.modelFailed ? "model-call-failed" : null,
+      errorMessage: execution.modelErrorMessage,
+      committed: true
+    };
+  });
+}
+
+async function runTrackedDailyChatMessage(
+  runtime: AgentRuntime,
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  requestId: string,
+  input: unknown,
+  onDelta?: ModelDeltaHandler
+): Promise<WorkbenchState> {
+  const request = parseAppendDailyChatMessageInput(input);
+  const before = await store.getState();
+  const legacyThreadId = request.threadId ?? before.activeChatThreadId;
+  if (!legacyThreadId) throw new Error("当前日常对话缺少会话标识，请新建对话后重试。");
+  return runtime.runTurn({
+    requestId,
+    scope: "chat",
+    legacyThreadId,
+    providerId: request.providerId ?? null,
+    modelId: request.modelId ?? null,
+    userContent: request.content
+  }, async ({ signal, turn, emitDelta }) => {
+    const state = await appendDailyChatMessage(store, secretStore, agentContextService, requestId, turn.id, { ...request, threadId: legacyThreadId }, (delta, providerName, modelId) => {
+      emitDelta(delta, providerName, modelId);
+      onDelta?.(delta, providerName, modelId);
+    }, signal);
+    await agentContextService.captureExplicitUserMemory({
+      requestId,
+      target: { threadId: legacyThreadId, projectId: null, caseId: null },
+      userContent: request.content
+    }).catch(() => null);
+    const thread = state.chatThreads.find((item) => item.id === legacyThreadId);
+    const assistant = thread ? [...thread.messages].reverse().find((message) => message.role === "assistant" && message.agentTurnId === turn.id) : undefined;
+    return {
+      value: state,
+      assistantContent: assistant?.content ?? "",
+      providerName: assistant?.providerName ?? null,
+      providerId: assistant?.providerId ?? request.providerId ?? null,
+      modelId: assistant?.modelId ?? request.modelId ?? null,
+      terminalStatus: assistant?.responseMode === "model-failed" ? "failed" : "completed",
+      errorCode: assistant?.responseMode === "model-failed" ? "model-call-failed" : null,
+      errorMessage: assistant?.responseMode === "model-failed" ? assistant.content : null,
+      committed: true
+    };
   });
 }
 
@@ -1162,7 +1378,15 @@ async function importKnowledgeTextFile(event: IpcMainInvokeEvent, store: Workspa
   };
 }
 
-function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSecretStore, appRoot: string): void {
+function registerWorkbenchHandlers(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  runtime: AgentRuntime,
+  agentContextService: AgentContextService,
+  agentToolService: AgentToolService,
+  capabilities: CapabilityCenterService,
+  appRoot: string
+): void {
   const pendingLocalFolderSelections = new Map<string, { projectId: string; folderPath: string; folderName: string; expiresAt: number }>();
   ipcMain.handle("workbench:get-state", (event) => trustedResponse(event, appRoot, () => store.getState()));
   ipcMain.handle("workbench:create-workspace-backup", (event) => trustedResponse(event, appRoot, () => createWorkspaceBackup(store.getWorkspaceRoot())));
@@ -1229,10 +1453,136 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:update-conversation-thread-status", (event, input: unknown) => trustedResponse(event, appRoot, () => store.updateConversationThreadStatus(input)));
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
   ipcMain.handle("workbench:switch-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchDailyChatThread(input)));
-  ipcMain.handle("workbench:append-daily-chat-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendDailyChatMessage(store, secretStore, input)));
+  ipcMain.handle("workbench:agent-runtime-health", (event) => trustedResponse(event, appRoot, async () => runtime.getHealth()));
+  ipcMain.handle("workbench:agent-runtime-cancel-turn", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const request = parseCancelAgentTurnInput(input);
+    if (agentRunOwners.get(request.requestId) !== event.sender.id) {
+      return { cancelled: false, message: "该任务不属于当前窗口，或已经结束。" };
+    }
+    return runtime.cancelRequest(request.requestId);
+  }));
+  ipcMain.handle("workbench:capability-center-snapshot", (event) => trustedResponse(event, appRoot, () => capabilities.getSnapshot()));
+  ipcMain.handle("workbench:capability-plugin-import", (event, input: ImportCapabilityPluginInput) => trustedResponse(event, appRoot, async () => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = { title: "选择要导入的 Plugin 文件夹", buttonLabel: "检查此 Plugin", properties: ["openDirectory"] };
+    const selection = parentWindow ? await dialog.showOpenDialog(parentWindow, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length === 0) return capabilities.getSnapshot();
+    if (selection.filePaths.length !== 1) throw new Error("一次只能导入一个 Plugin 文件夹。");
+    const preview = await capabilities.preflightPluginImport(selection.filePaths[0], input);
+    const totalComponents = preview.components.skillReferences + preview.components.inlineSkills + preview.components.mcpPresets + preview.components.promptFragments + preview.components.templates;
+    const confirmationOptions = {
+      type: preview.validation.status === "warning" ? "warning" : "info",
+      title: "确认导入 Plugin",
+      message: `${preview.displayName} · v${preview.version}`,
+      detail: `${preview.description}\n\n包含 ${totalComponents} 项声明式能力。插件不能注入页面代码，也不会自动执行脚本或获得额外权限。`,
+      buttons: ["确认导入", "取消"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    } satisfies Electron.MessageBoxOptions;
+    const confirmation = parentWindow ? await dialog.showMessageBox(parentWindow, confirmationOptions) : await dialog.showMessageBox(confirmationOptions);
+    if (confirmation.response !== 0) {
+      await capabilities.cancelPluginImport(preview.importId);
+      return capabilities.getSnapshot();
+    }
+    await capabilities.confirmPluginImport(preview.importId);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-plugin-enabled", (event, input: SetCapabilityPluginEnabledInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.setPluginEnabled(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-skill-import", (event, input: ImportCapabilitySkillInput) => trustedResponse(event, appRoot, async () => {
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: "选择要导入的 Skill 文件夹",
+      buttonLabel: "检查此 Skill",
+      properties: ["openDirectory"]
+    };
+    const selection = parentWindow ? await dialog.showOpenDialog(parentWindow, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length === 0) return capabilities.getSnapshot();
+    if (selection.filePaths.length !== 1) throw new Error("一次只能导入一个 Skill 文件夹。");
+    const preview = await capabilities.preflightSkillImport(selection.filePaths[0], input);
+    const warningCount = preview.validation.diagnostics.filter((item) => item.level === "warning").length;
+    const scriptNotice = preview.scriptStatus === "present-listed-not-executable"
+      ? "检测到 scripts 目录；为保证安全，脚本只会列出，不会执行。"
+      : "未检测到可执行脚本。";
+    const confirmationOptions = {
+      type: warningCount > 0 ? "warning" : "info",
+      title: "确认导入 Skill",
+      message: preview.name,
+      detail: `${preview.description}\n\n${preview.stats.fileCount} 个文件，${preview.resources.length} 个资源。${scriptNotice}${warningCount ? `\n另有 ${warningCount} 项提示，请导入后查看校验详情。` : ""}`,
+      buttons: ["确认导入", "取消"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    } satisfies Electron.MessageBoxOptions;
+    const confirmation = parentWindow
+      ? await dialog.showMessageBox(parentWindow, confirmationOptions)
+      : await dialog.showMessageBox(confirmationOptions);
+    if (confirmation.response !== 0) {
+      await capabilities.cancelSkillImport(preview.importId);
+      return capabilities.getSnapshot();
+    }
+    await capabilities.confirmSkillImport(preview.importId);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-skill-enabled", (event, input: SetCapabilitySkillEnabledInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.setSkillEnabled(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-prompt-save", (event, input: SaveCapabilityPromptInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.savePrompt(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-prompt-enabled", (event, input: SetCapabilityPromptEnabledInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.setPromptEnabled(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-memory-create", (event, input: CreateCapabilityMemoryInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.createMemory(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-memory-update", (event, input: UpdateCapabilityMemoryInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.updateMemory(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-memory-review", (event, input: ReviewCapabilityMemoryInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.reviewMemory(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-memory-revoke", (event, input: RevokeCapabilityMemoryInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.revokeMemory(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-mcp-save", (event, input: SaveCapabilityMcpInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.saveMcpConnection(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-mcp-test", (event, input: TestCapabilityMcpInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.testMcpConnection(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-mcp-enabled", (event, input: SetCapabilityMcpEnabledInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.setMcpEnabled(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-mcp-tool-enabled", (event, input: SetCapabilityMcpToolEnabledInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.setMcpToolEnabled(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-mcp-remove", (event, input: RemoveCapabilityMcpInput) => trustedResponse(event, appRoot, async () => {
+    await capabilities.removeMcpConnection(input);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:append-daily-chat-message", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const requestId = randomUUID();
+    return runOwnedAgentRequest(event, requestId, () => runTrackedDailyChatMessage(runtime, store, secretStore, agentContextService, requestId, input));
+  }));
   ipcMain.handle("workbench:append-daily-chat-message-stream", (event, requestId: unknown, input: unknown) => trustedResponse(event, appRoot, async () => {
-    const stream = streamEventSender(event, validStreamRequestId(requestId), "daily-chat");
-    const state = await appendDailyChatMessage(store, secretStore, input, stream);
+    const validRequestId = validStreamRequestId(requestId);
+    const stream = streamEventSender(event, validRequestId, "daily-chat");
+    const state = await runOwnedAgentRequest(event, validRequestId, () => runTrackedDailyChatMessage(runtime, store, secretStore, agentContextService, validRequestId, input, stream));
     stream.complete();
     return state;
   }));
@@ -1240,10 +1590,14 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
   ipcMain.handle("workbench:hide-project-from-sidebar", (event, input: unknown) => trustedResponse(event, appRoot, () => store.hideProjectFromSidebar(input)));
   ipcMain.handle("workbench:restore-project-to-sidebar", (event, input: unknown) => trustedResponse(event, appRoot, () => store.restoreProjectToSidebar(input)));
   ipcMain.handle("workbench:switch-case", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchCase(input)));
-  ipcMain.handle("workbench:append-message", (event, input: unknown) => trustedResponse(event, appRoot, () => appendCaseMessage(store, secretStore, input)));
+  ipcMain.handle("workbench:append-message", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const requestId = randomUUID();
+    return runOwnedAgentRequest(event, requestId, () => runTrackedCaseMessage(runtime, store, secretStore, agentContextService, agentToolService, requestId, input));
+  }));
   ipcMain.handle("workbench:append-message-stream", (event, requestId: unknown, input: unknown) => trustedResponse(event, appRoot, async () => {
-    const stream = streamEventSender(event, validStreamRequestId(requestId), "case");
-    const state = await appendCaseMessage(store, secretStore, input, stream);
+    const validRequestId = validStreamRequestId(requestId);
+    const stream = streamEventSender(event, validRequestId, "case");
+    const state = await runOwnedAgentRequest(event, validRequestId, () => runTrackedCaseMessage(runtime, store, secretStore, agentContextService, agentToolService, validRequestId, input, stream));
     stream.complete();
     return state;
   }));
@@ -1283,6 +1637,16 @@ function registerWorkbenchHandlers(store: WorkspaceStore, secretStore: SecureSec
 
 const lifecycleLogger = createAppLifecycleLogger(app.getPath("userData"));
 let mainWindow: BrowserWindow | null = null;
+let agentRuntime: AgentRuntime | null = null;
+let promptMemoryService: PromptMemoryService | null = null;
+let mcpConnectionManager: McpConnectionManager | null = null;
+
+function broadcastAgentRuntimeEvent(event: AgentRuntimeEvent): void {
+  const ownerId = agentRunOwners.get(event.requestId);
+  if (ownerId === undefined) return;
+  const owner = BrowserWindow.getAllWindows().find((window) => window.webContents.id === ownerId);
+  if (owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) owner.webContents.send(AGENT_RUNTIME_EVENT_CHANNEL, event);
+}
 let rendererRecoveryUsed = false;
 let applicationCloseReason: "application-quit" | "window-close" | null = null;
 
@@ -1463,12 +1827,57 @@ if (!hasSingleInstanceLock) {
     focusMainWindow();
   });
 
-  app.whenReady().then(() => {
+  app.whenReady().then(async () => {
     const appRoot = app.getAppPath();
     const workspaceHostRoot = app.isPackaged
       ? app.getPath("userData")
       : process.env.WORKBENCH_REPO_ROOT ?? path.resolve(appRoot, "../..");
-    registerWorkbenchHandlers(new WorkspaceStore(workspaceHostRoot), new SecureSecretStore(workspaceHostRoot), appRoot);
+    const store = new WorkspaceStore(workspaceHostRoot);
+    const secretStore = new SecureSecretStore(workspaceHostRoot);
+    agentRuntime = new AgentRuntime(workspaceHostRoot, broadcastAgentRuntimeEvent);
+    const runtimeHealth = await agentRuntime.initialize();
+    const pendingRecoveries = agentRuntime.getPendingInterruptedTurns();
+    if (pendingRecoveries.length > 0) {
+      try {
+        const recovery = await store.reconcileInterruptedAgentTurns(pendingRecoveries);
+        await Promise.all([
+          ...recovery.projected.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "projected")),
+          ...recovery.committed.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "committed")),
+          ...recovery.unmatched.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "unmatched"))
+        ]);
+        lifecycleLogger.write("agent-runtime-recovery-projected", {
+          projected: recovery.projected.length,
+          committed: recovery.committed.length,
+          unmatched: recovery.unmatched.length
+        });
+      } catch (error) {
+        lifecycleLogger.write("agent-runtime-recovery-failed", { message: safeErrorMessage(error) });
+      }
+    }
+    lifecycleLogger.write("agent-runtime-ready", {
+      schemaVersion: runtimeHealth.schemaVersion,
+      recoveredInterruptedTurns: runtimeHealth.recoveredInterruptedTurns,
+      hasWarning: Boolean(runtimeHealth.warning)
+    });
+    promptMemoryService = new PromptMemoryService(store.getWorkspaceRoot());
+    const skillPackageService = new SkillPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "skills"));
+    const pluginPackageService = new PluginPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "plugins"));
+    mcpConnectionManager = new McpConnectionManager(path.join(store.getWorkspaceRoot(), "capabilities"), (ref) => secretStore.resolveValue(ref));
+    await Promise.all([
+      promptMemoryService.initialize(),
+      skillPackageService.initialize(),
+      pluginPackageService.initialize(),
+      mcpConnectionManager.initialize()
+    ]);
+    const agentContextService = new AgentContextService(
+      new ContextEngine(promptMemoryService),
+      skillPackageService,
+      pluginPackageService,
+      promptMemoryService
+    );
+    const agentToolService = new AgentToolService(store, mcpConnectionManager);
+    const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService);
+    registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, capabilityCenter, appRoot);
     createMainWindow();
 
     app.on("activate", () => {
@@ -1489,6 +1898,12 @@ if (!hasSingleInstanceLock) {
     lifecycleLogger.write("app-before-quit", { reason: applicationCloseReason });
   });
   app.on("will-quit", () => {
+    agentRuntime?.close();
+    agentRuntime = null;
+    void promptMemoryService?.close();
+    promptMemoryService = null;
+    void mcpConnectionManager?.close();
+    mcpConnectionManager = null;
     lifecycleLogger.write("app-will-quit", { reason: applicationCloseReason ?? "unknown" });
     lifecycleLogger.endSession();
   });

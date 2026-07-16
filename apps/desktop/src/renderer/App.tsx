@@ -18,20 +18,26 @@ import {
   MessageSquare,
   MoreHorizontal,
   PanelLeft,
+  Plug,
   Plus,
   Search,
   Send,
   Settings,
   ShieldCheck,
+  Square,
   RotateCcw,
   Trash2,
   WandSparkles,
   X,
 } from "lucide-react";
 import ConfigCenter from "./ConfigCenter";
+import CapabilityCenter, { type CapabilityMcpDraft, type CapabilityMcpConnection, type CapabilityMemoryDraft, type CapabilityMemoryItem, type CapabilityPluginItem, type CapabilityPromptItem, type CapabilitySkillItem } from "./CapabilityCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
 import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
+import type { CapabilityCenterSnapshot } from "../shared/capabilityCenterTypes";
+import type { PromptProfileScope } from "../shared/promptMemoryTypes";
 import { routeSapConnections, type SapConnectionRouteDecision } from "../shared/sapConnectionRouting";
 
 type NewProjectSapVersion = ProjectSummary["sapVersion"];
@@ -61,6 +67,14 @@ const sapEvidenceTypes: { id: SapObjectEvidenceType; label: string }[] = [
 ];
 
 const workComposerPlaceholder = "描述问题、补充资料或继续讨论；需要沉淀成果时，打开“成果动作”。";
+
+function samePromptScope(left: PromptProfileScope, right: PromptProfileScope): boolean {
+  if (left.type !== right.type) return false;
+  if (left.type === "personal" && right.type === "personal") return true;
+  if (left.type === "project" && right.type === "project") return left.projectId === right.projectId;
+  if (left.type === "case" && right.type === "case") return left.projectId === right.projectId && left.caseId === right.caseId;
+  return false;
+}
 
 function workFolderLabel(caseItem: CaseSummary | undefined): string {
   if (!caseItem) return "未知";
@@ -292,6 +306,13 @@ type StreamingTurn = {
   assistantContent: string;
   providerName: string;
   modelId: string;
+  activityLabel?: string;
+};
+
+type ActiveAgentRun = {
+  turnId: string;
+  requestId: string;
+  scope: AgentRuntimeEvent["scope"];
 };
 
 const selectableCapabilities: Exclude<ModelCapability, "chat">[] = ["vision", "reasoning", "tools", "web", "free"];
@@ -776,8 +797,8 @@ function StreamingTurnBubble({ turn }: { turn: StreamingTurn }) {
         <time>刚刚</time>
       </div>
       <article className="assistant-message streaming-assistant-message" data-streaming-chars={turn.assistantContent.length} aria-live="polite" aria-busy="true">
-        <div className="run-time">{turn.providerName} · {turn.modelId} · 正在回复</div>
-        <div className="message-body streaming-message-body"><p>{turn.assistantContent || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p></div>
+        <div className="run-time">{turn.providerName} · {turn.modelId} · {turn.activityLabel ?? "正在回复"}</div>
+        <div className="message-body streaming-message-body"><p>{turn.assistantContent || turn.activityLabel || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p></div>
       </article>
     </>
   );
@@ -792,7 +813,7 @@ function App() {
   const [filePreview, setFilePreview] = useState<CaseFilePreview | null>(null);
   const [filePreviewError, setFilePreviewError] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
-  const [activeView, setActiveView] = useState<"chat" | "case" | "config" | "standards" | "knowledge">("case");
+  const [activeView, setActiveView] = useState<"chat" | "case" | "config" | "standards" | "knowledge" | "capabilities">("case");
   const [filesPanelVisible, setFilesPanelVisible] = useState(() => window.innerWidth > 1180);
   const [createPanel, setCreatePanel] = useState<"project" | "case" | null>(null);
   const [hiddenProjectsVisible, setHiddenProjectsVisible] = useState(false);
@@ -803,6 +824,7 @@ function App() {
   const [codexAssistEnabled, setCodexAssistEnabled] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
+  const [activeAgentRun, setActiveAgentRun] = useState<ActiveAgentRun | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
   const [newProjectName, setNewProjectName] = useState("");
   const [newProjectSapVersion, setNewProjectSapVersion] = useState<NewProjectSapVersion>("S4");
@@ -827,6 +849,7 @@ function App() {
   const [notice, setNotice] = useState("");
   const [knowledgeFocusItemId, setKnowledgeFocusItemId] = useState("");
   const [centerDraftDirty, setCenterDraftDirty] = useState(false);
+  const [capabilitySnapshot, setCapabilitySnapshot] = useState<CapabilityCenterSnapshot | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const newProjectInputRef = useRef<HTMLInputElement>(null);
   const newCaseInputRef = useRef<HTMLInputElement>(null);
@@ -841,6 +864,9 @@ function App() {
   const followLatestRef = useRef(true);
   const pendingStreamRef = useRef<{ scope: StreamingTurn["scope"]; contextKey: string; delta: string; providerName?: string; modelId?: string } | null>(null);
   const streamFrameRef = useRef<number | null>(null);
+  const cancelRequestedRef = useRef(false);
+  const pendingStopRef = useRef(false);
+  const activeAgentRunRef = useRef<ActiveAgentRun | null>(null);
 
   const bridge = window.workbench;
 
@@ -866,6 +892,50 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!bridge) return;
+    return bridge.onAgentRuntimeEvent((event) => {
+      if (event.type === "tool-call") {
+        setStreamingTurn((current) => current?.scope === "case"
+          ? { ...current, activityLabel: "正在读取已启用的只读工具" }
+          : current);
+        return;
+      }
+      if (event.type === "tool-decision") {
+        const outcome = event.payload.outcome === "allowed" ? "allowed" : "denied";
+        setStreamingTurn((current) => current?.scope === "case"
+          ? { ...current, activityLabel: outcome === "allowed" ? "只读检查已通过，正在获取结果" : "工具未执行，正在继续处理" }
+          : current);
+        return;
+      }
+      if (event.type === "tool-result") {
+        setStreamingTurn((current) => current?.scope === "case"
+          ? { ...current, activityLabel: event.payload.isError === true ? "工具未返回结果，正在继续处理" : "已取得只读结果，正在整理" }
+          : current);
+        return;
+      }
+      if (event.type !== "turn-status") return;
+      const status = typeof event.payload.status === "string" ? event.payload.status : "";
+      if (status === "running") {
+        const run = { requestId: event.requestId, turnId: event.turnId, scope: event.scope };
+        activeAgentRunRef.current = run;
+        setActiveAgentRun(run);
+        if (pendingStopRef.current) {
+          pendingStopRef.current = false;
+          cancelRequestedRef.current = true;
+          void bridge.cancelAgentTurn({ requestId: run.requestId }).then((response) => {
+            setNotice(response.ok ? response.data.message : response.error);
+          });
+        }
+        return;
+      }
+      if (status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted") {
+        if (activeAgentRunRef.current?.turnId === event.turnId) activeAgentRunRef.current = null;
+        setActiveAgentRun((current) => current?.turnId === event.turnId ? null : current);
+      }
+    });
+  }, [bridge]);
+
   const project = activeProject(state);
   const currentCase = activeCase(state);
   const currentWorkThread = activeWorkThread(state);
@@ -882,7 +952,7 @@ function App() {
   }, [state]);
 
   function canLeaveCurrentCenter(): boolean {
-    if (!centerDraftDirty || (activeView !== "config" && activeView !== "standards" && activeView !== "knowledge")) return true;
+    if (!centerDraftDirty || (activeView !== "config" && activeView !== "standards" && activeView !== "knowledge" && activeView !== "capabilities")) return true;
     return window.confirm("当前页面有未保存内容。离开后这些修改会丢失，确定继续吗？");
   }
 
@@ -912,6 +982,132 @@ function App() {
   const safeDraftOptions = useMemo(() => safeDraftModelOptions(project), [project]);
   const safeDraftOptionSignature = safeDraftOptions.map((option) => option.key).join("|");
   const modelProviderErrors = useMemo(() => providerErrorStates(project), [project]);
+  const capabilitySkills = useMemo<CapabilitySkillItem[]>(() => (capabilitySnapshot?.skills ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    description: item.description,
+    source: item.source.label,
+    scope: item.scope.kind === "global" ? "global" : "project",
+    scopeLabel: item.scope.kind === "global" ? "全局" : project?.name ?? "当前 Project",
+    enabled: item.enabled,
+    validationStatus: item.validation.status === "valid" ? "valid" : item.validation.status === "warning" ? "warning" : "invalid",
+    validationMessage: item.validation.diagnostics.map((diagnostic) => diagnostic.message).slice(0, 3).join("；") || undefined,
+    scriptsStatus: item.scriptStatus === "present-listed-not-executable" ? "present-disabled" : "none",
+    resources: item.resources.map((resource) => resource.relativePath),
+    updatedAt: item.updatedAt
+  })), [capabilitySnapshot?.skills, project?.name]);
+  const capabilityPlugins = useMemo<CapabilityPluginItem[]>(() => (capabilitySnapshot?.plugins ?? []).map((item) => {
+    const components = [
+      item.components.inlineSkills + item.components.skillReferences ? `Skills ${item.components.inlineSkills + item.components.skillReferences}` : "",
+      item.components.mcpPresets ? `MCP ${item.components.mcpPresets}` : "",
+      item.components.promptFragments ? `提示词 ${item.components.promptFragments}` : "",
+      item.components.templates ? `模板 ${item.components.templates}` : ""
+    ].filter(Boolean);
+    return {
+      id: item.id,
+      name: item.displayName,
+      description: item.description,
+      version: item.version,
+      source: item.source.label,
+      scopeLabel: item.scope.kind === "global" ? "全局" : project?.name ?? "当前 Project",
+      includedCapabilities: components,
+      enabled: item.enabled,
+      validationStatus: item.validation.status,
+      lastValidatedAt: item.validation.checkedAt
+    };
+  }), [capabilitySnapshot?.plugins, project?.name]);
+  const capabilityPrompts = useMemo<CapabilityPromptItem[]>(() => {
+    if (!capabilitySnapshot) return [];
+    const conflicts = new Map(capabilitySnapshot.compiledPrompt.conflicts.map((item) => [item.ref, item.reason]));
+    const immutable = capabilitySnapshot.compiledPrompt.layers.filter((item) => item.layer === "product-safety" || item.layer === "product-base").map((item, index) => ({
+      id: item.ref,
+      name: item.layer === "product-safety" ? `安全规则 ${index + 1}` : "产品基础提示词",
+      summary: item.layer === "product-safety" ? "不可被低层提示词覆盖的安全边界" : "定义 SAP AI 顾问工作台的基础工作方式",
+      content: item.content,
+      layer: item.layer === "product-safety" ? "safety" as const : "product" as const,
+      scopeLabel: "全局",
+      enabled: true,
+      editable: false,
+      canToggle: false,
+      estimatedTokens: item.tokenEstimate,
+      status: "active" as const
+    }));
+    const target = capabilitySnapshot.target;
+    const editableScopes: Array<{ id: string; name: string; summary: string; layer: "personal" | "project" | "case"; scope: PromptProfileScope; scopeLabel: string }> = [
+      { id: "profile:personal", name: "个人偏好", summary: "语言、表达和交付格式偏好", layer: "personal", scope: { type: "personal" }, scopeLabel: "个人" }
+    ];
+    if (target.projectId) editableScopes.push({ id: "profile:project", name: "Project 指令", summary: "当前 Project 的业务约定和术语", layer: "project", scope: { type: "project", projectId: target.projectId }, scopeLabel: project?.name ?? "当前 Project" });
+    if (target.projectId && target.caseId) editableScopes.push({ id: "profile:case", name: "Case 指令", summary: "当前任务的目标、边界和验收标准", layer: "case", scope: { type: "case", projectId: target.projectId, caseId: target.caseId }, scopeLabel: currentCase?.title ?? "当前 Case" });
+    const editable = editableScopes.map((item) => {
+      const profile = capabilitySnapshot.promptProfiles.find((candidate) => samePromptScope(candidate.scope, item.scope));
+      const profileRef = profile ? `prompt-profile:${profile.id}:v${profile.version}` : undefined;
+      const compiledLayer = profileRef ? capabilitySnapshot.compiledPrompt.layers.find((layer) => layer.ref === profileRef) : undefined;
+      const conflict = profileRef ? conflicts.get(profileRef) : undefined;
+      return {
+        id: item.id,
+        name: item.name,
+        summary: item.summary,
+        content: profile?.content ?? "",
+        layer: item.layer,
+        scopeLabel: item.scopeLabel,
+        enabled: profile?.enabled ?? false,
+        editable: true,
+        canToggle: Boolean(profile),
+        estimatedTokens: compiledLayer?.tokenEstimate ?? 0,
+        status: conflict ? "conflict" as const : "active" as const,
+        statusMessage: conflict,
+        updatedAt: profile?.updatedAt
+      };
+    });
+    return [...immutable, ...editable];
+  }, [capabilitySnapshot, currentCase?.title, project?.name]);
+  const capabilityMemories = useMemo<CapabilityMemoryItem[]>(() => (capabilitySnapshot?.memories ?? []).map((item) => {
+    const expired = Boolean(item.validUntil && item.validUntil <= new Date().toISOString());
+    const status = expired ? "expired" : item.hasConflict ? "conflict" : item.status === "candidate" ? "candidate" : item.status === "confirmed" ? "confirmed" : "disabled";
+    const typeLabels = { preference: "偏好", fact: "事实", constraint: "约束", decision: "决策" } as const;
+    const sourceLabels = { user: "用户输入", thread: "对话", "case-file": "案件文件", "published-knowledge": "已发布知识", "sap-evidence": "SAP 只读证据", runtime: "运行时" } as const;
+    const scope = item.scope.type === "personal" ? "personal" : item.scope.type === "project" ? "project" : "case";
+    const compact = item.content.replace(/\s+/g, " ").trim();
+    return {
+      id: item.id,
+      summary: compact.length > 52 ? `${compact.slice(0, 52)}...` : compact,
+      content: item.content,
+      typeLabel: typeLabels[item.kind],
+      scope,
+      scopeLabel: item.scope.type === "personal" ? "个人" : item.scope.type === "project" ? project?.name : currentCase?.title,
+      status,
+      enabled: status === "confirmed",
+      editable: status === "candidate",
+      sourceLabel: sourceLabels[item.provenance.sourceType],
+      sourceDetail: item.provenance.sourceRef,
+      updatedAt: item.updatedAt,
+      validUntil: item.validUntil ?? undefined
+    };
+  }), [capabilitySnapshot?.memories, currentCase?.title, project?.name]);
+  const capabilityMcpConnections = useMemo<CapabilityMcpConnection[]>(() => (capabilitySnapshot?.mcpConnections ?? []).map((item) => ({
+    id: item.id,
+    name: item.name,
+    description: item.description || "未填写说明",
+    transport: item.transport === "stdio" ? "STDIO" : "Streamable HTTP",
+    scopeLabel: item.scope.type === "global" ? "全局" : project?.name ?? "当前 Project",
+    enabled: item.enabled,
+    status: item.state === "connecting" ? "checking" : item.state,
+    capabilityCount: item.capabilityCount,
+    lastCheckedAt: item.lastTestedAt ?? undefined,
+    statusMessage: item.statusMessage,
+    tools: item.tools.map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      inputSummary: tool.inputSummary,
+      risk: tool.risk,
+      reportedReadOnlyHint: tool.reportedReadOnlyHint,
+      enabled: tool.enabled,
+      userApprovedReadOnly: tool.userApprovedReadOnly,
+      canApproveReadOnly: tool.canApproveReadOnly,
+      policyLabel: tool.policyLabel
+    }))
+  })), [capabilitySnapshot?.mcpConnections, project?.name]);
   const selectedSafeDraftModel = useMemo(() => {
     return safeDraftOptions.find((option) => option.key === selectedModelKey) ?? safeDraftOptions[0] ?? null;
   }, [safeDraftOptions, selectedModelKey]);
@@ -1090,6 +1286,70 @@ function App() {
   }, [bridge]);
 
   useEffect(() => {
+    if (!bridge || activeView !== "capabilities") return;
+    let active = true;
+    bridge.getCapabilityCenterSnapshot().then((response) => {
+      if (!active) return;
+      if (response.ok) setCapabilitySnapshot(response.data);
+      else setNotice(response.error);
+    });
+    return () => { active = false; };
+  }, [activeView, bridge, state?.activeProjectId, state?.activeCaseId]);
+
+  async function applyCapabilityMutation(promise: Promise<{ ok: true; data: CapabilityCenterSnapshot } | { ok: false; error: string }>): Promise<void> {
+    const result = await promise;
+    if (!result.ok) throw new Error(result.error);
+    setCapabilitySnapshot(result.data);
+  }
+
+  function capabilityPromptScope(id: string): PromptProfileScope {
+    const target = capabilitySnapshot?.target;
+    if (id === "profile:personal") return { type: "personal" };
+    if (id === "profile:project" && target?.projectId) return { type: "project", projectId: target.projectId };
+    if (id === "profile:case" && target?.projectId && target.caseId) return { type: "case", projectId: target.projectId, caseId: target.caseId };
+    throw new Error("当前提示词范围已经变化，请重新打开能力中心。");
+  }
+
+  function capabilityMemoryScope(memoryId: string): PromptProfileScope {
+    const memory = capabilitySnapshot?.memories.find((item) => item.id === memoryId);
+    if (!memory) throw new Error("记忆已不存在，请刷新后重试。");
+    return memory.scope;
+  }
+
+  function capabilityNewMemoryScope(scope: CapabilityMemoryDraft["scope"]): PromptProfileScope {
+    const target = capabilitySnapshot?.target;
+    if (scope === "personal") return { type: "personal" };
+    if (scope === "project" && target?.projectId) return { type: "project", projectId: target.projectId };
+    if (scope === "case" && target?.projectId && target.caseId) return { type: "case", projectId: target.projectId, caseId: target.caseId };
+    throw new Error("当前记忆范围已经变化，请重新打开能力中心。");
+  }
+
+  async function importCapabilityPlugin(): Promise<void> {
+    if (!bridge) throw new Error("请在桌面应用中导入 Plugin。");
+    const projectId = capabilitySnapshot?.target.projectId;
+    await applyCapabilityMutation(bridge.importCapabilityPlugin({ scope: projectId ? { kind: "project", projectId } : { kind: "global" } }));
+  }
+
+  async function importCapabilitySkill(): Promise<void> {
+    if (!bridge) throw new Error("请在桌面应用中导入 Skill。");
+    const projectId = capabilitySnapshot?.target.projectId;
+    await applyCapabilityMutation(bridge.importCapabilitySkill({ scope: projectId ? { kind: "project", projectId } : { kind: "global" } }));
+  }
+
+  async function addCapabilityMcp(draft: CapabilityMcpDraft): Promise<void> {
+    if (!bridge) throw new Error("请在桌面应用中添加 MCP 连接。");
+    const projectId = capabilitySnapshot?.target.projectId;
+    const scope = draft.scope === "project" && projectId ? { type: "project" as const, projectId } : { type: "global" as const };
+    const input = {
+      name: draft.name,
+      description: draft.description,
+      scope,
+      transport: { type: "streamable-http" as const, endpoint: draft.endpoint.trim(), headerRefs: {} }
+    };
+    await applyCapabilityMutation(bridge.saveCapabilityMcp(input));
+  }
+
+  useEffect(() => {
     if (!createPanel) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -1220,8 +1480,10 @@ function App() {
         return;
       }
       if (response.data.cancelled) return;
+      const selectedFolderName = response.data.folderName;
       setNewTaskFolderSelectionToken(response.data.selectionToken);
-      setNewTaskSelectedFolderName(response.data.folderName);
+      setNewTaskSelectedFolderName(selectedFolderName);
+      setNewCaseTitle((currentTitle) => currentTitle.trim() ? currentTitle : selectedFolderName);
     } finally {
       setSelectingTaskFolder(false);
     }
@@ -1584,6 +1846,24 @@ function App() {
     event.currentTarget.form?.requestSubmit();
   }
 
+  async function stopCurrentTurn() {
+    if (!bridge) return;
+    const run = activeAgentRunRef.current ?? activeAgentRun;
+    if (!run) {
+      if (!sendingMessage) {
+        setNotice("当前没有正在运行的任务。");
+        return;
+      }
+      pendingStopRef.current = true;
+      cancelRequestedRef.current = true;
+      setNotice("已收到停止请求，任务启动后会立即停止。");
+      return;
+    }
+    cancelRequestedRef.current = true;
+    const response = await bridge.cancelAgentTurn({ requestId: run.requestId });
+    setNotice(response.ok ? response.data.message : response.error);
+  }
+
   async function sendMessage() {
     if (sendingMessage) return;
     if (!bridge) {
@@ -1604,6 +1884,8 @@ function App() {
     messageDraftsRef.current.set(submittedContextKey, "");
     followLatestRef.current = true;
     setShowScrollToLatest(false);
+    cancelRequestedRef.current = false;
+    pendingStopRef.current = false;
     setSendingMessage(true);
     try {
       if (activeView === "chat") {
@@ -1681,8 +1963,13 @@ function App() {
       }
     } catch {
       restoreSubmittedMessage(submittedContextKey, submittedMessage);
-      setNotice("发送失败：桌面通信暂时中断，原消息已恢复，请稍后重试。");
+      if (cancelRequestedRef.current) {
+        setNotice("本次任务已停止，原消息已恢复到输入框；已经完成的只读记录继续保留。");
+      } else {
+        setNotice("发送失败：桌面通信暂时中断，原消息已恢复，请稍后重试。");
+      }
     } finally {
+      pendingStopRef.current = false;
       finishStreamingTurn();
       setSendingMessage(false);
     }
@@ -1700,6 +1987,7 @@ function App() {
     }
     const target = { projectId: project.id, caseId: currentCase.id, threadId: currentWorkThread.id, caseTitle: currentCase.title };
     const streamContextKey = `work:${target.threadId}`;
+    cancelRequestedRef.current = false;
     setSendingMessage(true);
     try {
       const content = [
@@ -1746,6 +2034,8 @@ function App() {
         setCodexAssistEnabled(false);
         setNotice(`已执行「${selectedCaseAction.label}」，结果已保存到当前工作文件夹。`);
       }
+    } catch {
+      setNotice(`「${selectedCaseAction.label}」执行失败，输入内容仍保留，请稍后重试。`);
     } finally {
       setStreamingTurn(null);
       setSendingMessage(false);
@@ -2268,7 +2558,7 @@ function App() {
         <div className="topbar-context">
           <span>{activeView === "chat" ? "Chat" : "Work"}</span>
           <strong>{activeView === "chat" ? readableHistoricalText(activeChat?.title ?? "日常对话", "历史对话（编码异常）") : project?.name ?? "未选择项目"}</strong>
-          {activeView !== "chat" ? <><span>/</span><em>{activeView === "case" ? currentCase?.title ?? "当前工作文件夹" : activeView === "config" ? "配置中心" : activeView === "standards" ? "规范中心" : "知识库"}</em></> : null}
+          {activeView !== "chat" ? <><span>/</span><em>{activeView === "case" ? currentCase?.title ?? "当前工作文件夹" : activeView === "config" ? "配置中心" : activeView === "standards" ? "规范中心" : activeView === "knowledge" ? "知识库" : "能力中心"}</em></> : null}
         </div>
         <div className="topbar-status">
           <ShieldCheck size={15} />
@@ -2314,6 +2604,7 @@ function App() {
                 <button className={activeView === "config" ? "active" : ""} onClick={() => navigateView("config")} title="打开当前项目配置中心"><Settings size={18} />配置中心</button>
                 <button className={activeView === "standards" ? "active" : ""} onClick={() => navigateView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
                 <button className={activeView === "knowledge" ? "active" : ""} onClick={() => navigateView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
+                <button className={activeView === "capabilities" ? "active" : ""} onClick={() => navigateView("capabilities")} title="管理 Plugins、Skills、MCP、提示词和记忆"><Plug size={18} />能力中心</button>
               </>
             )}
           </div>
@@ -2643,6 +2934,108 @@ function App() {
             onMarkConflict={markKnowledgeConflicted}
             onExpire={expireKnowledge}
           />
+        ) : activeView === "capabilities" ? (
+          <CapabilityCenter
+            capabilityFlags={{ plugins: true, mcp: true }}
+            skills={capabilitySkills}
+            prompts={capabilityPrompts}
+            memories={capabilityMemories}
+            plugins={{
+              items: capabilityPlugins,
+              onImport: importCapabilityPlugin,
+              onToggle: async (id, enabled) => {
+                if (!bridge) throw new Error("请在桌面应用中管理 Plugin。");
+                await applyCapabilityMutation(bridge.setCapabilityPluginEnabled({ pluginId: id, enabled }));
+              }
+            }}
+            mcp={{
+              connections: capabilityMcpConnections,
+              onAdd: addCapabilityMcp,
+              onToggle: async (id, enabled) => {
+                if (!bridge) throw new Error("请在桌面应用中管理 MCP。");
+                await applyCapabilityMutation(bridge.setCapabilityMcpEnabled({ connectionId: id, enabled }));
+              },
+              onToggleTool: async (connectionId, toolName, enabled, confirmReadOnly) => {
+                if (!bridge) throw new Error("请在桌面应用中管理 MCP 工具。");
+                await applyCapabilityMutation(bridge.setCapabilityMcpToolEnabled({ connectionId, toolName, enabled, confirmReadOnly }));
+              },
+              onTest: async (id) => {
+                if (!bridge) throw new Error("请在桌面应用中测试 MCP。");
+                await applyCapabilityMutation(bridge.testCapabilityMcp({ connectionId: id }));
+              },
+              onRemove: async (id) => {
+                if (!bridge) throw new Error("请在桌面应用中移除 MCP。");
+                await applyCapabilityMutation(bridge.removeCapabilityMcp({ connectionId: id }));
+              }
+            }}
+            contextLabel={`${project?.name ?? "个人工作台"} · ${capabilitySkills.length} 个 Skills · ${capabilityMcpConnections.length} 个 MCP 连接`}
+            availableMemoryScopes={[
+              "personal",
+              ...(capabilitySnapshot?.target.projectId ? ["project" as const] : []),
+              ...(capabilitySnapshot?.target.projectId && capabilitySnapshot.target.caseId ? ["case" as const] : [])
+            ]}
+            notice={notice || capabilitySnapshot?.promptMemoryHealth.warning || ""}
+            promptPreview={capabilitySnapshot ? {
+              title: "当前提示词组合预览",
+              content: capabilitySnapshot.compiledPrompt.systemPrompt,
+              estimatedTokens: capabilitySnapshot.compiledPrompt.tokenEstimate,
+              conflicts: capabilitySnapshot.compiledPrompt.conflicts.map((item) => item.reason)
+            } : undefined}
+            onBack={() => navigateView("case")}
+            onDirtyChange={setCenterDraftDirty}
+            onImportSkill={importCapabilitySkill}
+            onToggleSkill={async (id, enabled) => {
+              if (!bridge) throw new Error("请在桌面应用中管理 Skill。");
+              await applyCapabilityMutation(bridge.setCapabilitySkillEnabled({ skillId: id, enabled }));
+            }}
+            onSavePrompt={async (id, content) => {
+              if (!bridge) throw new Error("请在桌面应用中保存提示词。");
+              const current = capabilityPrompts.find((item) => item.id === id);
+              const scope = capabilityPromptScope(id);
+              const existing = capabilitySnapshot?.promptProfiles.some((item) => JSON.stringify(item.scope) === JSON.stringify(scope));
+              await applyCapabilityMutation(bridge.saveCapabilityPrompt({ scope, content, enabled: existing ? current?.enabled ?? true : true }));
+            }}
+            onTogglePrompt={async (id, enabled) => {
+              if (!bridge) throw new Error("请在桌面应用中管理提示词。");
+              await applyCapabilityMutation(bridge.setCapabilityPromptEnabled({ scope: capabilityPromptScope(id), enabled }));
+            }}
+            onSaveMemory={async (id, content) => {
+              if (!bridge) throw new Error("请在桌面应用中保存记忆。");
+              await applyCapabilityMutation(bridge.updateCapabilityMemory({ memoryId: id, expectedScope: capabilityMemoryScope(id), content }));
+            }}
+            onCreateMemory={async (draft) => {
+              if (!bridge) throw new Error("请在桌面应用中新增记忆。");
+              await applyCapabilityMutation(bridge.createCapabilityMemory({
+                scope: capabilityNewMemoryScope(draft.scope),
+                kind: draft.scope === "personal" ? "preference" : draft.kind,
+                content: draft.content,
+                topicKey: draft.topicKey.trim() || null
+              }));
+            }}
+            onToggleMemory={async (id, enabled) => {
+              if (enabled) throw new Error("已撤回的记忆不能直接重新启用，请重新创建候选并确认。");
+              if (!bridge) throw new Error("请在桌面应用中管理记忆。");
+              await applyCapabilityMutation(bridge.revokeCapabilityMemory({ memoryId: id, expectedScope: capabilityMemoryScope(id) }));
+            }}
+            onConfirmMemory={async (id) => {
+              if (!bridge) throw new Error("请在桌面应用中确认记忆。");
+              await applyCapabilityMutation(bridge.reviewCapabilityMemory({ memoryId: id, expectedScope: capabilityMemoryScope(id), decision: "confirm" }));
+            }}
+            onRejectMemory={async (id) => {
+              if (!bridge) throw new Error("请在桌面应用中拒绝记忆。");
+              await applyCapabilityMutation(bridge.reviewCapabilityMemory({ memoryId: id, expectedScope: capabilityMemoryScope(id), decision: "reject" }));
+            }}
+            onDeleteMemory={async (id) => {
+              if (!bridge) throw new Error("请在桌面应用中移除记忆。");
+              const memory = capabilitySnapshot?.memories.find((item) => item.id === id);
+              if (!memory) throw new Error("记忆已不存在。");
+              if (memory.status === "candidate") {
+                await applyCapabilityMutation(bridge.reviewCapabilityMemory({ memoryId: id, expectedScope: memory.scope, decision: "reject" }));
+              } else {
+                await applyCapabilityMutation(bridge.revokeCapabilityMemory({ memoryId: id, expectedScope: memory.scope }));
+              }
+            }}
+          />
         ) : activeView === "chat" ? (
           <section className="conversation-panel daily-chat-panel">
             <div className="case-heading">
@@ -2681,7 +3074,13 @@ function App() {
                 <div className="composer-tools" />
                 <div className="composer-actions composer-model-actions">
                   <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
-                  <button type="submit" aria-label="发送日常对话" className="send-button" disabled={sendingMessage}>{sendingMessage ? <Bot size={18} /> : <Send size={18} />}</button>
+                  <button
+                    type={sendingMessage ? "button" : "submit"}
+                    aria-label={sendingMessage ? "停止当前回复" : "发送日常对话"}
+                    className="send-button"
+                    onClick={sendingMessage ? () => void stopCurrentTurn() : undefined}
+                    title={sendingMessage ? "停止当前回复" : "发送"}
+                  >{sendingMessage ? <Square size={16} fill="currentColor" /> : <Send size={18} />}</button>
                 </div>
               </div>
             </form>
@@ -2789,7 +3188,13 @@ function App() {
               </div>
               <div className="composer-actions composer-model-actions">
                 <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
-                <button type="submit" aria-label="保存到当前案件" className="send-button" disabled={sendingMessage}>{sendingMessage ? <Bot size={18} /> : <Send size={18} />}</button>
+                <button
+                  type={sendingMessage ? "button" : "submit"}
+                  aria-label={sendingMessage ? "停止当前任务" : "保存到当前案件"}
+                  className="send-button"
+                  onClick={sendingMessage ? () => void stopCurrentTurn() : undefined}
+                  title={sendingMessage ? "停止当前任务" : "发送"}
+                >{sendingMessage ? <Square size={16} fill="currentColor" /> : <Send size={18} />}</button>
               </div>
             </div>
           </form>

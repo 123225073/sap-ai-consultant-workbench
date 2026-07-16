@@ -1,5 +1,7 @@
 # 新开 Codex 开发线程提示词
 
+> **历史资料：** 这是项目初建时的提示词，第一阶段范围和“尚未开发”表述已经过期。2026-07-15 之后的新任务应先读取 `CONTEXT.md`、`docs/architecture/INDEPENDENT_AGENT_RUNTIME.md`、ADR-0002 和最新 phase spec/plan，不要按本文重新创建应用骨架。
+
 用途：在 `D:\9005_IDEauthorized\Codex Project\sap-ai-consultant-workbench` 目录下新开 Codex 线程时，作为第一条消息使用。
 
 ```text

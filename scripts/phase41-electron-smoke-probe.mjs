@@ -21,6 +21,9 @@ const probeEnv = {
 };
 let first = null;
 let second = null;
+let pageSession = null;
+let recoveredSession = null;
+let browserSession = null;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -75,7 +78,9 @@ async function openCdp(webSocketDebuggerUrl) {
       return response.result.result.value;
     },
     fire: (method, params = {}) => ws.send(JSON.stringify({ id: ++commandId, method, params })),
-    close: () => ws.close()
+    close: () => {
+      if (ws.readyState === WebSocket.OPEN) ws.close();
+    }
   };
 }
 
@@ -110,7 +115,12 @@ try {
   assert(first.exitCode === null, "Electron 在首屏加载后意外退出。");
   process.stdout.write("electronStaticBuildLoads=ok\n");
 
-  const pageSession = await openCdp(page.webSocketDebuggerUrl);
+  pageSession = await openCdp(page.webSocketDebuggerUrl);
+  await waitFor(
+    () => pageSession.evaluate("Boolean(document.querySelector('#root')?.childElementCount && document.body.innerText.includes('Work'))"),
+    15_000,
+    "Electron React 首屏"
+  );
   const uiResult = JSON.parse(await pageSession.evaluate(`(async () => {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const root = document.querySelector('#root');
@@ -209,6 +219,7 @@ try {
   process.stdout.write("secondInstanceFocusBoundary=ok\n");
 
   pageSession.fire("Page.crash");
+  pageSession = null;
   const recoveredPage = await waitFor(async () => {
     try {
       const text = await readFile(lifecyclePath, "utf8");
@@ -220,8 +231,9 @@ try {
       return null;
     }
   }, 10_000, "renderer 一次受控恢复");
-  const recoveredSession = await openCdp(recoveredPage.webSocketDebuggerUrl);
+  recoveredSession = await openCdp(recoveredPage.webSocketDebuggerUrl);
   recoveredSession.fire("Page.crash");
+  recoveredSession = null;
   await waitFor(async () => {
     try {
       const text = await readFile(lifecyclePath, "utf8");
@@ -233,8 +245,9 @@ try {
   assert(first.exitCode === null, "renderer 二次崩溃导致主进程自动重启或退出。");
   process.stdout.write("rendererRecoveryBoundedToOnce=ok\n");
 
-  const browserSession = await openCdp(`ws://127.0.0.1:${activePort.port}${activePort.browserPath}`);
+  browserSession = await openCdp(`ws://127.0.0.1:${activePort.port}${activePort.browserPath}`);
   browserSession.fire("Browser.close");
+  browserSession = null;
   const firstExit = await waitForExit(first, 8_000);
   assert(firstExit !== null, "Electron 没有在正常关闭后退出。");
   const finalLog = await readFile(lifecyclePath, "utf8");
@@ -242,6 +255,9 @@ try {
   process.stdout.write("normalCloseLifecycleLogged=ok\n");
   process.stdout.write("phase41-electron-smoke-probe=ok\n");
 } finally {
+  try { pageSession?.close(); } catch { /* target already closed */ }
+  try { recoveredSession?.close(); } catch { /* target already closed */ }
+  try { browserSession?.close(); } catch { /* browser already closed */ }
   if (second && second.exitCode === null) {
     second.kill();
     await waitForExit(second, 3_000);

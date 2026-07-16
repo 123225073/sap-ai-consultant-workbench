@@ -67,6 +67,7 @@ export interface SecureModelJsonRequestOptions {
   method?: "GET" | "POST";
   headers?: Record<string, string>;
   body?: string;
+  signal?: AbortSignal;
 }
 
 export type SecureModelJsonRequester = (
@@ -112,6 +113,7 @@ export function createSecureModelJsonRequester(
   requestFactory: ModelHttpsRequestFactory = httpsRequest
 ): SecureModelJsonRequester {
   return async (url, apiLabel, options, timeoutMs = 15000) => {
+  if (options.signal?.aborted) throw cancelledModelRequestError(apiLabel);
   const parsed = new URL(url);
   const addresses = await resolvePublicModelAddresses(parsed.origin, resolver);
   const selected = addresses[0];
@@ -130,6 +132,7 @@ export function createSecureModelJsonRequester(
       method: options.method ?? "GET",
       headers: options.headers,
       servername: parsed.hostname,
+      signal: options.signal,
       lookup: ((_hostname: string, lookupOptions: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
         const family = selected.family ?? isIP(selected.address);
         if (lookupOptions?.all) {
@@ -179,6 +182,11 @@ export function createSecureModelJsonRequester(
     });
     request.on("error", (caught) => {
       const message = caught instanceof Error ? caught.message : "";
+      const code = caught && typeof caught === "object" && "code" in caught ? String((caught as NodeJS.ErrnoException).code ?? "") : "";
+      if (code === "ABORT_ERR" || (caught instanceof Error && caught.name === "AbortError")) {
+        finishReject(cancelledModelRequestError(apiLabel));
+        return;
+      }
       finishReject(message.startsWith(apiLabel) || message.startsWith("HTTP ")
         ? new Error(message)
         : new Error(`${apiLabel} 网络连接失败。`));
@@ -196,6 +204,7 @@ export function createSecureModelStreamRequester(
   requestFactory: ModelHttpsRequestFactory = httpsRequest
 ): SecureModelStreamRequester {
   return async (url, apiLabel, options, onChunk, timeoutMs = 120000) => {
+    if (options.signal?.aborted) throw cancelledModelRequestError(apiLabel);
     const parsed = new URL(url);
     const addresses = await resolvePublicModelAddresses(parsed.origin, resolver);
     const selected = addresses[0];
@@ -215,6 +224,7 @@ export function createSecureModelStreamRequester(
         method: options.method ?? "GET",
         headers: options.headers,
         servername: parsed.hostname,
+        signal: options.signal,
         lookup: ((_hostname: string, lookupOptions: { all?: boolean } | undefined, callback: (...args: unknown[]) => void) => {
           const family = selected.family ?? isIP(selected.address);
           if (lookupOptions?.all) {
@@ -264,7 +274,9 @@ export function createSecureModelStreamRequester(
       request.on("error", (caught) => {
         const message = caught instanceof Error ? caught.message : "";
         const code = caught && typeof caught === "object" && "code" in caught ? String((caught as NodeJS.ErrnoException).code ?? "") : "";
-        const safeNetworkMessage = code === "ECONNRESET"
+        const safeNetworkMessage = code === "ABORT_ERR" || (caught instanceof Error && caught.name === "AbortError")
+          ? cancelledModelRequestError(apiLabel).message
+          : code === "ECONNRESET"
           ? `${apiLabel} 流式连接重置。`
           : code === "ETIMEDOUT"
             ? `${apiLabel} 流式请求超时。`
@@ -278,3 +290,9 @@ export function createSecureModelStreamRequester(
 }
 
 export const secureModelStreamRequest = createSecureModelStreamRequester();
+
+function cancelledModelRequestError(apiLabel: string): Error {
+  const error = new Error(`${apiLabel} 已取消。`);
+  error.name = "AbortError";
+  return error;
+}

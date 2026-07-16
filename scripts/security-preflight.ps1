@@ -126,6 +126,25 @@ $allowedIpc = @(
   "workbench:update-conversation-thread-status",
   "workbench:create-daily-chat-thread",
   "workbench:switch-daily-chat-thread",
+  "workbench:agent-runtime-health",
+  "workbench:agent-runtime-read-thread",
+  "workbench:agent-runtime-cancel-turn",
+  "workbench:capability-center-snapshot",
+  "workbench:capability-plugin-import",
+  "workbench:capability-plugin-enabled",
+  "workbench:capability-skill-import",
+  "workbench:capability-skill-enabled",
+  "workbench:capability-prompt-save",
+  "workbench:capability-prompt-enabled",
+  "workbench:capability-memory-create",
+  "workbench:capability-memory-update",
+  "workbench:capability-memory-review",
+  "workbench:capability-memory-revoke",
+  "workbench:capability-mcp-save",
+  "workbench:capability-mcp-test",
+  "workbench:capability-mcp-enabled",
+  "workbench:capability-mcp-tool-enabled",
+  "workbench:capability-mcp-remove",
   "workbench:append-daily-chat-message",
   "workbench:append-daily-chat-message-stream",
   "workbench:switch-project",
@@ -1826,12 +1845,31 @@ if ($LASTEXITCODE -eq 0) {
   throw "Safe model draft service boundary scan failed."
 }
 
-$unsafeModelRequestHits = rg -n -- "tools\s*:|functions\s*:|web_search|response_format" apps/desktop/src/main/modelProviderConnector.ts
+$unsafeModelRequestHits = rg -n -- "functions\s*:|web_search|response_format" apps/desktop/src/main/modelProviderConnector.ts
 if ($LASTEXITCODE -eq 0) {
   $unsafeModelRequestHits | ForEach-Object { Write-Host $_ }
-  throw "Safe model draft request must not enable tools, functions, web search, or response-format expansion."
+  throw "Safe model draft request must not enable legacy functions, web search, or response-format expansion."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "Safe model draft request scan failed."
+}
+
+$agentToolLoopMarkers = @(
+  @{ Pattern = "MAX_TOOL_ROUNDS = 8"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "MAX_TOOL_CALLS_PER_ROUND = 8"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "argumentsError"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "session.authorize"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "validateToolArguments"; Path = "apps/desktop/src/main/agentToolService.ts" },
+  @{ Pattern = "new PolicyEngine"; Path = "apps/desktop/src/main/agentToolService.ts" },
+  @{ Pattern = "tool-decision"; Path = "apps/desktop/src/main/modelProviderConnector.ts" },
+  @{ Pattern = "phase55-agent-tool-loop-probe"; Path = "scripts/phase55-agent-tool-loop-probe.mjs" }
+)
+foreach ($marker in $agentToolLoopMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK agent tool loop marker: $($marker.Pattern)"
+  } else {
+    throw "Agent tool loop safety marker is missing: $($marker.Pattern)"
+  }
 }
 
 $modelContextHits = rg -n -- "CaseMessage|conversation|caseItem|readCaseTree|caseFiles|activeCase|workspaceStore|readFile|readdir|fs\." apps/desktop/src/main/modelProviderConnector.ts
@@ -1862,6 +1900,10 @@ if ($LASTEXITCODE -eq 0) {
     }
     if ($line -match 'messages:\s*promptMessages') {
       Write-Host "OK prebuilt bounded streaming messages: $line"
+      continue
+    }
+    if ($line -match 'messages:\s*Array<Record<string, unknown>>') {
+      Write-Host "OK bounded provider tool-loop message buffer: $line"
       continue
     }
     if (($line -match 'messages:\s*\[') -and $hasDailyChatMarkers) {
@@ -1933,6 +1975,14 @@ Write-Section "Authorization boundary scan"
 $authHits = rg -n -- "Authorization|Bearer|apiKey" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
   foreach ($line in $authHits) {
+    if (($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\]pluginPackageService\.ts") -and ($line -match "const OBVIOUS_SECRET")) {
+      Write-Host "OK plugin import secret-rejection marker: $line"
+      continue
+    }
+    if (($line -match "apps[/\\]desktop[/\\]src[/\\]main[/\\]agentEventStore\.ts") -and ($line -match "const SENSITIVE_FIELD_NAME")) {
+      Write-Host "OK agent event redaction marker: $line"
+      continue
+    }
     if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector|adtReadonlyConnector)\.ts") {
       $line | ForEach-Object { Write-Host $_ }
       throw "Authorization/API key material outside approved main-process files."
@@ -1948,7 +1998,9 @@ $deleteHits = rg -n --glob "!dist/**" --glob "!node_modules/**" -- "\brm\(|unlin
 if ($LASTEXITCODE -eq 0) {
   $unexpectedDeleteHits = @($deleteHits | Where-Object {
     $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]secureSecretStore\.ts:\d+:\s+await fs\.unlink\(blobPath\);" -and
-    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]workspaceStore\.ts:\d+:.*fs\.rm\("
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\]workspaceStore\.ts:\d+:.*fs\.rm\(" -and
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](agentEventStore|promptMemoryService)\.ts:\d+:.*fs\.rm\((this\.)?(backupPath|tempPath)" -and
+    $_ -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](skillPackageService|pluginPackageService)\.ts:\d+:.*fs\.rm\((pending\.)?(stagingPath|targetPath|quarantine|backupPath|tempPath|this\.stagingRoot)"
   })
   if ($unexpectedDeleteHits.Count -gt 0) {
     $unexpectedDeleteHits | ForEach-Object { Write-Host $_ }
@@ -1970,6 +2022,14 @@ if ($LASTEXITCODE -eq 0) {
   foreach ($marker in @("assertInsideWorkspace", ".txn.tmp", ".txn.bak", 'status: "preparing"', 'journal.status = "committed"', "isSymbolicLink()", "snapshotPath")) {
     if (-not $workspaceTransactionBlock.Contains($marker)) {
       throw "Transaction-recovery cleanup boundary is missing marker: $marker"
+    }
+  }
+  foreach ($packageService in @("apps/desktop/src/main/skillPackageService.ts", "apps/desktop/src/main/pluginPackageService.ts")) {
+    $packageSource = Get-Content -Raw -Encoding UTF8 $packageService
+    foreach ($marker in @("assertContained", "this.stagingRoot", "installedPackagePath", "resolveStoredRoot")) {
+      if (-not $packageSource.Contains($marker)) {
+        throw "Capability package cleanup boundary is missing marker $marker in $packageService"
+      }
     }
   }
   if ($workspaceTransactionBlock -match "unlink|trashItem|shell\.trashItem|delete.*file|remove.*file") {

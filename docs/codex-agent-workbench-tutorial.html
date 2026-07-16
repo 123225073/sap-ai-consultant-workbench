@@ -1,0 +1,770 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="一份从产品到工程的 Codex 类 Agent 工作台拆解教程。">
+  <title>拆开 Codex · Agent 工作台从零到一</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=IBM+Plex+Sans+SC:wght@400;500;600;700&family=Noto+Serif+SC:wght@600;700;900&display=swap');
+
+    :root {
+      --ink: #eaf1f8;
+      --muted: #91a3b9;
+      --dim: #52647b;
+      --canvas: #07111e;
+      --surface: #0d1b2d;
+      --surface-2: #10233a;
+      --line: rgba(189, 215, 239, .14);
+      --green: #a6ffbf;
+      --mint: #54e5b5;
+      --cyan: #52c9ff;
+      --amber: #ffcd70;
+      --coral: #ff8977;
+      --violet: #b8a7ff;
+      --serif: 'Noto Serif SC', 'Songti SC', Georgia, serif;
+      --sans: 'IBM Plex Sans SC', 'Microsoft YaHei', sans-serif;
+      --mono: 'DM Mono', Consolas, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 18% 0%, rgba(53, 116, 168, .18), transparent 30rem),
+        radial-gradient(circle at 87% 22%, rgba(26, 162, 125, .12), transparent 26rem),
+        var(--canvas);
+      font-family: var(--sans);
+      line-height: 1.7;
+      overflow-x: hidden;
+    }
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      opacity: .18;
+      pointer-events: none;
+      background-image: linear-gradient(rgba(255,255,255,.045) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,.045) 1px, transparent 1px);
+      background-size: 44px 44px;
+      mask-image: linear-gradient(to bottom, black, transparent 65%);
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; }
+    .shell { max-width: 1220px; margin: 0 auto; padding: 0 28px; }
+    .eyebrow {
+      display: inline-flex;
+      gap: 9px;
+      align-items: center;
+      color: var(--mint);
+      font: 500 12px/1 var(--mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .eyebrow::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 18px currentColor; }
+    .section { position: relative; padding: 118px 0; }
+    .section-rule { width: 100%; height: 1px; background: linear-gradient(90deg, transparent, var(--line), transparent); }
+    .section-title { max-width: 800px; margin: 14px 0 20px; font: 900 clamp(33px, 5vw, 62px)/1.12 var(--serif); letter-spacing: -.05em; }
+    .section-intro { max-width: 760px; color: var(--muted); font-size: 17px; }
+    .pill {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 10px;
+      color: var(--muted);
+      font: 12px/1 var(--mono);
+      white-space: nowrap;
+    }
+    .fact { color: var(--mint); }
+    .infer { color: var(--amber); }
+    .progress {
+      position: fixed;
+      z-index: 20;
+      top: 0;
+      left: 0;
+      height: 3px;
+      width: var(--progress, 0%);
+      background: linear-gradient(90deg, var(--mint), var(--cyan), var(--violet));
+      box-shadow: 0 0 15px var(--cyan);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      height: 70px;
+      display: flex;
+      align-items: center;
+      backdrop-filter: blur(18px);
+      background: rgba(7, 17, 30, .76);
+      border-bottom: 1px solid rgba(189,215,239,.09);
+    }
+    .topbar .shell { display: flex; width: 100%; align-items: center; justify-content: space-between; }
+    .brand { display: flex; gap: 11px; align-items: center; font: 500 14px/1 var(--mono); letter-spacing: -.04em; }
+    .brand-mark { width: 27px; height: 27px; border: 1px solid var(--mint); display: grid; place-items: center; color: var(--mint); transform: rotate(45deg); }
+    .brand-mark span { transform: rotate(-45deg); font-size: 12px; }
+    .nav { display: flex; gap: 20px; color: var(--muted); font-size: 13px; }
+    .nav a:hover { color: var(--mint); }
+
+    .hero { min-height: 755px; display: grid; align-items: center; padding: 74px 0 60px; }
+    .hero-grid { display: grid; grid-template-columns: 1.04fr .96fr; gap: 56px; align-items: center; }
+    .hero h1 { max-width: 760px; margin: 18px 0 24px; font: 900 clamp(47px, 6.2vw, 83px)/1.04 var(--serif); letter-spacing: -.075em; }
+    .hero h1 em { color: var(--mint); font-style: normal; text-shadow: 0 0 42px rgba(166,255,191,.22); }
+    .hero-copy { max-width: 620px; color: var(--muted); font-size: 18px; }
+    .hero-actions { display: flex; gap: 12px; margin-top: 32px; flex-wrap: wrap; }
+    .button {
+      position: relative;
+      border: 1px solid var(--line);
+      padding: 12px 18px;
+      color: var(--ink);
+      background: rgba(255,255,255,.035);
+      cursor: pointer;
+      transition: .25s ease;
+      font-size: 14px;
+    }
+    .button:hover { transform: translateY(-2px); border-color: var(--mint); box-shadow: 0 11px 30px rgba(0,0,0,.22); }
+    .button.primary { color: #032518; background: var(--mint); border-color: var(--mint); font-weight: 700; }
+    .button.primary:hover { box-shadow: 0 10px 32px rgba(84,229,181,.25); }
+    .hero-note { display: flex; align-items: center; gap: 12px; margin-top: 36px; color: var(--dim); font: 12px/1.5 var(--mono); }
+    .hero-note .line { height: 1px; width: 46px; background: var(--line); }
+
+    .orbital {
+      position: relative;
+      min-height: 490px;
+      display: grid;
+      place-items: center;
+      isolation: isolate;
+    }
+    .orbital::before, .orbital::after { content: ''; position: absolute; border-radius: 50%; border: 1px solid rgba(166,255,191,.22); }
+    .orbital::before { width: 405px; height: 405px; animation: spin 22s linear infinite; }
+    .orbital::after { width: 300px; height: 300px; border-color: rgba(82,201,255,.28); animation: spin 13s linear infinite reverse; }
+    .orbit-dot { position: absolute; width: 10px; height: 10px; border-radius: 50%; box-shadow: 0 0 19px currentColor; }
+    .dot-a { color: var(--mint); background: currentColor; transform: translate(150px,-147px); animation: bob 3s ease-in-out infinite; }
+    .dot-b { color: var(--amber); background: currentColor; transform: translate(-195px,82px); animation: bob 4s ease-in-out .6s infinite; }
+    .dot-c { color: var(--violet); background: currentColor; transform: translate(88px,190px); animation: bob 3.5s ease-in-out 1s infinite; }
+    .core {
+      width: 204px;
+      height: 204px;
+      z-index: 1;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      border: 1px solid rgba(166,255,191,.55);
+      clip-path: polygon(50% 0, 100% 25%, 100% 75%, 50% 100%, 0 75%, 0 25%);
+      background: linear-gradient(140deg, rgba(84,229,181,.2), rgba(82,201,255,.04));
+      box-shadow: inset 0 0 50px rgba(84,229,181,.14), 0 0 70px rgba(84,229,181,.13);
+    }
+    .core small { display: block; color: var(--mint); font: 11px/1 var(--mono); letter-spacing: .14em; }
+    .core strong { display: block; margin-top: 9px; font: 700 29px/1 var(--serif); }
+    .float-card {
+      position: absolute;
+      z-index: 2;
+      width: 167px;
+      padding: 12px 13px;
+      border: 1px solid var(--line);
+      background: rgba(12,29,48,.82);
+      backdrop-filter: blur(10px);
+      box-shadow: 0 18px 35px rgba(0,0,0,.16);
+      font: 11px/1.45 var(--mono);
+      animation: drift 6s ease-in-out infinite;
+    }
+    .float-card b { display: block; color: var(--ink); font: 600 12px/1.4 var(--sans); }
+    .float-card span { color: var(--muted); }
+    .float-card.one { top: 34px; right: 0; border-left-color: var(--cyan); }
+    .float-card.two { left: 0; bottom: 49px; border-left-color: var(--amber); animation-delay: -2.5s; }
+    .float-card.three { right: 18px; bottom: 9px; border-left-color: var(--mint); animation-delay: -4s; }
+
+    .truth-grid { display: grid; grid-template-columns: .88fr 1.12fr; gap: 25px; margin-top: 47px; }
+    .truth-main {
+      padding: 34px;
+      border: 1px solid rgba(166,255,191,.3);
+      background: linear-gradient(135deg, rgba(25, 91, 78, .24), rgba(13,27,45,.45));
+    }
+    .truth-main .big { margin: 13px 0; font: 700 clamp(29px,3vw,42px)/1.23 var(--serif); letter-spacing: -.045em; }
+    .truth-main p { color: var(--muted); margin: 0; }
+    .truth-list { display: grid; gap: 1px; background: var(--line); border: 1px solid var(--line); }
+    .truth-item { background: var(--surface); padding: 23px 25px; display: grid; grid-template-columns: 116px 1fr; gap: 19px; }
+    .truth-item .label { color: var(--cyan); font: 12px/1.5 var(--mono); }
+    .truth-item p { margin: 0; color: var(--muted); font-size: 14px; }
+    .truth-item strong { color: var(--ink); }
+    .truth-item .badge { margin-left: 6px; vertical-align: 1px; }
+
+    .layer-map { margin-top: 50px; display: grid; grid-template-columns: 1fr 390px; gap: 34px; align-items: center; }
+    .stack { display: grid; gap: 8px; }
+    .layer {
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 94px 1fr auto;
+      align-items: center;
+      gap: 17px;
+      min-height: 69px;
+      padding: 15px 20px;
+      border: 1px solid var(--line);
+      background: rgba(13,27,45,.72);
+      transition: .28s ease;
+    }
+    .layer::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
+    .layer:hover { transform: translateX(8px); border-color: var(--accent); background: rgba(18,39,62,.92); }
+    .layer .layer-id { color: var(--accent); font: 12px/1 var(--mono); }
+    .layer b { font-size: 16px; }
+    .layer span { color: var(--muted); font-size: 13px; }
+    .layer small { color: var(--dim); font: 11px/1.5 var(--mono); text-align: right; }
+    .layer.ui { --accent: var(--cyan); }
+    .layer.control { --accent: var(--mint); }
+    .layer.model { --accent: var(--violet); }
+    .layer.execution { --accent: var(--amber); }
+    .layer.data { --accent: var(--coral); }
+    .map-note { padding: 29px; border: 1px dashed rgba(189,215,239,.28); color: var(--muted); }
+    .map-note h3 { margin: 0 0 12px; color: var(--ink); font: 700 21px/1.3 var(--serif); }
+    .map-note p { margin: 0 0 16px; font-size: 14px; }
+    .map-note .mini-flow { display: flex; gap: 7px; align-items: center; color: var(--mint); font: 11px/1 var(--mono); }
+
+    .loop-board { position: relative; margin-top: 48px; padding: 28px; border: 1px solid var(--line); background: linear-gradient(140deg, rgba(13,27,45,.85), rgba(7,17,30,.95)); overflow: hidden; }
+    .loop-board::after { content: ''; position: absolute; width: 440px; height: 440px; border: 1px solid rgba(82,201,255,.11); border-radius: 50%; right: -157px; top: -236px; }
+    .loop-top { display: flex; justify-content: space-between; gap: 25px; align-items: start; position: relative; z-index: 1; }
+    .loop-top p { max-width: 690px; margin: 5px 0 0; color: var(--muted); font-size: 14px; }
+    .loop-steps { position: relative; z-index: 1; display: grid; grid-template-columns: repeat(6, 1fr); margin: 38px 0 23px; }
+    .loop-step { position: relative; min-height: 122px; padding: 0 15px 0 0; cursor: pointer; }
+    .loop-step:not(:last-child)::after { content: '→'; position: absolute; right: 1px; top: 23px; color: var(--dim); font: 20px/1 var(--mono); }
+    .step-dot { display: grid; place-items: center; width: 47px; height: 47px; margin-bottom: 12px; border-radius: 50%; border: 1px solid var(--line); background: var(--surface); color: var(--dim); font: 12px/1 var(--mono); transition: .25s ease; }
+    .loop-step b { display: block; font-size: 14px; }
+    .loop-step span { display: block; max-width: 130px; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .loop-step.active .step-dot { color: #051b15; background: var(--mint); border-color: var(--mint); box-shadow: 0 0 24px rgba(84,229,181,.38); }
+    .loop-step.active b { color: var(--mint); }
+    .loop-console { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 1.3fr; gap: 19px; padding-top: 23px; border-top: 1px solid var(--line); }
+    .console-explain { color: var(--muted); font-size: 14px; }
+    .console-explain strong { color: var(--ink); }
+    .console-log { min-height: 58px; padding: 13px 15px; border-left: 2px solid var(--mint); color: #b7f6c8; background: rgba(0,0,0,.22); font: 12px/1.55 var(--mono); }
+    .loop-caption { margin: 14px 0 0; color: var(--dim); font-size: 12px; }
+
+    .route-grid { display: grid; grid-template-columns: 1.08fr .92fr; gap: 27px; margin-top: 48px; }
+    .route-table { border: 1px solid var(--line); }
+    .route-row { display: grid; grid-template-columns: 95px 1fr; gap: 18px; padding: 20px; border-bottom: 1px solid var(--line); transition: .2s; }
+    .route-row:last-child { border-bottom: 0; }
+    .route-row:hover { background: rgba(82,201,255,.055); }
+    .route-row .num { color: var(--cyan); font: 12px/1.7 var(--mono); }
+    .route-row h3 { margin: 0 0 5px; font: 700 17px/1.3 var(--serif); }
+    .route-row p { margin: 0; color: var(--muted); font-size: 14px; }
+    .route-visual { position: relative; padding: 26px; min-height: 350px; border: 1px solid rgba(82,201,255,.24); background: linear-gradient(145deg, rgba(13,39,58,.72), rgba(13,27,45,.5)); }
+    .route-visual h3 { margin: 0; font: 700 21px/1.35 var(--serif); }
+    .route-visual > p { color: var(--muted); font-size: 13px; }
+    .router {
+      display: grid; place-items: center; width: 130px; height: 130px; margin: 44px auto 24px;
+      border: 1px solid var(--cyan); border-radius: 50%; color: var(--cyan); background: rgba(82,201,255,.08); box-shadow: inset 0 0 35px rgba(82,201,255,.1);
+      text-align: center; font: 500 14px/1.35 var(--mono);
+    }
+    .route-node { position: absolute; padding: 7px 9px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font: 11px/1 var(--mono); }
+    .route-node::after { content: ''; position: absolute; width: 34px; height: 1px; background: var(--line); top: 50%; }
+    .route-node.a { top: 140px; left: 15px; } .route-node.a::after { left: 100%; }
+    .route-node.b { top: 140px; right: 15px; } .route-node.b::after { right: 100%; }
+    .route-node.c { bottom: 24px; left: 49px; } .route-node.c::after { width: 1px; height: 30px; left: 50%; bottom: 100%; top: auto; }
+    .route-node.d { bottom: 24px; right: 46px; } .route-node.d::after { width: 1px; height: 30px; left: 50%; bottom: 100%; top: auto; }
+    .route-takeaway { margin-top: 21px; color: var(--mint); font: 13px/1.6 var(--mono); }
+
+    .concept-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 45px; }
+    .concept-card { min-height: 315px; padding: 22px; border: 1px solid var(--line); background: rgba(13,27,45,.66); transition: transform .25s ease, border-color .25s ease; }
+    .concept-card:hover { transform: translateY(-7px); border-color: var(--accent); }
+    .concept-card .icon { display: grid; place-items: center; width: 44px; height: 44px; margin-bottom: 20px; border: 1px solid var(--accent); color: var(--accent); font: 18px/1 var(--mono); }
+    .concept-card h3 { margin: 0 0 7px; font: 700 24px/1.2 var(--serif); }
+    .concept-card .tag { color: var(--accent); font: 11px/1 var(--mono); }
+    .concept-card p { color: var(--muted); font-size: 13px; }
+    .concept-card .does { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--ink); font-size: 12px; line-height: 1.55; }
+    .skill { --accent: var(--mint); } .mcp { --accent: var(--cyan); } .plugin { --accent: var(--violet); } .hook { --accent: var(--amber); }
+    .compare-strip { display: grid; grid-template-columns: 172px 1fr 1fr; gap: 0; margin-top: 28px; border: 1px solid var(--line); font-size: 13px; }
+    .compare-strip > div { padding: 16px; border-right: 1px solid var(--line); }
+    .compare-strip > div:last-child { border-right: 0; }
+    .compare-strip .head { color: var(--dim); font: 11px/1.4 var(--mono); }
+    .compare-strip .yes { color: var(--mint); } .compare-strip .no { color: var(--muted); }
+
+    .memory-stage { position: relative; display: grid; grid-template-columns: 1.08fr .92fr; gap: 36px; margin-top: 48px; align-items: center; }
+    .memory-shelves { display: grid; gap: 8px; }
+    .memory-shelf { display: grid; grid-template-columns: 49px 150px 1fr auto; gap: 13px; align-items: center; padding: 17px; border: 1px solid var(--line); background: rgba(13,27,45,.6); cursor: pointer; transition: .23s ease; }
+    .memory-shelf:hover, .memory-shelf.active { background: rgba(29,67,76,.43); border-color: var(--mint); transform: translateX(7px); }
+    .memory-shelf .order { color: var(--mint); font: 11px/1 var(--mono); }
+    .memory-shelf b { font-size: 15px; }
+    .memory-shelf span { color: var(--muted); font-size: 13px; }
+    .memory-shelf small { color: var(--amber); font: 10px/1.2 var(--mono); text-align: right; }
+    .memory-panel { min-height: 346px; padding: 29px; border: 1px solid rgba(166,255,191,.25); background: radial-gradient(circle at 100% 0, rgba(84,229,181,.13), transparent 46%), var(--surface); }
+    .memory-panel .panel-kicker { color: var(--mint); font: 11px/1 var(--mono); letter-spacing: .08em; }
+    .memory-panel h3 { margin: 13px 0 9px; font: 700 29px/1.2 var(--serif); }
+    .memory-panel p { color: var(--muted); font-size: 14px; }
+    .memory-panel .rule { height: 1px; background: var(--line); margin: 19px 0; }
+    .memory-panel .answer { color: #d2fce0; font: 12px/1.65 var(--mono); }
+    .memory-warning { margin-top: 20px; padding: 16px 18px; border-left: 2px solid var(--coral); background: rgba(255,137,119,.06); color: #e8b0a6; font-size: 13px; }
+
+    .thread-rail { margin-top: 54px; padding: 31px; border: 1px solid var(--line); background: linear-gradient(120deg, rgba(13,27,45,.88), rgba(6,17,30,.8)); }
+    .thread-rail h3 { margin: 0 0 25px; font: 700 24px/1.3 var(--serif); }
+    .thread-flow { display: flex; align-items: stretch; gap: 0; overflow-x: auto; }
+    .thread-box { min-width: 169px; padding: 18px; border: 1px solid var(--line); background: rgba(7,17,30,.32); }
+    .thread-box em { color: var(--cyan); font: 11px/1 var(--mono); font-style: normal; }
+    .thread-box b { display: block; margin: 9px 0 5px; font-size: 15px; }
+    .thread-box span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+    .thread-arrow { align-self: center; padding: 0 10px; color: var(--mint); font: 19px/1 var(--mono); }
+    .thread-box.highlight { border-color: var(--mint); box-shadow: 0 0 27px rgba(84,229,181,.1); }
+
+    .protocol-grid { display: grid; grid-template-columns: 1.1fr .9fr; gap: 25px; margin-top: 48px; }
+    .protocol-screen { position: relative; min-height: 430px; overflow: hidden; border: 1px solid var(--line); background: #081521; }
+    .protocol-head { display: flex; align-items: center; gap: 6px; height: 39px; padding: 0 14px; border-bottom: 1px solid var(--line); color: var(--dim); font: 11px/1 var(--mono); }
+    .protocol-head i { width: 7px; height: 7px; border-radius: 50%; background: var(--coral); } .protocol-head i:nth-child(2){background:var(--amber)} .protocol-head i:nth-child(3){background:var(--mint)}
+    .wire { position: relative; display: grid; grid-template-columns: 1fr 27px 1fr; gap: 6px; padding: 25px 19px; height: 390px; }
+    .wire-side { display: grid; align-content: space-between; }
+    .wire-card { padding: 11px; border: 1px solid var(--line); background: rgba(16,35,58,.65); font-size: 12px; }
+    .wire-card b { display: block; margin-bottom: 5px; font: 500 12px/1.3 var(--mono); }
+    .wire-card span { color: var(--muted); font-size: 11px; }
+    .wire-card.user b { color: var(--cyan); } .wire-card.server b { color: var(--mint); } .wire-card.engine b { color: var(--violet); } .wire-card.os b { color: var(--amber); }
+    .wire-line { position: relative; }
+    .wire-line::before { content: ''; position: absolute; left: 50%; top: 29px; bottom: 29px; width: 1px; background: linear-gradient(var(--cyan), var(--mint), var(--violet), var(--amber)); opacity: .62; }
+    .packet { position: absolute; left: calc(50% - 4px); width: 8px; height: 8px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 13px var(--mint); animation: packet 4s linear infinite; }
+    .packet.two { animation-delay: -1.7s; background: var(--cyan); box-shadow: 0 0 13px var(--cyan); }
+    .protocol-copy { padding: 27px; border: 1px solid var(--line); }
+    .protocol-copy h3 { margin: 0 0 15px; font: 700 29px/1.25 var(--serif); }
+    .protocol-copy p { color: var(--muted); font-size: 14px; }
+    .protocol-copy ol { padding-left: 20px; color: var(--muted); font-size: 14px; }
+    .protocol-copy li { margin: 10px 0; }
+    .protocol-copy li b { color: var(--ink); }
+    .official-callout { margin-top: 23px; padding: 14px; border: 1px solid rgba(82,201,255,.24); color: #a9dff9; background: rgba(82,201,255,.06); font-size: 12px; }
+
+    .security-frame { margin-top: 47px; border: 1px solid var(--line); background: rgba(13,27,45,.62); }
+    .security-head { display: flex; justify-content: space-between; gap: 18px; padding: 20px 24px; border-bottom: 1px solid var(--line); }
+    .security-head h3 { margin: 0; font: 700 20px/1.35 var(--serif); }
+    .security-head span { color: var(--muted); font-size: 12px; }
+    .security-lanes { display: grid; grid-template-columns: repeat(4, 1fr); }
+    .security-lane { position: relative; padding: 24px; min-height: 238px; border-right: 1px solid var(--line); }
+    .security-lane:last-child { border-right: 0; }
+    .security-lane .no { display: grid; place-items: center; width: 30px; height: 30px; margin-bottom: 15px; border: 1px solid var(--coral); color: var(--coral); border-radius: 50%; font: 15px/1 var(--mono); }
+    .security-lane h4 { margin: 0 0 7px; font-size: 16px; }
+    .security-lane p { margin: 0; color: var(--muted); font-size: 13px; }
+    .security-lane .guard { position: absolute; bottom: 20px; color: var(--mint); font: 10px/1.5 var(--mono); }
+
+    .sop-grid { display: grid; grid-template-columns: 330px 1fr; gap: 39px; margin-top: 48px; }
+    .sop-intro { position: sticky; top: 98px; align-self: start; padding: 26px; border: 1px solid rgba(255,205,112,.27); background: rgba(255,205,112,.05); }
+    .sop-intro h3 { margin: 0 0 13px; color: var(--amber); font: 700 25px/1.3 var(--serif); }
+    .sop-intro p { margin: 0; color: var(--muted); font-size: 14px; }
+    .sop-intro .mini { margin-top: 18px; color: var(--amber); font: 11px/1.6 var(--mono); }
+    .sop-list { display: grid; gap: 1px; border: 1px solid var(--line); background: var(--line); }
+    .sop-step { display: grid; grid-template-columns: 78px 1fr 130px; gap: 18px; align-items: center; padding: 19px 21px; background: var(--surface); }
+    .sop-step .id { color: var(--mint); font: 12px/1 var(--mono); }
+    .sop-step h4 { margin: 0 0 3px; font-size: 16px; }
+    .sop-step p { margin: 0; color: var(--muted); font-size: 12px; }
+    .sop-step .deliver { color: var(--cyan); text-align: right; font: 11px/1.5 var(--mono); }
+    .pseudo { margin-top: 28px; padding: 22px; border: 1px solid rgba(184,167,255,.27); background: #08121f; overflow-x: auto; color: #cbbedf; font: 12px/1.9 var(--mono); }
+    .pseudo .c { color: #5f7a92; } .pseudo .key { color: var(--mint); } .pseudo .warn { color: var(--amber); }
+
+    .mistakes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin-top: 46px; }
+    .mistake { padding: 23px; border-top: 2px solid var(--coral); background: rgba(255,137,119,.045); }
+    .mistake h3 { margin: 0 0 8px; font: 700 20px/1.3 var(--serif); }
+    .mistake p { margin: 0; color: var(--muted); font-size: 13px; }
+    .mistake .fix { display: block; margin-top: 13px; color: var(--mint); font: 11px/1.5 var(--mono); }
+
+    .source-wrap { padding: 80px 0 100px; }
+    .source-top { display: flex; justify-content: space-between; gap: 20px; align-items: end; }
+    .source-top h2 { margin: 14px 0 0; font: 900 42px/1.1 var(--serif); letter-spacing: -.05em; }
+    .source-top p { max-width: 440px; margin: 0; color: var(--muted); font-size: 13px; }
+    .source-list { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 34px; }
+    .source { display: block; padding: 18px; border: 1px solid var(--line); background: rgba(13,27,45,.55); transition: .2s; }
+    .source:hover { border-color: var(--cyan); transform: translateY(-3px); }
+    .source .kind { color: var(--cyan); font: 10px/1 var(--mono); }
+    .source b { display: block; margin: 7px 0; font-size: 14px; }
+    .source span { color: var(--muted); font-size: 12px; }
+    footer { padding: 23px 0 36px; color: var(--dim); border-top: 1px solid var(--line); font: 11px/1.6 var(--mono); }
+
+    [data-reveal] { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
+    [data-reveal].shown { opacity: 1; transform: translateY(0); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes bob { 50% { translate: 0 -11px; } }
+    @keyframes drift { 50% { transform: translateY(-10px) rotate(.35deg); } }
+    @keyframes packet { 0% { top: 29px; opacity: 0; } 10%,80% { opacity: 1; } 100% { top: calc(100% - 37px); opacity: 0; } }
+    @media (max-width: 960px) {
+      .hero-grid, .truth-grid, .layer-map, .route-grid, .memory-stage, .protocol-grid, .sop-grid { grid-template-columns: 1fr; }
+      .orbital { min-height: 390px; order: -1; transform: scale(.83); margin: -42px 0 -27px; }
+      .concept-grid, .security-lanes { grid-template-columns: repeat(2, 1fr); }
+      .sop-intro { position: static; }
+      .loop-steps { grid-template-columns: repeat(3, 1fr); gap: 19px 10px; }
+      .loop-step:not(:last-child)::after { display: none; }
+    }
+    @media (max-width: 640px) {
+      .shell { padding: 0 18px; }
+      .section { padding: 75px 0; }
+      .topbar { height: 56px; } .nav { display: none; }
+      .hero { min-height: 675px; padding-top: 43px; } .hero h1 { font-size: 47px; }
+      .orbital { transform: scale(.68); margin: -78px 0 -60px; }
+      .truth-item, .sop-step { grid-template-columns: 1fr; gap: 7px; }
+      .layer { grid-template-columns: 72px 1fr; } .layer small { display:none; }
+      .loop-top, .source-top { display: block; }
+      .loop-steps { grid-template-columns: repeat(2, 1fr); }
+      .loop-console { grid-template-columns: 1fr; }
+      .concept-grid, .security-lanes, .mistakes, .source-list { grid-template-columns: 1fr; }
+      .security-lane { border-right: 0; border-bottom: 1px solid var(--line); min-height: 180px; }
+      .compare-strip { grid-template-columns: 1fr; } .compare-strip > div { border-right: 0; border-bottom: 1px solid var(--line); }
+      .memory-shelf { grid-template-columns: 40px 1fr; } .memory-shelf span, .memory-shelf small { display:none; }
+      .source-top p { margin-top: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="progress"></div>
+  <header class="topbar">
+    <div class="shell">
+      <a class="brand" href="#top"><span class="brand-mark"><span>×</span></span><span>CODEX / AGENT<br>WORKBENCH</span></a>
+      <nav class="nav">
+        <a href="#truth">先讲透</a><a href="#loop">Agent Loop</a><a href="#concepts">核心零件</a><a href="#memory">记忆</a><a href="#sop">复刻 SOP</a>
+      </nav>
+      <span class="pill">研究版 · 2026.07.13</span>
+    </div>
+  </header>
+
+  <main id="top">
+    <section class="hero shell">
+      <div class="hero-grid">
+        <div data-reveal>
+          <span class="eyebrow">从「会聊天」到「能完成工作」</span>
+          <h1>把 Codex 拆开，<br>看懂 <em>Agent</em> 是怎样运转的。</h1>
+          <p class="hero-copy">这不是模型课，而是一份“产品与工程之间”的拆解图：模型如何获得上下文、选择工具、受权限约束、持续执行、整理记忆，再在下一次会话里接上工作。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="#truth">先看 60 秒结论 ↓</a>
+            <a class="button" href="#sop">直接看复刻路线</a>
+          </div>
+          <div class="hero-note"><span class="line"></span>适合：已有约 1 年 AI 使用经验，想研究并做出类似产品的人</div>
+        </div>
+        <div class="orbital" aria-label="Agent 核心要素示意图" data-reveal>
+          <div class="core"><div><small>NOT A CHATBOT</small><strong>Agent<br>OS</strong></div></div>
+          <i class="orbit-dot dot-a"></i><i class="orbit-dot dot-b"></i><i class="orbit-dot dot-c"></i>
+          <div class="float-card one"><b>Context / 上下文</b><span>把“当前该知道什么”装进模型输入</span></div>
+          <div class="float-card two"><b>Tools / 工具</b><span>让语言决策落到真实世界的受控动作</span></div>
+          <div class="float-card three"><b>Memory / 记忆</b><span>跨轮、跨会话留住值得复用的事实</span></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="truth">
+      <div data-reveal>
+        <span class="eyebrow">01 / 先把边界说清</span>
+        <h2 class="section-title">Codex 不是“一个模型”，而是一台受控的工作编排机。</h2>
+        <p class="section-intro">模型负责理解与决策；App / CLI 负责把决策变成可见、可控、可追溯的工作。没有后者，模型只能“建议”；有了后者，才会出现会话、文件、工具、审批、恢复、记忆这些你在 Codex 中感受到的能力。</p>
+      </div>
+      <div class="truth-grid" data-reveal>
+        <div class="truth-main">
+          <span class="eyebrow">最重要的一句话</span>
+          <div class="big">Agent = 模型 + 上下文 + 工具 + 控制循环 + 安全边界 + 状态。</div>
+          <p>它的难点通常不在“再换一个更强模型”，而在于如何让每一步都正确地拿到信息、只做被允许的动作、在中断后还能继续、并把结果变成可以复查的证据。</p>
+        </div>
+        <div class="truth-list">
+          <div class="truth-item"><div class="label">OPEN SOURCE</div><p><strong>公开的是什么？</strong> <span class="pill fact badge">已确认</span><br><code>openai/codex</code> 公开的是 Codex CLI、Rust 核心与 <code>codex app-server</code>，采用 Apache-2.0 许可证。它是学习 Agent 引擎与协议的高价值材料。</p></div>
+          <div class="truth-item"><div class="label">NOT IDENTICAL</div><p><strong>桌面 Codex App 是否完整开源？</strong> <span class="pill fact badge">已确认</span><br>不是。OpenAI 官方维护者明确表示目前没有开源 App 的计划；但官方说 App 建在开源的 app-server 接口之上。所以：核心机制能学，完整桌面 UI、产品策略、云端服务不是公开实现。</p></div>
+          <div class="truth-item"><div class="label">WHAT TO COPY</div><p><strong>值得模仿什么？</strong> <span class="pill infer badge">工程建议</span><br>模仿“线程—回合—条目”的状态模型、流式事件、工具执行与审批、项目指令、技能发现、可选 MCP、摘要压缩和记忆提炼；不要把“仿界面”误认为“仿 Agent”。</p></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="architecture">
+      <div data-reveal>
+        <span class="eyebrow">02 / 一张总图</span>
+        <h2 class="section-title">一个能工作的 Agent App，至少有五层。</h2>
+        <p class="section-intro">下面不是官方桌面 App 的内部架构图，而是基于公开 app-server 与通用 Agent 工程归纳出的“可复刻最小分层”。重点是职责分开：界面不直接碰密钥与系统能力，模型不直接拥有操作系统权限。</p>
+      </div>
+      <div class="layer-map" data-reveal>
+        <div class="stack">
+          <div class="layer ui"><span class="layer-id">01 / UI</span><div><b>工作台界面</b><span>对话、文件、任务状态、审批弹窗、进度流</span></div><small>React / Web / Desktop</small></div>
+          <div class="layer control"><span class="layer-id">02 / CTRL</span><div><b>会话与编排层</b><span>组装上下文、管理 Thread/Turn、循环、路由、持久化</span></div><small>Agent Runtime</small></div>
+          <div class="layer model"><span class="layer-id">03 / MODEL</span><div><b>模型适配层</b><span>发送输入、接收流式文本与 tool call、记录用量</span></div><small>Responses / Provider</small></div>
+          <div class="layer execution"><span class="layer-id">04 / EXEC</span><div><b>受控执行层</b><span>文件、终端、浏览器、MCP、外部 App；执行前拦截</span></div><small>Sandbox + Approval</small></div>
+          <div class="layer data"><span class="layer-id">05 / STATE</span><div><b>状态与知识层</b><span>会话记录、项目配置、索引、摘要、长期记忆、审计日志</span></div><small>SQLite / Files / Keychain</small></div>
+        </div>
+        <aside class="map-note">
+          <h3>一个非常实用的边界</h3>
+          <p>模型只拿到“工具说明书”，并提出调用请求；真正执行工具的是宿主程序。宿主程序负责检查权限、路径、参数、超时、审计与结果净化。</p>
+          <div class="mini-flow">MODEL REQUEST <span>→</span> POLICY CHECK <span>→</span> EXECUTOR <span>→</span> OBSERVATION</div>
+        </aside>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="loop">
+      <div data-reveal>
+        <span class="eyebrow">03 / 发动机</span>
+        <h2 class="section-title">Agent Loop：不是“一问一答”，而是一个带刹车的循环。</h2>
+        <p class="section-intro">普通聊天通常到模型输出文字就结束。Agent 则把工具结果重新喂给模型，让它继续观察、修正、执行或交付。循环的结束不是“模型没话说”，而是满足完成条件、被用户中断、达到预算/权限边界，或需要人来做决定。</p>
+      </div>
+      <div class="loop-board" data-reveal>
+        <div class="loop-top">
+          <div><span class="eyebrow">可点击每一站 / 或自动播放</span><p>这个演示故意把“思考”隐藏，只展示外部可观察、可审计的工作状态。优秀的 Agent 产品不必暴露内部推理，也依然能让用户知道它在做什么、为什么暂停。</p></div>
+          <button class="button" id="playLoop">▶ 播放一次 Loop</button>
+        </div>
+        <div class="loop-steps" id="loopSteps">
+          <div class="loop-step active" data-step="0"><div class="step-dot">01</div><b>接收任务</b><span>用户目标、附件、当前项目</span></div>
+          <div class="loop-step" data-step="1"><div class="step-dot">02</div><b>组装上下文</b><span>指令、历史、检索内容、工具目录</span></div>
+          <div class="loop-step" data-step="2"><div class="step-dot">03</div><b>模型决策</b><span>回答，或提出工具调用</span></div>
+          <div class="loop-step" data-step="3"><div class="step-dot">04</div><b>策略检查</b><span>是否允许？要审批吗？</span></div>
+          <div class="loop-step" data-step="4"><div class="step-dot">05</div><b>执行与观察</b><span>运行工具，将结果作为新事实</span></div>
+          <div class="loop-step" data-step="5"><div class="step-dot">06</div><b>验证与收束</b><span>测试、保存、生成最终交付</span></div>
+        </div>
+        <div class="loop-console">
+          <div class="console-explain" id="loopExplain"><strong>01 · 接收任务</strong><br>先创建或恢复一个工作线程。把用户原话保留为不可替换的意图来源；不要过早把它“总结坏了”。</div>
+          <div class="console-log" id="loopLog">event: thread/start → turn/start<br>state: active · waiting for input context</div>
+        </div>
+        <p class="loop-caption">官方 app-server 公开了 Thread（会话）→ Turn（一次交互）→ Item（消息、命令、编辑等最小记录）的模型，并会在回合中流式推送 item 事件。这正是“可恢复的 Agent”常见的骨架。</p>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="routing">
+      <div data-reveal>
+        <span class="eyebrow">04 / 你听说的“路由”到底是什么</span>
+        <h2 class="section-title">路由不是一个神秘模型；它是“把对的东西送到对的地方”的一组规则。</h2>
+        <p class="section-intro">初学者常把 Router 想成一个固定的“意图分类器”。真实产品里它至少有四种含义，很多时候由显式规则、元数据、模型判断和用户确认共同完成。</p>
+      </div>
+      <div class="route-grid" data-reveal>
+        <div class="route-table">
+          <article class="route-row"><div class="num">ROUTE / 01</div><div><h3>任务路由</h3><p>这是“普通问答、代码修改、深度研究、执行工作流”中的哪一种？决定给模型什么开发指令、可用工具和完成标准。MVP 不要急着训练分类器：让用户选模式 + 用关键词规则已足够。</p></div></article>
+          <article class="route-row"><div class="num">ROUTE / 02</div><div><h3>上下文路由</h3><p>从项目规则、当前 Case、文件、检索结果、会话摘要中，挑哪些放进本回合。它本质上是“相关性 + 权限 + token 预算”的选择问题。</p></div></article>
+          <article class="route-row"><div class="num">ROUTE / 03</div><div><h3>工具路由</h3><p>工具很多时，不能把全部说明都塞给模型。按当前任务和权限加载文件工具、浏览器、MCP 工具或某个 Skill 相关能力；必要时延迟加载。</p></div></article>
+          <article class="route-row"><div class="num">ROUTE / 04</div><div><h3>权限路由</h3><p>同样的“写文件”请求，在只读、工作区可写、完全访问三种环境里结果不同。对高风险路径，路由的结果应当是“请求人类确认”，不是悄悄绕过。</p></div></article>
+        </div>
+        <aside class="route-visual">
+          <h3>不要混淆：Router ≠ Loop</h3>
+          <p>Router 决定“走哪条路”；Loop 决定“走完后是否继续”。</p>
+          <div class="router">ROUTER<br>选择能力</div>
+          <span class="route-node a">上下文包</span><span class="route-node b">工具集合</span><span class="route-node c">审批策略</span><span class="route-node d">模型/预算</span>
+          <div class="route-takeaway">好的路由可解释：界面应该让人看出当前用了什么资料、什么能力、为什么需要审批。</div>
+        </aside>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="concepts">
+      <div data-reveal>
+        <span class="eyebrow">05 / 核心零件辨析</span>
+        <h2 class="section-title">Skills、MCP、Plugin、Hook：不要把四件不同的东西揉成一团。</h2>
+        <p class="section-intro">它们都能让 Agent “更会做事”，但作用点完全不同。理解这个差别，是你设计产品结构的分水岭。</p>
+      </div>
+      <div class="concept-grid" data-reveal>
+        <article class="concept-card skill"><div class="icon">S</div><h3>Skill</h3><span class="tag">会做事的方法册</span><p>一份可复用的工作说明：何时使用、先读什么、怎样产出、如何验证。它主要改变模型的行为与流程，不天然获得任何系统权限。</p><div class="does"><b>类比：</b>给新同事的 SOP。<br><b>最小形态：</b>一个 <code>SKILL.md</code>。</div></article>
+        <article class="concept-card mcp"><div class="icon">M</div><h3>MCP</h3><span class="tag">连外部能力的通用插座</span><p>Model Context Protocol 是客户端与外部工具/资源服务之间的协议。一个 MCP Server 可以提供工具、资源、提示或认证流程；它不等于某一个具体工具。</p><div class="does"><b>类比：</b>统一规格的 USB-C。<br><b>最小形态：</b>一个暴露工具清单的本地/远程服务。</div></article>
+        <article class="concept-card plugin"><div class="icon">P</div><h3>Plugin</h3><span class="tag">可安装的能力包</span><p>插件是产品层的“包装盒”。它可以打包多个 Skill、App/Connector、模板和配置，让某类工作一键可用。插件本身仍应继承底层 App 的权限。</p><div class="does"><b>类比：</b>摄影套装，不是镜头本身。<br><b>最小形态：</b>清单 + 指令 + 依赖能力。</div></article>
+        <article class="concept-card hook"><div class="icon">H</div><h3>Hook</h3><span class="tag">事件发生时的守门员</span><p>Hook 在特定生命周期事件前后触发，例如工具调用前检查、回合结束时通知。它更适合做策略、审计和自动化护栏，而非让模型自由决定。</p><div class="does"><b>类比：</b>门禁与流水线传感器。<br><b>最小形态：</b>事件匹配 + 受信任脚本。</div></article>
+      </div>
+      <div class="compare-strip" data-reveal>
+        <div class="head">快速判断</div><div class="head">它主要解决什么？</div><div class="head">它应不应该直接拥有高权限？</div>
+        <div><b>Skill</b></div><div class="yes">让模型按正确流程工作</div><div class="no">不应；Skill 是说明，不是授权</div>
+        <div><b>MCP</b></div><div class="yes">连接外部工具、数据与资源</div><div class="no">由 Server 与宿主策略共同限制</div>
+        <div><b>Plugin</b></div><div class="yes">分发一整套工作能力</div><div class="no">不应绕过其中每个 App/工具的权限</div>
+        <div><b>Hook</b></div><div class="yes">在关键事件施加规则或自动动作</div><div class="no">尤其需要信任、签名/哈希与超时控制</div>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="memory">
+      <div data-reveal>
+        <span class="eyebrow">06 / 记忆不是一个数据库字段</span>
+        <h2 class="section-title">“跨 Session 记忆”真正要解决的，是取回正确过去，而不是把一切都塞回模型。</h2>
+        <p class="section-intro">模型没有永久大脑。每次请求都只看见这次传入的上下文。所谓记忆，是宿主系统把过去的信息保存、提炼、检索、筛选后，再以可控方式放回模型输入的过程。</p>
+      </div>
+      <div class="memory-stage" data-reveal>
+        <div class="memory-shelves" id="memoryShelves">
+          <div class="memory-shelf active" data-memory="0"><span class="order">L0</span><b>本回合上下文</b><span>本次请求实际送进模型的文字、工具、附件</span><small>短 / 易满</small></div>
+          <div class="memory-shelf" data-memory="1"><span class="order">L1</span><b>会话记录</b><span>Thread / Turn / Item：可恢复、可分页的原始历史</span><small>可追溯</small></div>
+          <div class="memory-shelf" data-memory="2"><span class="order">L2</span><b>工作记忆</b><span>目标、计划、当前文件、待办、最新观察</span><small>本任务</small></div>
+          <div class="memory-shelf" data-memory="3"><span class="order">L3</span><b>项目记忆</b><span>AGENTS.md、规范、偏好、项目知识、索引</span><small>有边界</small></div>
+          <div class="memory-shelf" data-memory="4"><span class="order">L4</span><b>长期记忆</b><span>从多个会话提炼并整合的稳定事实与经验</span><small>跨 Session</small></div>
+        </div>
+        <aside class="memory-panel">
+          <span class="panel-kicker" id="memoryKicker">L0 / 本回合上下文</span>
+          <h3 id="memoryTitle">模型眼前真正看见的桌面。</h3>
+          <p id="memoryText">系统提示、用户消息、选中的文件片段、工具定义、临时摘要共同组成。它不是“数据库”，而是一包有 token 上限的输入。</p>
+          <div class="rule"></div>
+          <div class="answer" id="memoryAnswer">设计动作：严格预算；只放与当前目标相关、且允许模型看到的内容。</div>
+        </aside>
+      </div>
+      <div class="memory-warning" data-reveal"><b>一个常见误解：</b>“向量数据库 = 记忆”不对。向量检索只是 <em>召回候选信息</em> 的一种方式；真正可靠的记忆系统还需要来源、权限范围、版本、时效、冲突处理、摘要更新与是否注入上下文的决策。</div>
+
+      <div class="thread-rail" data-reveal>
+        <h3>一次“跨 Session 接上工作”的正确路径</h3>
+        <div class="thread-flow">
+          <div class="thread-box"><em>SESSION A</em><b>原始过程</b><span>对话、工具调用、文件修改、验证结果</span></div><span class="thread-arrow">→</span>
+          <div class="thread-box"><em>AFTER IDLE</em><b>提炼</b><span>把有价值的事实、决定、偏好写成结构化记忆/摘要</span></div><span class="thread-arrow">→</span>
+          <div class="thread-box"><em>SESSION B</em><b>检索候选</b><span>按项目、权限、任务与时间筛选，而非全量读取</span></div><span class="thread-arrow">→</span>
+          <div class="thread-box highlight"><em>NEW TURN</em><b>注入小包</b><span>来源可见的少量相关上下文，再继续 Loop</span></div>
+        </div>
+      </div>
+      <p class="loop-caption" data-reveal>公开 Codex 核心代码已出现 memory pipeline：对符合条件、已闲置的会话提取结构化 memory，再进行全局整合；其设计也明确包含并发上限、任务租约、失败退避、秘密脱敏与本地记忆目录。具体功能仍可能随版本变化，因此把它视为“公开的实现方向”，而不是所有桌面版本都保证开启的承诺。</p>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="protocol">
+      <div data-reveal>
+        <span class="eyebrow">07 / 为什么桌面 App 不是一堆 API 调用</span>
+        <h2 class="section-title">界面、Agent 引擎和系统能力之间，需要一条“事件总线”。</h2>
+        <p class="section-intro">Codex 的公开 app-server 采用双向 JSON-RPC，支持 stdio、WebSocket 等传输；客户端启动线程与回合后，持续接收消息增量、工具进度和完成事件。你做自己的产品时不必照抄 Rust，但一定要继承这种“命令 + 流式事件 + 可持久化状态”的思路。</p>
+      </div>
+      <div class="protocol-grid" data-reveal>
+        <div class="protocol-screen">
+          <div class="protocol-head"><i></i><i></i><i></i><span>&nbsp;&nbsp;agent-runtime / event-stream</span></div>
+          <div class="wire">
+            <div class="wire-side">
+              <div class="wire-card user"><b>DESKTOP UI</b><span>turn/start<br>用户输入、附件、选择</span></div>
+              <div class="wire-card engine"><b>MODEL API</b><span>text delta<br>tool call / stop</span></div>
+            </div>
+            <div class="wire-line"><i class="packet"></i><i class="packet two"></i></div>
+            <div class="wire-side">
+              <div class="wire-card server"><b>APP SERVER</b><span>Thread / Turn / Item<br>上下文、策略、流式转发</span></div>
+              <div class="wire-card os"><b>CONTROLLED EXECUTOR</b><span>shell / file / MCP<br>审批、沙箱、结果</span></div>
+            </div>
+          </div>
+        </div>
+        <aside class="protocol-copy">
+          <h3>最小事件模型</h3>
+          <ol>
+            <li><b>命令：</b>UI 说“开始这一回合”。</li>
+            <li><b>事件：</b>引擎连续报告“消息增量、工具已开始、输出到达、工具已完成”。</li>
+            <li><b>状态：</b>每个 Thread、Turn、Item 被持久化；崩溃后可读回。</li>
+            <li><b>控制：</b>UI 可以中断、继续、分叉、归档，而不是只能等回答。</li>
+          </ol>
+          <div class="official-callout">官方公开接口中：Thread 是用户与 Agent 的会话；Turn 是一次用户交互；Item 是该回合中的消息、命令、文件编辑等最小可持久化条目。这个概念模型非常适合直接借鉴。</div>
+        </aside>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="security">
+      <div data-reveal>
+        <span class="eyebrow">08 / 最容易被低估的部分</span>
+        <h2 class="section-title">安全不是最后加一个“确认按钮”，而是每层都有边界。</h2>
+        <p class="section-intro">模型会误判，工具会失败，文本也会包含提示注入。一个能上线的 Agent 产品，必须把“模型建议了什么”和“系统实际做了什么”明确分开。</p>
+      </div>
+      <div class="security-frame" data-reveal>
+        <div class="security-head"><h3>四道护栏：任何一道都不能只靠模型自觉</h3><span>先只读，后写入；先范围小，后扩展</span></div>
+        <div class="security-lanes">
+          <article class="security-lane"><span class="no">1</span><h4>能力最小化</h4><p>工具按用途与范围设计，不给“任意 shell + 任意路径 + 任意网络”这种万能钥匙。文件工具应限定工作区，业务系统先做只读。</p><span class="guard">CAPABILITY ALLOWLIST</span></article>
+          <article class="security-lane"><span class="no">2</span><h4>执行前审批</h4><p>把读取、写入、外部发送、删除、付款等动作分级。审批展示“会影响什么”，而不只问“要不要继续”。可审批的是具体动作，不是抽象信任。</p><span class="guard">RISK-BASED APPROVAL</span></article>
+          <article class="security-lane"><span class="no">3</span><h4>隔离与净化</h4><p>工具进程运行在沙箱/受限权限下；密钥留在主进程或系统凭据库；工具输出进入模型前要限长、去秘密、带来源，防止脏数据反向控制 Agent。</p><span class="guard">SANDBOX + SECRET BOUNDARY</span></article>
+          <article class="security-lane"><span class="no">4</span><h4>可追溯与可撤销</h4><p>保存谁触发、做了什么、用什么输入、输出在哪里、验证是否通过。优先设计草稿、预览、diff、回滚；Hook 与第三方能力要有信任状态和超时。</p><span class="guard">AUDIT + RECOVERY</span></article>
+        </div>
+      </div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="sop">
+      <div data-reveal>
+        <span class="eyebrow">09 / 复刻一台自己的 Agent 工作台</span>
+        <h2 class="section-title">从零到一 SOP：先做一条可靠的窄闭环，再增加“聪明”。</h2>
+        <p class="section-intro">不要一开始同时做多 Agent、长期记忆、十个 MCP、自动部署。最强的学习路径是：让一个 Agent 在一个受限文件夹中，能完成一类任务并拿出验证结果。</p>
+      </div>
+      <div class="sop-grid" data-reveal>
+        <aside class="sop-intro">
+          <h3>你真正要交付的，不是聊天框。</h3>
+          <p>每一阶段都应留下一个可演示的“纵切面”：用户输入一个真实任务，系统完成有限动作，界面实时显示过程，并留下可验证产物。</p>
+          <div class="mini">建议技术路线：<br>Desktop: Electron + React + TypeScript<br>Runtime: Node / Rust 任一<br>State: SQLite + 本地文件<br>Model: 先接一种 API<br>Tools: 先只读文件 + 受控写文件</div>
+        </aside>
+        <div class="sop-list">
+          <article class="sop-step"><span class="id">PHASE 01</span><div><h4>定义一个窄任务与完成标准</h4><p>例如“在指定项目文件夹中分析报错并生成 Markdown 报告”。明确输入、允许动作、产物、验证命令与不做什么。</p></div><span class="deliver">一页任务契约</span></article>
+          <article class="sop-step"><span class="id">PHASE 02</span><div><h4>先搭 Thread / Turn / Item 状态机</h4><p>新建、恢复、取消、完成、失败都要有状态；消息、工具、产物都作为 Item 记录。先存 SQLite/JSONL 都可以。</p></div><span class="deliver">可恢复会话</span></article>
+          <article class="sop-step"><span class="id">PHASE 03</span><div><h4>完成最小 Agent Loop</h4><p>把模型返回的 tool call 交给宿主执行，再把工具结果送回下一轮。加入最大回合数、超时、取消、错误收敛。</p></div><span class="deliver">一次工具闭环</span></article>
+          <article class="sop-step"><span class="id">PHASE 04</span><div><h4>做一个小而严的工具注册表</h4><p>每个工具有名称、描述、参数 schema、风险级别、执行器、超时、输出清洗规则。先做读文件、搜文件、写草稿、跑测试。</p></div><span class="deliver">Tool Registry</span></article>
+          <article class="sop-step"><span class="id">PHASE 05</span><div><h4>把权限与审批放到模型外</h4><p>按 read / write / destructive / external 分级；执行器二次校验路径与参数；密钥与 UI、模型上下文隔离。</p></div><span class="deliver">Policy Gate</span></article>
+          <article class="sop-step"><span class="id">PHASE 06</span><div><h4>接入项目指令与 Skill</h4><p>加载项目范围的规则文件，发现可用 Skill；用户点选或显式触发 Skill 后，把相关指令注入当前回合。不要让 Skill 自己变成权限后门。</p></div><span class="deliver">受控 SOP</span></article>
+          <article class="sop-step"><span class="id">PHASE 07</span><div><h4>再接 MCP，但从只读服务开始</h4><p>把 MCP 当成外部工具来源，先列能力、查看认证状态、调用只读工具、记录来源与参数。远程 MCP 与插件需单独审查。</p></div><span class="deliver">一条安全连接</span></article>
+          <article class="sop-step"><span class="id">PHASE 08</span><div><h4>做摘要、检索与长期记忆</h4><p>先解决上下文超长：压缩旧历史并保留原文。再做带来源的检索。最后才让后台任务提炼跨会话记忆，并允许用户查看/删除。</p></div><span class="deliver">可控跨会话</span></article>
+          <article class="sop-step"><span class="id">PHASE 09</span><div><h4>把验证与评估产品化</h4><p>对每类任务准备样本、预期产物、工具调用边界与回归测试。记录成功率、人工接管、工具失败、审批拒绝与 token 成本。</p></div><span class="deliver">真实可迭代</span></article>
+        </div>
+      </div>
+      <div class="pseudo" data-reveal><span class="c">// 够用的最小 Loop；所有副作用都穿过 policy 与 executor</span><br><span class="key">while</span> (turn.isActive &amp;&amp; steps &lt; MAX_STEPS) {<br>&nbsp;&nbsp;context = buildContext(thread, projectRules, selectedSkills, retrievedFacts, toolCatalog);<br>&nbsp;&nbsp;modelEvent = <span class="key">await</span> model.stream(context);<br>&nbsp;&nbsp;<span class="key">if</span> (modelEvent.type === 'final') <span class="key">break</span>;<br>&nbsp;&nbsp;<span class="key">if</span> (modelEvent.type === 'tool_call') {<br>&nbsp;&nbsp;&nbsp;&nbsp;decision = <span class="key">await</span> policy.check(modelEvent, user, workspace);<br>&nbsp;&nbsp;&nbsp;&nbsp;<span class="key">if</span> (decision.needsApproval) <span class="key">await</span> askUser(decision);<br>&nbsp;&nbsp;&nbsp;&nbsp;result = <span class="key">await</span> executor.run(modelEvent, decision); <span class="c">// 沙箱、超时、审计、净化</span><br>&nbsp;&nbsp;&nbsp;&nbsp;thread.append(result);<br>&nbsp;&nbsp;}<br>&nbsp;&nbsp;steps++;<br>}<br><span class="warn">// 结束后：验证 → 保存产物 → 生成摘要/候选记忆 → 呈现最终答复</span></div>
+    </section>
+
+    <div class="section-rule"></div>
+
+    <section class="section shell" id="pitfalls">
+      <div data-reveal>
+        <span class="eyebrow">10 / 少走弯路</span>
+        <h2 class="section-title">三个最常见、也最伤产品的误区。</h2>
+      </div>
+      <div class="mistakes" data-reveal>
+        <article class="mistake"><h3>“给模型一个万能工具就行。”</h3><p>结果是无法预测的权限边界、无法解释的副作用和极高的注入风险。模型对文字的理解能力，不等于它应拥有操作系统的全部能力。</p><span class="fix">FIX → 工具细分 + 参数 schema + 路径/域名 allowlist + 审批。</span></article>
+        <article class="mistake"><h3>“记忆越多，Agent 越聪明。”</h3><p>全量历史会挤占上下文、放大旧错误、混入敏感信息，还会让模型忽略眼前任务。长期记忆最重要的是“忘记、筛选、溯源”。</p><span class="fix">FIX → 原文归档、摘要压缩、检索召回、用户可见的注入来源。</span></article>
+        <article class="mistake"><h3>“多 Agent 就是并行调用多个模型。”</h3><p>没有明确拆分、独立上下文、输出契约与汇总者，多 Agent 只会重复花钱、互相污染、增加调试复杂度。单 Agent 闭环稳定前不要上。</p><span class="fix">FIX → 先一个主线程；确有独立子问题时才派生子任务并汇总证据。</span></article>
+      </div>
+    </section>
+  </main>
+
+  <div class="section-rule"></div>
+  <section class="source-wrap shell" id="sources">
+    <div class="source-top" data-reveal>
+      <div><span class="eyebrow">证据与延伸阅读</span><h2>哪些是已确认的事实？</h2></div>
+      <p>本教程以公开资料为准，更新时间为 2026-07-13。标注“工程建议”的部分是为复刻类似产品所作的通用设计归纳，不能反推为 OpenAI 未公开的 App 内部实现。</p>
+    </div>
+    <div class="source-list" data-reveal>
+      <a class="source" href="https://github.com/openai/codex" target="_blank" rel="noreferrer"><span class="kind">OFFICIAL OPEN SOURCE</span><b>openai/codex 仓库</b><span>Codex CLI 是本地运行的编码 Agent；仓库采用 Apache-2.0。</span></a>
+      <a class="source" href="https://github.com/openai/codex/tree/main/codex-rs/app-server" target="_blank" rel="noreferrer"><span class="kind">OFFICIAL PROTOCOL</span><b>codex app-server README</b><span>Thread / Turn / Item、JSON-RPC、流式事件、Skills、Hooks、Apps、MCP、审批等公开接口。</span></a>
+      <a class="source" href="https://github.com/openai/codex/tree/main/codex-rs/core/src/memories" target="_blank" rel="noreferrer"><span class="kind">OFFICIAL IMPLEMENTATION</span><b>Codex Memories Pipeline</b><span>公开的两阶段会话记忆提取与全局整合实现说明。</span></a>
+      <a class="source" href="https://help.openai.com/en/articles/20001256-plugins-in-codex/" target="_blank" rel="noreferrer"><span class="kind">OFFICIAL PRODUCT DOC</span><b>Plugins in ChatGPT and Codex</b><span>Plugin、Skill、App/Connector、权限和 Workspace 管理的关系。</span></a>
+      <a class="source" href="https://github.com/openai/codex/issues/10733" target="_blank" rel="noreferrer"><span class="kind">OFFICIAL MAINTAINER RESPONSE</span><b>Codex App 开源边界说明</b><span>官方维护者说明 App 暂无开源计划，并基于开源 app-server 接口。</span></a>
+      <a class="source" href="https://modelcontextprotocol.io/specification" target="_blank" rel="noreferrer"><span class="kind">OPEN STANDARD</span><b>Model Context Protocol 规范</b><span>理解 MCP 的通用协议层，而不把它误解成单一工具或记忆系统。</span></a>
+    </div>
+  </section>
+
+  <footer class="shell">拆开 Codex · Agent 工作台学习地图 &nbsp; / &nbsp; 此文件为独立 HTML，可直接用浏览器打开。<br>原则：把模型当“决策大脑”，把宿主当“受控的手脚与记忆”。</footer>
+
+  <script>
+    const loopData = [
+      { title: '01 · 接收任务', text: '先创建或恢复一个工作线程。把用户原话保留为不可替换的意图来源；不要过早把它“总结坏了”。', log: 'event: thread/start → turn/start<br>state: active · waiting for input context' },
+      { title: '02 · 组装上下文', text: '运行时从不同来源挑选小而相关的内容：系统/开发指令、项目规则、近期会话、选中文件、检索事实、可用工具。每项都受权限与 token 预算约束。', log: 'context: instructions + thread summary + 3 retrieved facts<br>budget: 11,480 / 32,000 tokens' },
+      { title: '03 · 模型决策', text: '模型看到的是文本、工具定义和此前观察结果。它可以输出面向用户的文字，也可以按 schema 请求一个工具调用；它并没有直接执行操作系统命令。', log: 'model: function_call → search_workspace({ query: "auth timeout" })' },
+      { title: '04 · 策略检查', text: '宿主程序检查这个工具是否已注册、参数是否合法、当前项目是否允许、是否需要用户确认、是否超过频率与预算。拒绝也应成为模型可见的事实。', log: 'policy: read-only tool · allowed<br>audit: tool request recorded' },
+      { title: '05 · 执行与观察', text: '受控执行器在限定环境中运行工具，处理超时/错误，裁剪并净化输出，再把结果作为 observation 写入当前 Turn。模型随后才能基于真实结果继续。', log: 'tool: 7 matches found · output sanitized<br>item: tool_result appended to turn' },
+      { title: '06 · 验证与收束', text: '模型可以继续调用测试、检查 diff、保存产物；达到完成标准后生成用户可读的交付。系统持久化该回合，并可把值得复用的结果送往摘要/记忆流程。', log: 'verify: npm run check → passed<br>turn: completed · artifact: report.md' }
+    ];
+    const memoryData = [
+      { k: 'L0 / 本回合上下文', t: '模型眼前真正看见的桌面。', p: '系统提示、用户消息、选中的文件片段、工具定义、临时摘要共同组成。它不是“数据库”，而是一包有 token 上限的输入。', a: '设计动作：严格预算；只放与当前目标相关、且允许模型看到的内容。' },
+      { k: 'L1 / 会话记录', t: '完整过程的账本，而不是都塞进输入。', p: '按 Thread、Turn、Item 保存原始消息、工具调用、命令输出和文件编辑。它保证可恢复、可审计、可分叉；需要时用分页读取。', a: '设计动作：原始记录与“模型本回合可见内容”分离；让用户能恢复、归档、删除。' },
+      { k: 'L2 / 工作记忆', t: '让 Agent 在长任务里不迷路。', p: '保存当前目标、已完成步骤、待办、被阻塞原因、当前工作文件与验证状态。它比会话摘要更结构化、更贴近任务推进。', a: '设计动作：把 goal / plan / status 做成显式状态，别只藏在自然语言里。' },
+      { k: 'L3 / 项目记忆', t: '一个项目范围内稳定而受控的知识。', p: '例如 AGENTS.md、目录规范、领域术语、已审核知识与文件索引。它应有项目边界、来源、版本与访问控制，不能串到其他项目。', a: '设计动作：先用规则文件 + 文件索引；检索结果必须显示来源，避免幻觉式“我记得”。' },
+      { k: 'L4 / 长期记忆', t: '从多个会话中提炼出的“少而稳”经验。', p: '不等于自动收藏聊天记录。它通常异步提炼、合并去重、标记时效、脱敏，并在新任务开始时按相关性挑出极少量候选。', a: '设计动作：用户可查看、编辑、删除；每条记忆保留来源与适用范围。' }
+    ];
+    const explain = document.getElementById('loopExplain');
+    const log = document.getElementById('loopLog');
+    const steps = [...document.querySelectorAll('.loop-step')];
+    let playing;
+    function selectStep(index) {
+      steps.forEach((step, i) => step.classList.toggle('active', i === index));
+      explain.innerHTML = '<strong>' + loopData[index].title + '</strong><br>' + loopData[index].text;
+      log.innerHTML = loopData[index].log;
+    }
+    steps.forEach((step, index) => step.addEventListener('click', () => { clearInterval(playing); selectStep(index); }));
+    document.getElementById('playLoop').addEventListener('click', () => {
+      clearInterval(playing);
+      let n = 0; selectStep(n);
+      playing = setInterval(() => { n += 1; if (n >= loopData.length) { clearInterval(playing); return; } selectStep(n); }, 1250);
+    });
+    const shelves = [...document.querySelectorAll('.memory-shelf')];
+    shelves.forEach((shelf, index) => shelf.addEventListener('click', () => {
+      shelves.forEach((item, i) => item.classList.toggle('active', i === index));
+      const item = memoryData[index];
+      document.getElementById('memoryKicker').textContent = item.k;
+      document.getElementById('memoryTitle').textContent = item.t;
+      document.getElementById('memoryText').textContent = item.p;
+      document.getElementById('memoryAnswer').textContent = item.a;
+    }));
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('shown'); });
+    }, { threshold: .08 });
+    document.querySelectorAll('[data-reveal]').forEach(el => observer.observe(el));
+    const progress = document.querySelector('.progress');
+    window.addEventListener('scroll', () => {
+      const max = document.documentElement.scrollHeight - window.innerHeight;
+      progress.style.setProperty('--progress', (window.scrollY / max * 100) + '%');
+    }, { passive: true });
+  </script>
+</body>
+</html>

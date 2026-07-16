@@ -82,21 +82,33 @@ try {
   });
   await import(`${pathToFileURL(bundlePath).href}?t=${Date.now()}`);
 
-  const [caseSource, safeModelSource, knowledgeSource, mainSource, appSource, configSource] = await Promise.all([
+  const [caseSource, safeModelSource, knowledgeSource, mainSource, queueSource, queueProbeSource, appSource, configSource, rootPackageSource, releaseGuardSource, releaseAliasesSource] = await Promise.all([
     readFile(path.join(repoRoot, "apps/desktop/src/main/caseWorkflowService.ts"), "utf8"),
     readFile(path.join(repoRoot, "apps/desktop/src/main/safeModelCaseDraftService.ts"), "utf8"),
     readFile(path.join(repoRoot, "apps/desktop/src/main/knowledgeService.ts"), "utf8"),
     readFile(path.join(repoRoot, "apps/desktop/src/main/main.ts"), "utf8"),
+    readFile(path.join(repoRoot, "apps/desktop/src/main/exclusiveWorkflowQueue.ts"), "utf8"),
+    readFile(path.join(repoRoot, "scripts/phase50-agent-runtime-foundation-probe.mjs"), "utf8"),
     readFile(path.join(repoRoot, "apps/desktop/src/renderer/App.tsx"), "utf8"),
-    readFile(path.join(repoRoot, "apps/desktop/src/renderer/ConfigCenter.tsx"), "utf8")
+    readFile(path.join(repoRoot, "apps/desktop/src/renderer/ConfigCenter.tsx"), "utf8"),
+    readFile(path.join(repoRoot, "package.json"), "utf8"),
+    readFile(path.join(repoRoot, "scripts/assert-clean-release-tree.mjs"), "utf8"),
+    readFile(path.join(repoRoot, "scripts/create-release-aliases.mjs"), "utf8")
   ]);
   assert.ok(caseSource.includes("extractMermaidDraft") && caseSource.includes("DEVELOPMENT_SPEC_HEADINGS"));
   assert.ok(safeModelSource.includes("actionOutputRequirements") && safeModelSource.includes("已阻止静默截断"));
   assert.ok(knowledgeSource.includes("assertNoPublishedKnowledgeConflict") && knowledgeSource.includes('item.status !== "published"'));
   assert.ok(knowledgeSource.includes("!isPhase21EditedCandidate(existingPending)"));
-  assert.ok(mainSource.includes("runCaseWorkflowExclusive") && mainSource.includes("caseWorkflowQueues"));
+  assert.ok(mainSource.includes("caseWorkflowQueue.run") && queueSource.includes("this.tails.set(key, tail)"));
+  assert.ok(queueProbeSource.includes("取消等待任务不能提前解除同会话串行锁"));
   assert.ok(appSource.includes("messageDraftsRef") && appSource.includes("canLeaveCurrentCenter"));
   assert.ok(configSource.includes("创建完整备份") && configSource.includes("导入已有工作台"));
+  assert.ok(rootPackageSource.includes("assert-clean-release-tree.mjs"), "Windows 正式打包缺少干净提交门禁");
+  assert.ok(releaseGuardSource.includes("git") && releaseGuardSource.includes("status") && releaseGuardSource.includes("--porcelain"));
+  assert.ok(releaseGuardSource.includes(".package-win-source.json") && releaseGuardSource.includes('"rev-parse", "HEAD"'), "发布开始时必须锁定 Git commit");
+  assert.ok(releaseAliasesSource.includes('path.join(releaseRoot, "win-unpacked", "SAP AI 顾问工作台.exe")'));
+  assert.ok(releaseAliasesSource.includes("if (gitDirty)"), "发布追溯清单不得接受 dirty Git 构建");
+  assert.ok(releaseAliasesSource.includes("sourceLock.gitCommit !== gitCommit"), "发布结束时必须核对起始 Git commit");
   process.stdout.write("phase42ProductionGuards=ok\n");
 } finally {
   await rm(tempRoot, { recursive: true, force: true });

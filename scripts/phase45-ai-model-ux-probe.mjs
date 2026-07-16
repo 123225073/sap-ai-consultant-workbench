@@ -39,7 +39,7 @@ assert.match(styles, /\.composer-model-actions/, "模型选择器没有与发送
 assert.match(app, /codexAssistEnabled: false/, "普通 Work 消息仍可能携带隐藏的 Codex 工程辅助状态");
 assert.match(app, /contextKey: streamContextKey/, "流式状态没有绑定当前对话或案件");
 assert.match(app, /aria-controls=\{panelId\}/, "模型选择器没有建立触发按钮与弹层的可访问关系");
-assert.match(main, /runCaseWorkflowExclusive\(workflowKey/, "Daily Chat 同一线程没有后端串行保护");
+assert.match(main, /caseWorkflowQueue\.run\(workflowKey/, "Daily Chat 同一线程没有后端串行保护");
 assert.doesNotMatch(main, /HTTP \(\?:404\|/, "模型回退仍会错误重试永久性的 404");
 assert.doesNotMatch(config, /useState<Record<string, string>>\(\{\}\)/, "API Key 仍长期保存在 React state");
 assert.match(store, /actualModelId = assistantReply\?\.responseMode === "model-success"/, "回退模型没有修复用户消息与助手回复的历史配对");

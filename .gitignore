@@ -48,6 +48,7 @@ exports/
 *.trace
 *.dump
 logs/
+preflight-*.log
 temp/
 tmp/
 

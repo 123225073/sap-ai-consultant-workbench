@@ -65,7 +65,7 @@ pass("contextBoundary");
 
 assert(mainSource.includes("wantsCodexCaseAssist"), "Main process must detect explicit Codex opt-in");
 assert(mainSource.includes("runCaseAssist"), "Main process must run the controlled Codex assist method");
-assert(mainSource.includes("store.appendMessage(targetedInput, modelDraft, codexAssist)"), "Codex assist must be persisted through the immutable-target case workflow");
+assert(mainSource.includes("store.appendMessage(targetedInput, modelDraft, codexAssist, agentTurnId)"), "Codex assist must be persisted through the immutable-target case workflow");
 assert(!/workbench:codex-(case|assist|exec|run|shell|history|session)/.test(mainSource + preloadSource + rendererTypes), "Codex case assist must not expose a generic Codex IPC channel");
 pass("ipcBoundary");
 

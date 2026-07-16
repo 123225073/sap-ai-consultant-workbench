@@ -50,9 +50,11 @@ import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
 import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatMessage, DailyChatThread, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkThread } from "../shared/workbenchTypes";
+import type { AgentInterruptedTurnRecovery } from "../shared/agentRuntimeTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
+import { decideInterruptedTurnProjection } from "./agentRecovery";
 
 interface StoredState {
   schemaVersion: number;
@@ -882,11 +884,13 @@ function createDailyChatMessage(
   threadId: string,
   content: string,
   modelId = "local-chat",
-  provenance: Pick<DailyChatMessage, "responseMode" | "projectId" | "providerId" | "providerName"> = {}
+  provenance: Pick<DailyChatMessage, "responseMode" | "projectId" | "providerId" | "providerName"> = {},
+  agentTurnId?: string
 ): DailyChatMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     threadId,
+    agentTurnId,
     role,
     content,
     modelId: safeMessageModelId(modelId),
@@ -1416,6 +1420,7 @@ function normalizeCaseMessage(value: unknown, caseId: string): CaseMessage | nul
   return {
     id: safeId(candidate.id, `${role}-${Date.now()}`),
     caseId,
+    agentTurnId: typeof candidate.agentTurnId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(candidate.agentTurnId) ? candidate.agentTurnId : undefined,
     role,
     content: text(candidate.content),
     taskMode: normalizeTaskMode(candidate.taskMode),
@@ -1437,6 +1442,7 @@ function normalizeDailyChatMessage(value: unknown, threadId: string): DailyChatM
   return {
     id: safeId(candidate.id, `${role}-${Date.now()}`),
     threadId,
+    agentTurnId: typeof candidate.agentTurnId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(candidate.agentTurnId) ? candidate.agentTurnId : undefined,
     role,
     content,
     modelId: safeMessageModelId(candidate.modelId),
@@ -1653,6 +1659,25 @@ function projectConfigMigrationFingerprint(state: StoredState): unknown {
   }));
 }
 
+function selectAgentConversationHistory(
+  messages: Array<{ id: string; role: "user" | "assistant"; content: string; createdAt: string }>
+): Array<{ ref: string; role: "user" | "assistant"; content: string; createdAt: string }> {
+  const selected: Array<{ ref: string; role: "user" | "assistant"; content: string; createdAt: string }> = [];
+  let totalChars = 0;
+  for (const message of [...messages].reverse()) {
+    const content = message.content.replace(/\u0000/g, "").trim().slice(0, 12_000);
+    if (!content || selected.length >= 240 || totalChars + content.length > 160_000) continue;
+    selected.unshift({
+      ref: `message:${message.id}`,
+      role: message.role,
+      content,
+      createdAt: message.createdAt
+    });
+    totalChars += content.length;
+  }
+  return selected;
+}
+
 export class WorkspaceStore {
   private readonly workspaceRoot: string;
   private readonly statePath: string;
@@ -1758,6 +1783,76 @@ export class WorkspaceStore {
       await this.ensureCaseFiles(state);
       await this.refreshSearchIndex(state);
       return this.withFiles(state);
+    });
+  }
+
+  async reconcileInterruptedAgentTurns(records: AgentInterruptedTurnRecovery[]): Promise<{ projected: string[]; committed: string[]; unmatched: string[] }> {
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const projected: string[] = [];
+      const committed: string[] = [];
+      const unmatched: string[] = [];
+      const touchedWorkThreads = new Set<string>();
+
+      for (const record of records.slice(0, 100)) {
+        const messageId = `agent-recovery-${record.turnId}`;
+        if (record.scope === "chat") {
+          const thread = state.chatThreads.find((item) => item.id === record.legacyThreadId);
+          if (!thread) {
+            unmatched.push(record.turnId);
+            continue;
+          }
+          const decision = decideInterruptedTurnProjection(thread.messages, record.turnId);
+          if (!thread.messages.some((message) => message.id === messageId)) {
+            thread.messages.push({
+              ...createDailyChatMessage("assistant", thread.id, decision.notice, "runtime-recovery", { responseMode: "local-record" }),
+              id: messageId,
+              createdAt: record.startedAt
+            });
+            thread.updatedAt = nowIso();
+          }
+          (decision.committed ? committed : projected).push(record.turnId);
+          continue;
+        }
+
+        const thread = state.workThreads.find((item) => item.id === record.legacyThreadId);
+        const project = thread && record.projectId === thread.projectId
+          ? state.projects.find((item) => item.id === thread.projectId)
+          : undefined;
+        const caseItem = project && record.caseId === thread?.caseId
+          ? project.cases.find((item) => item.id === thread.caseId)
+          : undefined;
+        if (!thread || !project || !caseItem) {
+          unmatched.push(record.turnId);
+          continue;
+        }
+        const decision = decideInterruptedTurnProjection(thread.messages, record.turnId);
+        if (!thread.messages.some((message) => message.id === messageId)) {
+          thread.messages.push({
+            ...createCaseMessage("assistant", caseItem.id, decision.notice, "problem-analysis", "runtime-recovery", [], null, "request_approval"),
+            id: messageId,
+            createdAt: record.startedAt
+          });
+          thread.updatedAt = nowIso();
+          caseItem.messages = thread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+          caseItem.updatedAt = thread.updatedAt;
+          touchedWorkThreads.add(thread.id);
+        }
+        (decision.committed ? committed : projected).push(record.turnId);
+      }
+
+      if (projected.length > 0 || committed.length > 0) {
+        await this.saveState(state);
+        for (const threadId of touchedWorkThreads) {
+          const thread = state.workThreads.find((item) => item.id === threadId);
+          const project = thread ? state.projects.find((item) => item.id === thread.projectId) : undefined;
+          const caseItem = project?.cases.find((item) => item.id === thread?.caseId);
+          if (thread && project && caseItem) {
+            await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+          }
+        }
+      }
+      return { projected, committed, unmatched };
     });
   }
 
@@ -2018,7 +2113,7 @@ export class WorkspaceStore {
     });
   }
 
-  async appendDailyChatMessage(input: unknown, assistantReply?: DailyChatAssistantReply): Promise<WorkbenchState> {
+  async appendDailyChatMessage(input: unknown, assistantReply?: DailyChatAssistantReply, agentTurnId?: string): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
       const chatInput = parseAppendDailyChatMessageInput(input);
       if (!chatInput.content) {
@@ -2050,7 +2145,8 @@ export class WorkspaceStore {
               providerId: actualProviderId,
               providerName: assistantReply?.providerName
             }
-          : { responseMode: "local-record" }
+          : { responseMode: "local-record" },
+        agentTurnId
       );
       const assistantMessage = createDailyChatMessage(
         "assistant",
@@ -2064,7 +2160,8 @@ export class WorkspaceStore {
               providerId: assistantReply.providerId,
               providerName: assistantReply.providerName
             }
-          : { responseMode: "local-record" }
+          : { responseMode: "local-record" },
+        agentTurnId
       );
       thread.messages.push(userMessage, assistantMessage);
       if (!hadUserMessages) {
@@ -2089,11 +2186,13 @@ export class WorkspaceStore {
     const state = await this.loadOrCreateState();
     const thread = state.chatThreads.find((item) => item.id === (threadId ?? state.activeChatThreadId));
     if (!thread) return [];
-    void projectId;
-    void providerId;
     void modelId;
     const candidates = thread.messages
-      .filter((message) => message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
+      .filter((message) => (
+        message.projectId === projectId
+        && message.providerId === providerId
+        && (message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
+      ))
       .slice(-12);
     const selected: Array<{ role: "user" | "assistant"; content: string }> = [];
     let totalLength = 0;
@@ -2104,6 +2203,30 @@ export class WorkspaceStore {
       totalLength += content.length;
     }
     return selected;
+  }
+
+  async getDailyChatAgentContextHistory(
+    threadId: string | undefined,
+    projectId: string,
+    providerId: string
+  ): Promise<Array<{ ref: string; role: "user" | "assistant"; content: string; createdAt: string }>> {
+    const state = await this.loadOrCreateState();
+    const thread = state.chatThreads.find((item) => item.id === (threadId ?? state.activeChatThreadId));
+    if (!thread) return [];
+    return selectAgentConversationHistory(thread.messages.filter((message) => (
+      message.projectId === projectId
+      && message.providerId === providerId
+      && (message.role === "user" || (message.role === "assistant" && message.responseMode === "model-success"))
+    )));
+  }
+
+  async getWorkAgentContextHistory(
+    threadId: string
+  ): Promise<Array<{ ref: string; role: "user" | "assistant"; content: string; createdAt: string }>> {
+    const state = await this.loadOrCreateState();
+    const thread = state.workThreads.find((item) => item.id === threadId && item.status === "active");
+    if (!thread) return [];
+    return selectAgentConversationHistory(thread.messages);
   }
 
   async switchProject(input: unknown): Promise<WorkbenchState> {
@@ -2252,7 +2375,7 @@ export class WorkspaceStore {
     };
   }
 
-  async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun, codexAssist?: CodexCaseAssistRun): Promise<WorkbenchState> {
+  async appendMessage(input: unknown, safeModelDraft?: SafeModelDraftRun, codexAssist?: CodexCaseAssistRun, agentTurnId?: string): Promise<WorkbenchState> {
     return this.runExclusive(async () => {
     const workflowInput = parseCaseWorkflowInput(input);
     if (!workflowInput.content) {
@@ -2285,7 +2408,7 @@ export class WorkspaceStore {
     const persistedModelDraft = safeModelDraft ? { ...safeModelDraft, modelId: persistedModelId } : undefined;
     const persistedInput = { ...workflowInput, modelId: persistedModelId };
     const previewFiles = buildCaseWorkflowArtifacts(project, currentCase, persistedInput, persistedModelDraft, codexAssist, runtimeContext).generatedFiles;
-    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId, [], persistedInput.actionId ?? null, persistedInput.permissionMode, persistedProviderId);
+    const userMessage = createCaseMessage("user", currentCase.id, persistedInput.content, persistedInput.taskMode, persistedInput.modelId, [], persistedInput.actionId ?? null, persistedInput.permissionMode, persistedProviderId, agentTurnId);
     const assistantMessage = createCaseMessage(
       "assistant",
       currentCase.id,
@@ -2295,7 +2418,8 @@ export class WorkspaceStore {
       previewFiles.map((file) => file.relativePath),
       persistedInput.actionId ?? null,
       persistedInput.permissionMode,
-      persistedProviderId
+      persistedProviderId,
+      agentTurnId
     );
 
     currentCase.messages.push(userMessage, assistantMessage);

@@ -9,7 +9,10 @@ const styles = await readFile(path.join(repoRoot, "apps/desktop/src/renderer/sty
 
 assert.match(appSource, /const submittedMessage = message;\s+const submittedContextKey = activeConversationKey;\s+setMessage\(""\)/, "发送时应保存原始内容和所属对话并立即清空输入框");
 assert.match(appSource, /function restoreSubmittedMessage[\s\S]+activeConversationKeyRef\.current !== contextKey/, "发送失败时应把内容恢复到原对话而不是当前对话");
-assert.match(appSource, /catch \{\s+restoreSubmittedMessage\(submittedContextKey, submittedMessage\)/, "IPC 抛出异常时也应恢复原消息");
+assert.match(appSource, /catch \{\s+restoreSubmittedMessage\(submittedContextKey, submittedMessage\);\s+if \(cancelRequestedRef\.current\)/, "IPC 抛出异常或任务取消时都应恢复原输入");
+assert.match(appSource, /本次任务已停止，原消息已恢复到输入框/, "用户主动停止任务时应恢复未完成的原消息");
+assert.match(appSource, /pendingStopRef\.current = true[\s\S]+任务启动后会立即停止/, "运行事件尚未返回时，停止请求必须排队而不是丢失");
+assert.match(appSource, /cancelAgentTurn\(\{ requestId: run\.requestId \}\)/, "停止任务必须按当前 requestId 精确取消");
 assert.match(appSource, /flow\.scrollTop = flow\.scrollHeight/, "对话应能自动滚动到最新消息");
 assert.match(appSource, /followLatestRef\.current = nearBottom/, "用户向上阅读时应暂停自动跟随");
 assert.match(appSource, /requestAnimationFrame\(\(\) => \{\s+if \(!force && !followLatestRef\.current\) return;/, "排队的滚动回调执行前应再次确认用户仍在跟随最新消息");

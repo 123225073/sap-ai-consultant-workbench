@@ -8,6 +8,7 @@ import type {
   ModelProviderVerificationStep,
   ModelSummary
 } from "../shared/workbenchTypes";
+import type { ToolJsonObject } from "../shared/toolRuntimeTypes";
 import { assertSafeModelDraftResponseText, type SafeModelDraftContext } from "./safeModelCaseDraftService";
 import {
   secureModelJsonRequest,
@@ -15,6 +16,7 @@ import {
   type SecureModelJsonRequester,
   type SecureModelStreamRequester
 } from "./modelEndpointSecurity";
+import type { AgentModelToolCall, AgentModelToolResult, AgentToolSession } from "./agentToolService";
 
 export interface ModelProviderConnectorInput {
   id: string;
@@ -31,13 +33,24 @@ export interface SafeModelDraftConnectorInput extends ModelProviderConnectorInpu
   modelId: string;
   context: SafeModelDraftContext;
   onDelta?: (delta: string) => void;
+  toolSession?: AgentToolSession;
+  onToolEvent?: (event: ModelToolLoopEvent) => void | Promise<void>;
+  signal?: AbortSignal;
 }
+
+export type ModelToolLoopEvent =
+  | { type: "tool-call"; call: AgentModelToolCall }
+  | { type: "tool-decision"; callId: string; toolName: string; outcome: "allowed" | "denied"; message: string }
+  | { type: "tool-result"; result: AgentModelToolResult };
 
 export interface DailyChatConnectorInput extends ModelProviderConnectorInput {
   modelId: string;
   content: string;
+  systemInstructions?: string;
+  confirmedContext?: string[];
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   onDelta?: (delta: string) => void;
+  signal?: AbortSignal;
 }
 
 export interface SafeModelDraftConnectorResult {
@@ -74,6 +87,7 @@ interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
       content?: unknown;
+      tool_calls?: unknown;
     };
     text?: unknown;
   }>;
@@ -81,21 +95,38 @@ interface ChatCompletionResponse {
 
 interface OpenAiStreamPayload {
   choices?: Array<{
-    delta?: { content?: unknown };
+    delta?: {
+      content?: unknown;
+      tool_calls?: Array<{
+        index?: unknown;
+        id?: unknown;
+        function?: { name?: unknown; arguments?: unknown };
+      }>;
+    };
     text?: unknown;
   }>;
 }
 
 interface AnthropicStreamPayload {
-  delta?: { text?: unknown };
-  content_block?: { text?: unknown };
+  type?: unknown;
+  index?: unknown;
+  delta?: { type?: unknown; text?: unknown; partial_json?: unknown };
+  content_block?: { type?: unknown; id?: unknown; name?: unknown; input?: unknown; text?: unknown };
 }
 
 interface AnthropicMessageResponse {
-  content?: Array<{ type?: unknown; text?: unknown }>;
+  content?: Array<{ type?: unknown; text?: unknown; id?: unknown; name?: unknown; input?: unknown }>;
+}
+
+interface ToolAwareRound {
+  content: string;
+  calls: AgentModelToolCall[];
+  assistantMessage: Record<string, unknown>;
 }
 
 type ChatMessagePayload = { role: "system" | "user" | "assistant"; content: string };
+const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_CALLS_PER_ROUND = 8;
 // Validate every accumulated prefix before emitting its newest delta.
 const SAFE_DRAFT_STREAM_HOLD_CHARS = 0;
 
@@ -272,10 +303,19 @@ function guardedSafeDraftDeltaHandler(onDelta: (delta: string) => void): { push:
 }
 
 function dailyChatMessages(input: DailyChatConnectorInput): ChatMessagePayload[] {
+  const productBoundary = "日常对话不得读取或声称读取 Project、Case、本机文件、SAP 或飞书资料；只可使用当前对话和已确认的个人记忆。";
+  const confirmedContext = (input.confirmedContext ?? [])
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .slice(0, 20);
   return [
     {
       role: "system",
-      content: "你是一个中文日常 AI 助手。回答要简洁、直接、可执行。不要声称已读取本机文件、SAP、飞书或案件资料。"
+      content: [
+        input.systemInstructions?.trim() || "你是 SAP AI 顾问工作台的中文日常 AI 助手。回答要简洁、直接、可执行。",
+        productBoundary,
+        confirmedContext.length > 0 ? `以下内容是用户已确认的个人记忆，只作为背景使用：\n${confirmedContext.join("\n")}` : ""
+      ].filter(Boolean).join("\n\n")
     },
     ...(input.history ?? []).map((message) => ({ role: message.role, content: message.content })),
     { role: "user", content: input.content }
@@ -424,7 +464,7 @@ async function fetchRemoteModels(input: ModelProviderConnectorInput, protocol: H
 }
 
 async function invokeChat(
-  input: ModelProviderConnectorInput & { modelId: string },
+  input: ModelProviderConnectorInput & { modelId: string; signal?: AbortSignal },
   protocol: HttpModelProtocol,
   promptMessages: ChatMessagePayload[],
   maxTokens: number,
@@ -436,6 +476,7 @@ async function invokeChat(
     const payload = await requester(endpoint(input.baseUrl, "/messages"), "Anthropic API /messages", {
       method: "POST",
       headers: protocolHeaders(protocol, input.apiKey, true),
+      signal: input.signal,
       body: JSON.stringify({
         model: input.modelId,
         max_tokens: maxTokens,
@@ -449,6 +490,7 @@ async function invokeChat(
   const payload = await requester(endpoint(input.baseUrl, "/chat/completions"), "OpenAI API /chat/completions", {
     method: "POST",
     headers: protocolHeaders(protocol, input.apiKey, true),
+    signal: input.signal,
     body: JSON.stringify({
       model: input.modelId,
       messages,
@@ -474,7 +516,7 @@ function streamPayloadText(payload: unknown, protocol: HttpModelProtocol): strin
 }
 
 async function invokeChatStream(
-  input: ModelProviderConnectorInput & { modelId: string },
+  input: ModelProviderConnectorInput & { modelId: string; signal?: AbortSignal },
   protocol: HttpModelProtocol,
   promptMessages: ChatMessagePayload[],
   maxTokens: number,
@@ -530,6 +572,7 @@ async function invokeChatStream(
       ...protocolHeaders(protocol, input.apiKey, true),
       Accept: "text/event-stream"
     },
+    signal: input.signal,
     body: JSON.stringify(requestBody)
   }, (chunk) => {
     fallbackResponseText += chunk;
@@ -553,6 +596,327 @@ async function invokeChatStream(
   }
   if (!content.trim()) throw new Error(`${apiLabel} 没有返回可读取的流式文本。`);
   return content;
+}
+
+async function invokeAgentToolLoopStream(
+  input: SafeModelDraftConnectorInput,
+  protocol: HttpModelProtocol,
+  promptMessages: ChatMessagePayload[],
+  maxTokens: number,
+  temperature: number | undefined,
+  requester: SecureModelStreamRequester,
+  onDelta: (delta: string) => void
+): Promise<string> {
+  const session = input.toolSession;
+  if (!session || session.tools.length === 0) {
+    return invokeChatStream(input, protocol, promptMessages, maxTokens, temperature, requester, onDelta);
+  }
+
+  const anthropicPayload = protocol === "anthropic" ? anthropicMessages(promptMessages) : null;
+  const system = protocol === "anthropic" ? anthropicPayload?.system : undefined;
+  const messages: Array<Record<string, unknown>> = protocol === "anthropic"
+    ? [...(anthropicPayload?.messages ?? [])]
+    : promptMessages.map((message) => ({ ...message }));
+  let accumulated = "";
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
+    input.signal?.throwIfAborted();
+    const result = await invokeToolAwareStreamRound({
+      input,
+      protocol,
+      messages,
+      system,
+      maxTokens,
+      temperature,
+      requester,
+      round,
+      onDelta: (delta) => {
+        accumulated += delta;
+        onDelta(delta);
+      }
+    });
+    if (result.calls.length === 0) {
+      if (!accumulated.trim() && result.content.trim()) {
+        accumulated = result.content;
+        onDelta(result.content);
+      }
+      if (!accumulated.trim()) throw new Error("模型没有返回文本或可执行工具调用。");
+      return accumulated;
+    }
+
+    messages.push(result.assistantMessage);
+    const toolResults: AgentModelToolResult[] = [];
+    for (const [callIndex, call] of result.calls.entries()) {
+      await input.onToolEvent?.({ type: "tool-call", call });
+      const authorization = callIndex >= MAX_TOOL_CALLS_PER_ROUND
+        ? { outcome: "denied" as const, message: `单轮工具调用不能超过 ${MAX_TOOL_CALLS_PER_ROUND} 个，超出的调用已拒绝执行。` }
+        : session.authorize(call);
+      await input.onToolEvent?.({
+        type: "tool-decision",
+        callId: call.callId,
+        toolName: call.name,
+        outcome: authorization.outcome,
+        message: authorization.message
+      });
+      const toolResult = callIndex >= MAX_TOOL_CALLS_PER_ROUND
+        ? rejectedToolResult(call, authorization.message)
+        : await session.execute(call, input.signal);
+      await input.onToolEvent?.({ type: "tool-result", result: toolResult });
+      toolResults.push(toolResult);
+    }
+    appendProviderToolResults(protocol, messages, toolResults);
+  }
+
+  const stopped = "\n\n工具调用已达到安全轮数上限，我已停止继续调用。请缩小问题范围后重试。";
+  accumulated += stopped;
+  onDelta(stopped);
+  return accumulated;
+}
+
+function rejectedToolResult(call: AgentModelToolCall, message: string): AgentModelToolResult {
+  return {
+    callId: call.callId,
+    name: call.name,
+    content: JSON.stringify({ error: message }),
+    isError: true,
+    trust: "untrusted-data"
+  };
+}
+
+async function invokeToolAwareStreamRound(options: {
+  input: SafeModelDraftConnectorInput;
+  protocol: HttpModelProtocol;
+  messages: Array<Record<string, unknown>>;
+  system?: string;
+  maxTokens: number;
+  temperature: number | undefined;
+  requester: SecureModelStreamRequester;
+  round: number;
+  onDelta: (delta: string) => void;
+}): Promise<ToolAwareRound> {
+  const { input, protocol, messages, system, maxTokens, temperature, requester, round, onDelta } = options;
+  const requestBody = protocol === "anthropic"
+    ? {
+        model: input.modelId,
+        max_tokens: maxTokens,
+        ...(system ? { system } : {}),
+        messages,
+        tools: input.toolSession?.tools.map((tool) => ({
+          name: tool.name,
+          description: tool.description,
+          input_schema: tool.inputSchema
+        })),
+        stream: true
+      }
+    : {
+        model: input.modelId,
+        messages,
+        tools: input.toolSession?.tools.map((tool) => ({
+          type: "function",
+          function: { name: tool.name, description: tool.description, parameters: tool.inputSchema }
+        })),
+        tool_choice: "auto",
+        max_tokens: maxTokens,
+        ...(typeof temperature === "number" ? { temperature } : {}),
+        stream: true
+      };
+  const apiPath = protocol === "anthropic" ? "/messages" : "/chat/completions";
+  const apiLabel = `${protocol === "anthropic" ? "Anthropic API" : "OpenAI API"} ${apiPath}`;
+  let pending = "";
+  let fallbackResponseText = "";
+  let content = "";
+  const openAiCalls = new Map<number, { id: string; name: string; argumentsText: string }>();
+  const anthropicCalls = new Map<number, { id: string; name: string; argumentsText: string }>();
+
+  const emitText = (delta: string) => {
+    const safe = delta.replace(/\u0000/g, "");
+    if (!safe) return;
+    content += safe;
+    onDelta(safe);
+  };
+  const consumePayload = (payload: unknown) => {
+    if (protocol === "anthropic") consumeAnthropicToolPayload(payload, anthropicCalls, emitText, round);
+    else consumeOpenAiToolPayload(payload, openAiCalls, emitText, round);
+  };
+  const consumeEvent = (eventText: string) => {
+    const data = eventText
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") return;
+    try { consumePayload(JSON.parse(data)); }
+    catch { throw new Error(`${apiLabel} 返回了无法解析的工具流数据。`); }
+  };
+
+  const response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
+    method: "POST",
+    headers: { ...protocolHeaders(protocol, input.apiKey, true), Accept: "text/event-stream" },
+    signal: input.signal,
+    body: JSON.stringify(requestBody)
+  }, (chunk) => {
+    fallbackResponseText += chunk;
+    pending += chunk;
+    const events = pending.split(/\r?\n\r?\n/);
+    pending = events.pop() ?? "";
+    for (const eventText of events) consumeEvent(eventText);
+  });
+  if (pending.trim()) consumeEvent(pending);
+  if (!response.contentType.toLowerCase().includes("text/event-stream") && fallbackResponseText.trim()) {
+    try { consumePayload(JSON.parse(fallbackResponseText)); }
+    catch { throw new Error(`${apiLabel} 没有返回可解析的工具响应。`); }
+  }
+
+  const calls = protocol === "anthropic"
+    ? toolCallsFromAccumulator(anthropicCalls)
+    : toolCallsFromAccumulator(openAiCalls);
+  const assistantMessage = protocol === "anthropic"
+    ? {
+        role: "assistant",
+        content: [
+          ...(content ? [{ type: "text", text: content }] : []),
+          ...calls.map((call) => ({ type: "tool_use", id: call.callId, name: call.name, input: call.arguments }))
+        ]
+      }
+    : {
+        role: "assistant",
+        content: content || null,
+        ...(calls.length ? {
+          tool_calls: calls.map((call) => ({
+            id: call.callId,
+            type: "function",
+            function: { name: call.name, arguments: JSON.stringify(call.arguments) }
+          }))
+        } : {})
+      };
+  return { content, calls, assistantMessage };
+}
+
+function consumeOpenAiToolPayload(
+  payload: unknown,
+  calls: Map<number, { id: string; name: string; argumentsText: string }>,
+  emitText: (delta: string) => void,
+  round: number
+): void {
+  if (!payload || typeof payload !== "object") return;
+  const response = payload as ChatCompletionResponse & OpenAiStreamPayload;
+  const choice = response.choices?.[0];
+  const message = choice?.message;
+  if (typeof message?.content === "string") emitText(message.content);
+  else if (typeof choice?.delta?.content === "string") emitText(choice.delta.content);
+  else if (typeof choice?.text === "string") emitText(choice.text);
+
+  const streamCalls = choice?.delta?.tool_calls ?? [];
+  for (const candidate of streamCalls) {
+    const index = typeof candidate.index === "number" ? candidate.index : calls.size;
+    const current = calls.get(index) ?? { id: `tool-${round}-${index}`, name: "", argumentsText: "" };
+    if (typeof candidate.id === "string") current.id = candidate.id;
+    if (typeof candidate.function?.name === "string") current.name += candidate.function.name;
+    if (typeof candidate.function?.arguments === "string") current.argumentsText += candidate.function.arguments;
+    calls.set(index, current);
+  }
+  const completeCalls = Array.isArray(message?.tool_calls) ? message.tool_calls : [];
+  for (const [index, value] of completeCalls.entries()) {
+    if (!value || typeof value !== "object") continue;
+    const candidate = value as { id?: unknown; function?: { name?: unknown; arguments?: unknown } };
+    calls.set(index, {
+      id: typeof candidate.id === "string" ? candidate.id : `tool-${round}-${index}`,
+      name: typeof candidate.function?.name === "string" ? candidate.function.name : "",
+      argumentsText: typeof candidate.function?.arguments === "string" ? candidate.function.arguments : "{}"
+    });
+  }
+}
+
+function consumeAnthropicToolPayload(
+  payload: unknown,
+  calls: Map<number, { id: string; name: string; argumentsText: string }>,
+  emitText: (delta: string) => void,
+  round: number
+): void {
+  if (!payload || typeof payload !== "object") return;
+  const response = payload as AnthropicMessageResponse & AnthropicStreamPayload;
+  if (Array.isArray(response.content)) {
+    for (const [index, block] of response.content.entries()) {
+      if (block.type === "text" && typeof block.text === "string") emitText(block.text);
+      if (block.type === "tool_use" && typeof block.name === "string") {
+        calls.set(index, {
+          id: typeof block.id === "string" ? block.id : `tool-${round}-${index}`,
+          name: block.name,
+          argumentsText: JSON.stringify(block.input ?? {})
+        });
+      }
+    }
+    return;
+  }
+  const index = typeof response.index === "number" ? response.index : calls.size;
+  if (response.type === "content_block_start" && response.content_block?.type === "tool_use") {
+    calls.set(index, {
+      id: typeof response.content_block.id === "string" ? response.content_block.id : `tool-${round}-${index}`,
+      name: typeof response.content_block.name === "string" ? response.content_block.name : "",
+      argumentsText: response.content_block.input && typeof response.content_block.input === "object" && !Array.isArray(response.content_block.input)
+        ? JSON.stringify(response.content_block.input)
+        : ""
+    });
+    return;
+  }
+  if (response.delta?.type === "input_json_delta" && typeof response.delta.partial_json === "string") {
+    const current = calls.get(index) ?? { id: `tool-${round}-${index}`, name: "", argumentsText: "" };
+    if (current.argumentsText === "{}" && response.delta.partial_json.trim()) current.argumentsText = "";
+    current.argumentsText += response.delta.partial_json;
+    calls.set(index, current);
+    return;
+  }
+  if (typeof response.delta?.text === "string") emitText(response.delta.text);
+  else if (typeof response.content_block?.text === "string") emitText(response.content_block.text);
+}
+
+function toolCallsFromAccumulator(calls: Map<number, { id: string; name: string; argumentsText: string }>): AgentModelToolCall[] {
+  return [...calls.entries()]
+    .sort(([left], [right]) => left - right)
+    .filter(([, call]) => /^[A-Za-z0-9_-]{1,64}$/.test(call.name))
+    .map(([, call]) => {
+      const parsed = parseToolArguments(call.argumentsText);
+      return {
+        callId: call.id.replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 120) || `tool-call-${Date.now()}`,
+        name: call.name,
+        arguments: parsed.value,
+        ...(parsed.error ? { argumentsError: parsed.error } : {})
+      };
+    });
+}
+
+function parseToolArguments(value: string): { value: ToolJsonObject; error?: string } {
+  if (!value.trim()) return { value: {}, error: "模型没有提供有效的工具参数，已拒绝执行。" };
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? { value: parsed as ToolJsonObject }
+      : { value: {}, error: "工具参数必须是 JSON 对象，已拒绝执行。" };
+  } catch {
+    return { value: {}, error: "模型返回的工具参数不是完整 JSON，已拒绝执行。" };
+  }
+}
+
+function appendProviderToolResults(
+  protocol: HttpModelProtocol,
+  messages: Array<Record<string, unknown>>,
+  results: AgentModelToolResult[]
+): void {
+  if (protocol === "anthropic") {
+    messages.push({
+      role: "user",
+      content: results.map((result) => ({
+        type: "tool_result",
+        tool_use_id: result.callId,
+        content: result.content,
+        is_error: result.isError
+      }))
+    });
+    return;
+  }
+  for (const result of results) {
+    messages.push({ role: "tool", tool_call_id: result.callId, content: result.content });
+  }
 }
 
 async function verifyHttpProvider(input: ModelProviderConnectorInput, protocol: HttpModelProtocol, requester: SecureModelJsonRequester): Promise<ModelProviderVerificationReport> {
@@ -627,9 +991,33 @@ abstract class HttpModelProviderConnector implements ModelProviderConnector {
 
   async generateSafeDraft(input: SafeModelDraftConnectorInput): Promise<SafeModelDraftConnectorResult> {
     const guarded = input.onDelta ? guardedSafeDraftDeltaHandler(input.onDelta) : null;
-    const content = guarded
-      ? await invokeChatStream(input, this.protocol, input.context.messages, 900, 0.2, this.streamRequester, guarded.push)
-      : await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);
+    let content: string;
+    if (input.toolSession?.tools.length) {
+      let toolModeEmittedText = false;
+      try {
+        content = await invokeAgentToolLoopStream(
+          input,
+          this.protocol,
+          input.context.messages,
+          900,
+          0.2,
+          this.streamRequester,
+          (delta) => {
+            toolModeEmittedText = true;
+            guarded?.push(delta);
+          }
+        );
+      } catch (error) {
+        if (toolModeEmittedText || !isToolProtocolUnsupported(error)) throw error;
+        content = guarded
+          ? await invokeChatStream(input, this.protocol, input.context.messages, 900, 0.2, this.streamRequester, guarded.push)
+          : await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);
+      }
+    } else {
+      content = guarded
+        ? await invokeChatStream(input, this.protocol, input.context.messages, 900, 0.2, this.streamRequester, guarded.push)
+        : await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);
+    }
     guarded?.flush();
     return connectorResult(input, content);
   }
@@ -640,6 +1028,11 @@ abstract class HttpModelProviderConnector implements ModelProviderConnector {
       : await invokeChat(input, this.protocol, dailyChatMessages(input), 900, 0.4, this.requester);
     return dailyChatResult(input, content);
   }
+}
+
+function isToolProtocolUnsupported(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : "";
+  return /HTTP (?:400|404|405|415|422)\b|(?:tools?|function(?: calling)?)\s+(?:is |are )?(?:unsupported|not supported|unknown|invalid)/i.test(message);
 }
 
 export class OpenAiCompatibleModelProviderConnector extends HttpModelProviderConnector {

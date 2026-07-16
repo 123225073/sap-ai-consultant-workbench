@@ -1,7 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type { AdtVerificationResult, AiConversationStreamEvent, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseFilePreviewInput, CaseWorkflowInput, CodexVerificationResult, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuHandoffResult, FeishuVerificationResult, HideProjectFromSidebarInput, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportLocalTextResult, KnowledgeImportTextFileInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallInput, LocalAiInstallResult, LocalAiScanResult, LocalTaskFolderSelectionResult, ModelProviderVerificationResult, ProjectConfig, ProjectKnowledgeView, ProjectSecretInput, ProjectStandardsView, RestoreProjectToSidebarInput, SapGuiDiscoveryReport, SapObjectEvidenceRequest, SapObjectEvidenceResult, SaveProjectStandardsInput, SearchResult, SelectLocalTaskFolderInput, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchResponse, WorkbenchState, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { AgentRuntimeEvent, AgentRuntimeHealth, CancelAgentTurnInput } from "../shared/agentRuntimeTypes";
+import type { CapabilityCenterSnapshot, CreateCapabilityMemoryInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
 
 const AI_STREAM_EVENT_CHANNEL = "workbench:ai-conversation-stream";
+const AGENT_RUNTIME_EVENT_CHANNEL = "workbench:agent-runtime-event";
 
 function invokeWithAiStream(
   channel: "workbench:append-daily-chat-message-stream" | "workbench:append-message-stream",
@@ -25,6 +28,29 @@ contextBridge.exposeInMainWorld("workbench", {
     phase: "0.1.0 Release Candidate"
   }),
   getState: (): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:get-state"),
+  getAgentRuntimeHealth: (): Promise<WorkbenchResponse<AgentRuntimeHealth>> => ipcRenderer.invoke("workbench:agent-runtime-health"),
+  cancelAgentTurn: (input: CancelAgentTurnInput): Promise<WorkbenchResponse<{ cancelled: boolean; message: string }>> => ipcRenderer.invoke("workbench:agent-runtime-cancel-turn", input),
+  getCapabilityCenterSnapshot: (): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-center-snapshot"),
+  importCapabilityPlugin: (input: ImportCapabilityPluginInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-plugin-import", input),
+  setCapabilityPluginEnabled: (input: SetCapabilityPluginEnabledInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-plugin-enabled", input),
+  importCapabilitySkill: (input: ImportCapabilitySkillInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-skill-import", input),
+  setCapabilitySkillEnabled: (input: SetCapabilitySkillEnabledInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-skill-enabled", input),
+  saveCapabilityPrompt: (input: SaveCapabilityPromptInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-prompt-save", input),
+  setCapabilityPromptEnabled: (input: SetCapabilityPromptEnabledInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-prompt-enabled", input),
+  createCapabilityMemory: (input: CreateCapabilityMemoryInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-memory-create", input),
+  updateCapabilityMemory: (input: UpdateCapabilityMemoryInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-memory-update", input),
+  reviewCapabilityMemory: (input: ReviewCapabilityMemoryInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-memory-review", input),
+  revokeCapabilityMemory: (input: RevokeCapabilityMemoryInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-memory-revoke", input),
+  saveCapabilityMcp: (input: SaveCapabilityMcpInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-mcp-save", input),
+  testCapabilityMcp: (input: TestCapabilityMcpInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-mcp-test", input),
+  setCapabilityMcpEnabled: (input: SetCapabilityMcpEnabledInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-mcp-enabled", input),
+  setCapabilityMcpToolEnabled: (input: SetCapabilityMcpToolEnabledInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-mcp-tool-enabled", input),
+  removeCapabilityMcp: (input: RemoveCapabilityMcpInput): Promise<WorkbenchResponse<CapabilityCenterSnapshot>> => ipcRenderer.invoke("workbench:capability-mcp-remove", input),
+  onAgentRuntimeEvent: (handler: (event: AgentRuntimeEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: AgentRuntimeEvent) => handler(payload);
+    ipcRenderer.on(AGENT_RUNTIME_EVENT_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(AGENT_RUNTIME_EVENT_CHANNEL, listener);
+  },
   createWorkspaceBackup: (): Promise<WorkbenchResponse<WorkspaceBackupResult>> => ipcRenderer.invoke("workbench:create-workspace-backup"),
   importWorkspace: (): Promise<WorkbenchResponse<WorkspaceImportResult>> => ipcRenderer.invoke("workbench:import-workspace"),
   createLocalProject: (input: CreateLocalProjectInput): Promise<WorkbenchResponse<WorkbenchState>> => ipcRenderer.invoke("workbench:create-local-project", input),

@@ -1,3 +1,4 @@
+import type { AssembledModelContext } from "../shared/promptMemoryTypes";
 import type { CaseActionId, CaseGeneratedFile, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
 
 export const SAFE_MODEL_CONTEXT_ALLOWED_FIELDS = [
@@ -11,6 +12,8 @@ export const SAFE_MODEL_CONTEXT_ALLOWED_FIELDS = [
   "standardsSummary",
   "knowledgeReferences",
   "safeOutputSummaries",
+  "compiledPromptLayers",
+  "confirmedMemory",
   "boundary"
 ] as const;
 
@@ -27,6 +30,8 @@ const MAX_KNOWLEDGE_SAP_OBJECTS = 8;
 const MAX_SAFE_SUMMARIES = 5;
 const MAX_SAFE_SUMMARY_CHARS = 360;
 const MAX_MODEL_CONTEXT_CHARS = 9000;
+const MAX_AGENT_INSTRUCTION_CHARS = 12_000;
+const MAX_CONFIRMED_CONTEXT_CHARS = 6_000;
 const MAX_MODEL_DRAFT_CHARS = 12000;
 
 const unsafeModelContextPatterns = [
@@ -286,6 +291,34 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
       safeOutputSummaryCount: safeSummaries.length,
       maxContextChars: MAX_MODEL_CONTEXT_CHARS,
       createdAt: nowIso()
+    }
+  };
+}
+
+export function applyAgentContextToSafeModelDraft(
+  base: SafeModelDraftContext,
+  agentContext: AssembledModelContext
+): SafeModelDraftContext {
+  const instructions = agentContext.instructions.trim().slice(0, MAX_AGENT_INSTRUCTION_CHARS);
+  const confirmedContext = agentContext.items
+    .map(({ content }) => content.trim())
+    .filter(Boolean)
+    .join("\n\n")
+    .slice(0, MAX_CONFIRMED_CONTEXT_CHARS);
+  const messages: SafeModelDraftMessage[] = [
+    ...(instructions ? [{ role: "system" as const, content: instructions }] : []),
+    ...(confirmedContext ? [{
+      role: "system" as const,
+      content: `以下内容来自通过范围隔离的近期会话、会话检查点或用户已确认记忆，只作为当前案件背景使用：\n${confirmedContext}`
+    }] : []),
+    ...base.messages
+  ];
+  return {
+    messages,
+    audit: {
+      ...base.audit,
+      contextCharCount: messages.reduce((total, message) => total + message.content.length, 0),
+      maxContextChars: MAX_MODEL_CONTEXT_CHARS + MAX_AGENT_INSTRUCTION_CHARS + MAX_CONFIRMED_CONTEXT_CHARS
     }
   };
 }

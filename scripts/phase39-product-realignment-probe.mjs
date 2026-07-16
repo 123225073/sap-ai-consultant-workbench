@@ -166,9 +166,9 @@ await store.appendDailyChatMessage({
 });
 const providerAHistory = await store.getDailyChatModelHistory(chatThreadId, project.id, "provider-a", "model-a");
 const providerBHistory = await store.getDailyChatModelHistory(chatThreadId, project.id, "provider-b", "model-b");
-assert(providerAHistory.length === 4 && providerAHistory.map((item) => item.content).join("|") === "A user message|A assistant message|B user message|B assistant message", "model switch lost the visible conversation context");
-assert(JSON.stringify(providerBHistory) === JSON.stringify(providerAHistory), "conversation context changed with the selected provider or model");
-pass("dailyChatHistoryContinuesAcrossModelSwitches");
+assert(providerAHistory.length === 2 && providerAHistory.map((item) => item.content).join("|") === "A user message|A assistant message", "provider A history leaked or lost messages");
+assert(providerBHistory.length === 2 && providerBHistory.map((item) => item.content).join("|") === "B user message|B assistant message", "provider B history leaked or lost messages");
+pass("dailyChatHistoryIsolatedAcrossProviders");
 
 const [appSource, configSource, storeSource, mainSource, preloadSource, rendererTypes, styles, modelConnector, preflight] = await Promise.all([
   readFile(path.join(repoRoot, "apps/desktop/src/renderer/App.tsx"), "utf8"),
@@ -188,7 +188,7 @@ assert(mainSource.includes('kind: "api-key", providerId: removedProviders[0].id'
 assert(appSource.includes("await previewCaseFile(matchedFile)"), "file search result must open the matched local preview");
 assert(appSource.includes("provider.models") && appSource.includes('model.capabilities.includes("chat")'), "composer must expose chat-capable models from the complete verified provider catalog");
 assert(appSource.includes("permissionMode: actionPermissionMode"), "ordinary case messages must use the current permission mode");
-assert(appSource.includes('useState<"chat" | "case" | "config" | "standards" | "knowledge">("case")'), "Work must be the default view");
+assert(appSource.includes('useState<"chat" | "case" | "config" | "standards" | "knowledge" | "capabilities">("case")'), "Work must be the default view while allowing the capability center");
 assert(!appSource.includes("window-actions") && !appSource.includes("添加附件暂不可用"), "fake topbar or unfinished composer controls remain visible");
 assert(storeSource.includes("preserveMainOwnedVerification(previousConfig, nextConfig)"), "main-owned verification preservation missing");
 assert(mainSource.includes("const parsedInput = parseAppendDailyChatMessageInput(input);"), "daily chat must parse before network preparation");

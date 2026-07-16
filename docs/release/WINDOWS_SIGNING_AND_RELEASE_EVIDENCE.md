@@ -1,6 +1,8 @@
 # Windows 正式签名与发布证据链
 
-本文说明正式 Windows 安装包的签名门禁。正式发布只能使用组织批准的 Authenticode 代码签名证书；仓库不会创建、提交或替代真实证书。
+本文说明需要 Authenticode 的高信任分发方式。它是个人产品的可选发布配置，不是 Setup、Portable 正常构建、安装和运行的前置条件；未签名包仍可分发，但 Windows 可能显示“未知发布者”或 SmartScreen 提示。仓库不会创建、提交或替代真实证书。
+
+下文“正式发布”特指主动选择 `npm run release:win:signed` 的签名发布档位，其组织身份、品牌清单和证据链要求不适用于普通 `npm run package:win` 构建。
 
 ## 门禁原则
 

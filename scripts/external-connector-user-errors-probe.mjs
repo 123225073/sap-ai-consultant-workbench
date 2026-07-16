@@ -17,13 +17,17 @@ async function sourceFiles(dir) {
   return nested.flat();
 }
 
+const nonChineseErrorLiterals = [];
 for (const file of await sourceFiles(path.join(repoRoot, "apps", "desktop", "src", "main"))) {
   const source = await readFile(file, "utf8");
   for (const match of source.matchAll(/throw new Error\("([^"\\]*(?:\\.[^"\\]*)*)"\)/g)) {
     if (!/[\u3400-\u9fff]/u.test(match[1])) {
-      throw new Error(`面向用户的 Error 字面量缺少中文说明：${path.relative(repoRoot, file)} -> ${match[1]}`);
+      nonChineseErrorLiterals.push(`${path.relative(repoRoot, file)} -> ${match[1]}`);
     }
   }
+}
+if (nonChineseErrorLiterals.length > 0) {
+  throw new Error(`面向用户的 Error 字面量缺少中文说明：\n${nonChineseErrorLiterals.join("\n")}`);
 }
 log("allLiteralMainErrorsContainChinese=ok");
 

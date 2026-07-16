@@ -2,7 +2,11 @@
 
 ## 推荐方式
 
-优先使用当前内部 Portable 做受控试用。它不是正式发布包：未签名、未配置批准品牌图标，Windows 可能显示安全提示。正式发布只能使用 `npm run release:win:signed` 生成且通过证据门禁的产物。
+当前 Portable 和 Setup 都可用于个人试用或小范围分发。它们已经使用独立产品图标，但尚未做 Authenticode 代码签名，因此 Windows 可能显示“未知发布者”或 SmartScreen 提示。需要降低安装警告时再配置证书并使用 `npm run release:win:signed`；签名不是应用正常运行的前置条件。
+
+分发前必须先打开同目录 `BUILD-METADATA.json`，确认 `gitDirty` 为 `false`、`gitCommit` 与 GitHub 发布提交一致，并确认清单包含 Setup、Portable、两个双击启动副本和 `win-unpacked/SAP AI 顾问工作台.exe` 共五个 EXE。缺少任一项或仍为 `gitDirty=true` 的旧产物不得分发。
+
+推荐直接使用 `SAP-AI-Consultant-Workbench-0.1.0-x64-Portable.exe`，或同目录的 `SAP-AI顾问工作台-最新版-双击启动.exe`。这两个双击入口由打包流程从同一 Portable 产物自动生成，避免误开旧版本。
 
 Portable 表示无需安装，不表示数据会跟随 EXE 移动；配置、案件和知识仍保存在当前 Windows 用户数据目录。开发仓库里已经配置的数据不会自动迁移，首次使用打包版需要重新配置，或在获得明确授权后执行受控迁移。
 
@@ -12,7 +16,7 @@ Portable 表示无需安装，不表示数据会跟随 EXE 移动；配置、案
 2. 在 SAP 页签确认只读状态；只有需要读取 SAP 时才要求验证通过。
 3. 在 AI 模型页签选择渠道，保存后执行“测试渠道”。只有通过最小对话的模型会出现在 Work 和 Chat。
 4. 在 Feishu/Lark 页签检查 CLI、Profile、登录态和文档权限。
-5. Codex CLI 属于可选工程辅助；失败时继续使用已配置模型，不影响 Work 和 Chat。
+5. 本机增强属于可选兼容能力；Codex CLI 失败或未安装时继续使用已配置模型，不影响 Work 和 Chat，也不需要为普通对话安装 Codex。
 
 ## 核心验收
 
@@ -40,7 +44,7 @@ npm run probe:release-uat
 - 模型失败：到 AI 模型页签重新测试；失败渠道会自动从选择器移除。
 - SAP 失败：确认地址、Client、用户名、密码和 ADT 服务；不影响普通 AI 对话。
 - Feishu 失败：重新检查 CLI、Profile 和登录态；本地案件文件不受影响。
-- Codex 失败：升级兼容版本或暂时关闭 Codex 辅助；继续使用工作台内置模型流程。
+- 本机增强失败：暂时关闭对应增强；继续使用工作台内置 Agent Runtime 和已验证模型渠道。本机 Codex/CLI 增强失败不等于核心模型不可用。
 - 程序异常退出：重新打开后检查案件和消息是否恢复，并保留日志供排查。
 
 ## 反馈信息

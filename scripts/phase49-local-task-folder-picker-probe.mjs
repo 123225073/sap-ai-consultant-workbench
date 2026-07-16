@@ -33,6 +33,10 @@ for (const [label, marker, source] of [
   assert(source.includes(marker), `missing ${label}: ${marker}`);
 }
 assert(!renderer.includes('aria-label="已有工作文件夹"'), "renderer still binds tasks through the internal case dropdown");
+assert(
+  renderer.includes('setNewCaseTitle((currentTitle) => currentTitle.trim() ? currentTitle : selectedFolderName);'),
+  "selecting an existing computer folder must default an empty task title to the folder name"
+);
 assert(!transferSource.includes('"local-folder-bindings.json"'), "machine-local folder paths must not enter portable workspace backup/import");
 pass("phase49StaticBoundary");
 

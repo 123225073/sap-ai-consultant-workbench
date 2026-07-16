@@ -772,6 +772,7 @@ export interface UpdateConversationThreadStatusInput {
 export interface DailyChatMessage {
   id: string;
   threadId: string;
+  agentTurnId?: string;
   role: "user" | "assistant";
   content: string;
   modelId: string;
@@ -876,6 +877,7 @@ export interface CaseGeneratedFile {
 export interface CaseMessage {
   id: string;
   caseId: string;
+  agentTurnId?: string;
   role: "user" | "assistant";
   content: string;
   taskMode: TaskMode;

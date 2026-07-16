@@ -1,5 +1,7 @@
 # SAP AI Workbench Master Development Plan
 
+> **历史计划说明（2026-07-15）：** 本文件记录项目从空仓库启动时的原始计划，其中“只有文档、没有应用骨架”等状态已经过期。当前真实状态以 `CONTEXT.md`、最新 Phase review、源码和 package scripts 为准；后续 Agent Runtime 开发以 `docs/architecture/INDEPENDENT_AGENT_RUNTIME.md`、ADR-0002 和 Phase 50 spec/plan 为准。不要按本文件重新初始化项目。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement detailed phase plans task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the SAP AI 顾问工作台 MVP as a local-first desktop product for one SAP consultant, centered on projects, cases, Codex-style conversation, case files, project standards, confirmed knowledge, and read-only SAP access.

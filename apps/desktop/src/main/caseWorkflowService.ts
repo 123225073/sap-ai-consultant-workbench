@@ -395,11 +395,13 @@ export function createCaseMessage(
   linkedFileIds: string[] = [],
   actionId: CaseActionId | null = null,
   permissionModeUsed: ActionPermissionMode = "request_approval",
-  providerId?: string
+  providerId?: string,
+  agentTurnId?: string
 ): CaseMessage {
   return {
     id: `${role}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
     caseId,
+    agentTurnId,
     role,
     content,
     taskMode,

@@ -10,6 +10,11 @@
 - `docs/architecture/FEATURE_ADVERSARIAL_REVIEW_TEMPLATE.md`
 - `docs/architecture/reviews/`
 
+当前长期决策：
+
+- `0001-project-owns-sap-landscape.md`：Project 管理完整 SAP landscape。
+- `0002-independent-agent-runtime.md`：核心 AI 运行时独立于 Codex。
+
 不要把这些文件重复复制到这里。只有当某个决策需要长期约束后续开发，而不是只服务某一个 phase 或 feature branch 时，才新增 ADR。
 
 建议命名：

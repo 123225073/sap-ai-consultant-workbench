@@ -3,6 +3,8 @@
 日期：2026-07-01
 用途：用于新开独立项目 / GitHub 仓库时，快速恢复本轮产品设计上下文。
 
+> 历史说明：本仓库和桌面应用现已建立，本文第 1、5、6、8 节保留为项目创建阶段记录，不再代表当前开发状态。当前事实先读根目录 `CONTEXT.md`、`README.md`、独立 Agent Runtime 架构和 Phase 50 规格。
+
 ## 1. 是否应该新开项目
 
 结论：应该新开独立项目和独立 Git 仓库。
@@ -81,21 +83,28 @@ docs/product-prototype/
 2. ADT 默认只读，源码写入、激活、传输操作不进入 MVP。
 3. SAP 密码、API Key、飞书 Token 不得进入日志、文档、案件文件或模型上下文。
 4. SAP 源码读取不等于必须落盘，只有修改、文档交付、版本对比等场景才保存快照。
-5. 飞书 CLI 需要 `doctor`、`auth status --verify`、文档创建/更新和白板更新能力验证。
+5. 当前飞书 CLI 只验证 CLI/Profile、`doctor`、`auth status --verify` 和所需 scope，并生成本地交接草稿；不会在应用内创建/更新云端文档或白板。
 6. 飞书缺少 scope 时必须走授权流程，不要反复生成新 device code。
-7. 飞书文档默认强调业务背景、关键逻辑、异常边界和上线确认，不堆砌低价值技术明细。
+7. 本地飞书交接草稿默认强调业务背景、关键逻辑、异常边界和上线确认，不堆砌低价值技术明细。
 
 ## 3. 本轮讨论沉淀出的核心产品判断
 
 ### 3.1 产品不是 Codex 套壳
 
-产品要复用 Codex / Agent / 模型能力，但用户不应该跳转到 Codex App 里工作。
+产品可以参考 `openai/codex` 公开的 Agent 设计模式，但用户不应该跳转到 Codex App 里工作，核心功能也不能要求安装 Codex。
 
 最终产品应该是：
 
 > 用户在 `SAP AI 顾问工作台` 里完成 SAP 问题分析、ABAP 开发、文档生成、流程图生成和经验沉淀。
 
-Codex SDK 或 CLI 只是后台执行能力之一。
+产品必须拥有自己的 Agent Runtime：负责消息事件、Provider 适配、工具门禁、上下文与记忆、Skills、MCP 和受控子 Agent。Codex CLI 只作为迁移期可选兼容适配器，不能充当核心中转。
+
+技术决策见：
+
+- `docs/architecture/INDEPENDENT_AGENT_RUNTIME.md`
+- `docs/adr/0002-independent-agent-runtime.md`
+- `docs/superpowers/specs/2026-07-15-phase-50-independent-agent-runtime-foundation-design.md`
+- `docs/superpowers/plans/2026-07-15-phase-50-independent-agent-runtime-foundation-plan.md`
 
 ### 3.2 产品不是通用知识库平台
 
@@ -105,7 +114,7 @@ Codex SDK 或 CLI 只是后台执行能力之一。
 
 > 面向 SAP 项目和案件的知识资产库。
 
-必须支持：
+长期目标必须支持；当前 0.1.0 已实现 Markdown/TXT 文档导入、案件候选知识、人工确认、冲突门禁和时间线，表格/跨页结构化解析与 QA 批量导入仍在第二阶段：
 
 - 文档上传。
 - 表格和跨页内容结构化解析。
@@ -202,10 +211,10 @@ ABAP 规范、注释规范、流程图规范、文档模板不能只有一套全
 8. 知识库中心。
 9. 固定案件动作，用于把当前对话沉淀成笔记、开发说明书、流程图、候选知识或交付物。
 10. 项目 / 案件权限模式：请求批准、替我批准、完全访问。
-11. 动作与 Skill 管理：内置 Skill、导入 Skill、动作绑定。
+11. 能力中心：导入并校验 Skill、启停与上下文注入；动作绑定属于第二阶段。
 12. 模型 API 渠道配置和模型选择。
 13. ADT 只读连接和验证。
-14. 飞书 CLI 验证和文档发布入口。
+14. 飞书 CLI 验证和本地交接草稿；云端文档发布属于第二阶段。
 15. 文件保存和搜索。
 
 ### 4.2 MVP 不做
@@ -272,7 +281,7 @@ packages/standards/
     profiles/
 ```
 
-## 6. 第一阶段建议开发目标
+## 6. 第一阶段建议开发目标（历史记录）
 
 第一阶段不要直接做完整 AI 能力，先做可运行的本地工作台骨架：
 
