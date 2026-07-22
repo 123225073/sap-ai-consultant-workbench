@@ -23,7 +23,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "@sqlite.org/sqlite-wasm": "^3.53.0-build1"
+    "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
+    "yaml": "^2.8.1"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

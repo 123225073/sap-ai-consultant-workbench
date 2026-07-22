@@ -4,7 +4,7 @@
 日期：2026-07-16
 适用范围：个人本地版
 
-当前应用已经具备桌面壳、Work/Chat、项目与多 SAP 连接、模型渠道、规范、知识、案件文件、本地任务目录和产品自有 Agent Runtime。Phase 50-56 已把事件账本、Work 本地只读工具循环、上下文预算、checkpoint、分层提示词/记忆、Skills、声明式 Plugin 与 MCP 连接/发现接入真实运行链路；Codex CLI 不再是核心中转。外部 MCP 工具执行、受限子 Agent 和任意脚本执行继续后置。
+当前应用已经具备桌面壳、Work/Chat、项目与多 SAP 连接、模型渠道、规范、知识、案件文件、本地任务目录和产品自有 Agent Runtime。Phase 50-57 已把事件账本、Work 本地只读工具循环、上下文预算、checkpoint、分层提示词/记忆、Skills、本机 Skills 白名单发现、声明式 Plugin 与 MCP 连接/发现接入真实运行链路；Codex CLI 不再是核心中转。外部 MCP 工具执行、受限子 Agent 和任意脚本执行继续后置。
 
 > 图例约定：下面“当前架构”只画 0.1.0 已接通链路；带“目标”的模块属于第二阶段设计。当前 Agent Tool Runtime 只自动执行产品内置的案件安全上下文和已发布知识搜索，SAP 读取仍由用户在 Work 中明确触发，Feishu 只生成本地交接草稿。
 
@@ -334,7 +334,7 @@ SkillPackage
   updated_at
 ```
 
-导入 Skill 只要求能找到并解析 `SKILL.md`。MVP 不提供 Skill 创建器，不负责用户如何创建自定义 Skill。
+导入 Skill 只要求能找到并解析 `SKILL.md`。除手动选择单个目录外，能力中心可扫描 `~/.agents/skills`、`~/.codex/skills`、`~/.claude/skills`、`~/.skills-manager` 与 `~/.sap-ai-workbench/skills`，用临时不透明 ID 批量导入。MVP 不提供 Skill 创建器，不负责用户如何创建自定义 Skill。
 
 ### 6.9 ActionRun
 

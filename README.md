@@ -16,11 +16,11 @@ SAP AI 顾问工作台是一个面向 SAP 顾问的个人本地桌面工作台�
 - 任务与文件夹：每个 Work 任务有独立会话 ID，可新建工作文件夹，或通过 Windows 原生目录选择器绑定电脑已有文件夹；本地绝对路径不会进入页面、模型上下文或可迁移备份。
 - 本地可靠性：状态备份、损坏状态恢复、安全存储引用、Case 输出目标绑定和阶段探针。
 - 独立 Agent Runtime：Work/Chat 使用本产品自己的 Thread/Turn/Item 事件账本、流式模型调用、上下文预算、自动 checkpoint 和分层记忆；Codex 不是核心中转。
-- 能力中心：用 `插件 | Skills | MCP | 提示词 | 记忆` 五个页签管理声明式扩展；启用的 Skill/Plugin/提示词/已确认记忆会按范围进入新回合。MCP 当前只做 HTTPS 连接、测试和能力发现，外部工具不进入自动执行链。
+- 能力中心：用 `插件 | Skills | MCP | 提示词 | 记忆` 五个页签管理声明式扩展；Skills 可从固定的 Codex、Claude Code、Skills Manager 和工作台收件目录统一发现后批量导入，也可手动选择单个文件夹。启用的 Skill/Plugin/提示词/已确认记忆会按范围进入新回合。MCP 当前只做 HTTPS 连接、测试和能力发现，外部工具不进入自动执行链。
 
 Phase 40/41 已完成生产可用性收敛；Phase 42/43 补齐案件专用开发说明书与流程图、成果版本历史、完整备份、受控数据迁移、知识后端冲突门禁和桌面 UAT；Phase 44 完成完整模型目录选择、OpenAI/Anthropic 流式回复和真实已配置渠道回测。代码签名保留为可选发布能力，不是个人分发前提。
 
-Phase 50-56 已完成独立 Agent Runtime 的首个可运行基线：事件账本、同 Thread 单回合编排、OpenAI/Anthropic Compatible 工具循环、本地内置只读 Tool Runtime、上下文预算、自动 checkpoint、分层提示词与记忆、Skills、声明式 Plugin、HTTPS Streamable HTTP MCP 连接/发现和能力中心均已有真实代码与专项探针。外部 MCP 工具执行、受限子 Agent、任意 Skill 脚本和 STDIO MCP 尚未作为正式功能开放。
+Phase 50-57 已完成独立 Agent Runtime 的首个可运行基线：事件账本、同 Thread 单回合编排、OpenAI/Anthropic Compatible 工具循环、本地内置只读 Tool Runtime、上下文预算、自动 checkpoint、分层提示词与记忆、Skills、本机 Skills 发现、声明式 Plugin、HTTPS Streamable HTTP MCP 连接/发现和能力中心均已有真实代码与专项探针。外部 MCP 工具执行、受限子 Agent、任意 Skill 脚本和 STDIO MCP 尚未作为正式功能开放。
 
 项目名称中的 SAP 仅用于说明产品服务的业务领域。这是个人独立产品，不代表 SAP SE 官方产品或官方背书，也不使用 SAP Logo。
 
@@ -56,6 +56,7 @@ MVP 只做个人本地版：
 - [Phase 50 基础设计](docs/superpowers/specs/2026-07-15-phase-50-independent-agent-runtime-foundation-design.md)
 - [Phase 50 实施计划](docs/superpowers/plans/2026-07-15-phase-50-independent-agent-runtime-foundation-plan.md)
 - [能力中心、Skills、MCP、提示词与分层记忆设计](docs/superpowers/specs/2026-07-15-capability-center-skills-mcp-prompt-memory-design.md)
+- [本机 Skills 发现与导入设计](docs/architecture/SKILL_DISCOVERY_AND_IMPORT.md)
 - [功能对抗式审计模板](docs/architecture/FEATURE_ADVERSARIAL_REVIEW_TEMPLATE.md)
 - [0.1.0 发布就绪审查](docs/release/2026-07-11-release-readiness.md)
 - [Phase 42 正式发布加固审查](docs/architecture/reviews/2026-07-11-phase-42-production-hardening-review.md)

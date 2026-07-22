@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { build } from "esbuild";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -11,15 +11,15 @@ const buildRoot = await mkdtemp(path.join(os.tmpdir(), "sap-ai-phase54-build-"))
 const workspace = await mkdtemp(path.join(os.tmpdir(), "sap-ai-phase54-plugin-"));
 
 try {
-  const outputPath = path.join(buildRoot, "plugin-package-service.mjs");
-  const agentContextOutputPath = path.join(buildRoot, "agent-context-service.mjs");
+  const outputPath = path.join(buildRoot, "plugin-package-service.cjs");
+  const agentContextOutputPath = path.join(buildRoot, "agent-context-service.cjs");
   await Promise.all([
     build({
       entryPoints: [path.join(root, "apps/desktop/src/main/pluginPackageService.ts")],
       outfile: outputPath,
       bundle: true,
       platform: "node",
-      format: "esm",
+      format: "cjs",
       target: "node22"
     }),
     build({
@@ -27,7 +27,7 @@ try {
       outfile: agentContextOutputPath,
       bundle: true,
       platform: "node",
-      format: "esm",
+      format: "cjs",
       target: "node22"
     })
   ]);
@@ -36,8 +36,8 @@ try {
     PluginPackageService,
     parsePluginManifest,
     validatePluginPackageEntryPath
-  } = await import(`${pathToFileURL(outputPath).href}?v=${Date.now()}`);
-  const { AgentContextService } = await import(`${pathToFileURL(agentContextOutputPath).href}?v=${Date.now()}`);
+  } = createRequire(import.meta.url)(outputPath);
+  const { AgentContextService } = createRequire(import.meta.url)(agentContextOutputPath);
 
   const parsed = parsePluginManifest(JSON.stringify(baseManifest("safe-consulting", "1.0.0")));
   assert.equal(parsed.name, "safe-consulting");

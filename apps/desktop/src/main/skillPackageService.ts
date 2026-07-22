@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import { TextDecoder } from "node:util";
+import { parseDocument } from "yaml";
 import type {
   ActivatedSkill,
   ParsedSkillMarkdown,
@@ -618,7 +619,7 @@ export function parseSkillMarkdown(source: string): ParsedSkillMarkdown {
   const name = requiredFrontmatterString(values, "name");
   const description = requiredFrontmatterString(values, "description");
   validateFrontmatterName(name);
-  if (characterCount(description) > 1_024) throw new SkillPackageError("invalid-skill", "SKILL.md 的 description 不能超过 1024 个字符。");
+  if (characterCount(description) > 4_096) throw new SkillPackageError("invalid-skill", "SKILL.md 的 description 不能超过 4096 个字符。");
   const compatibility = optionalFrontmatterString(values, "compatibility");
   if (compatibility !== null && (compatibility.length === 0 || characterCount(compatibility) > 500)) {
     throw new SkillPackageError("invalid-skill", "SKILL.md 的 compatibility 必须是 1 到 500 个字符。");
@@ -766,7 +767,14 @@ async function scanSkillDirectory(sourceRoot: string, limits: SkillPackageLimits
   resources.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   directoryPaths.sort((a, b) => a.localeCompare(b));
   if (!resources.some((resource) => resource.relativePath === "SKILL.md" && resource.kind === "instructions")) {
-    throw new SkillPackageError("invalid-skill", "所选文件夹根目录缺少名称完全匹配的 SKILL.md。");
+    const nestedSkills = resources
+      .filter((resource) => resource.kind === "instructions" && resource.relativePath.endsWith("/SKILL.md"))
+      .map((resource) => resource.relativePath.slice(0, -"/SKILL.md".length))
+      .slice(0, 8);
+    const guidance = nestedSkills.length > 0
+      ? `检测到这是 Skill 合集。请重新导入其中一个具体目录：${nestedSkills.join("、")}。`
+      : "请选择直接包含 SKILL.md 的单个 Skill 文件夹。";
+    throw new SkillPackageError("invalid-skill", `所选文件夹根目录缺少名称完全匹配的 SKILL.md。${guidance}`);
   }
   return {
     resources,
@@ -862,107 +870,69 @@ async function readVerifiedFile(
 }
 
 function parseControlledYamlFrontmatter(lines: string[]): Map<string, ParsedYamlValue> {
-  const values = new Map<string, ParsedYamlValue>();
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (!line.trim() || line.trimStart().startsWith("#")) continue;
-    if (line.includes("\t")) throw new SkillPackageError("invalid-skill", "SKILL.md 的 YAML frontmatter 不能使用 Tab 缩进。");
-    if (/^\s/.test(line)) throw new SkillPackageError("invalid-skill", `SKILL.md 的 YAML frontmatter 第 ${index + 2} 行缩进无效。`);
-    const match = /^([A-Za-z][A-Za-z0-9_-]*):(?:\s*(.*))?$/.exec(line);
-    if (!match) throw new SkillPackageError("invalid-skill", `SKILL.md 的 YAML frontmatter 第 ${index + 2} 行格式损坏。`);
-    const key = match[1];
-    const rawValue = match[2] ?? "";
-    if (values.has(key)) throw new SkillPackageError("invalid-skill", `SKILL.md 的 YAML frontmatter 重复定义了 ${key}。`);
+  const source = lines.join("\n");
+  let parsed: unknown;
+  try {
+    const document = parseDocument(source, {
+      schema: "core",
+      merge: false,
+      prettyErrors: false,
+      uniqueKeys: true
+    });
+    if (document.errors.length > 0) throw document.errors[0];
+    parsed = document.toJS({ maxAliasCount: 0 });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message.replace(/\s+/g, " ").trim().slice(0, 180) : "格式无法解析";
+    throw new SkillPackageError("invalid-skill", `SKILL.md 的 YAML frontmatter 格式损坏：${detail}。`);
+  }
+  if (!isPlainRecord(parsed)) {
+    throw new SkillPackageError("invalid-skill", "SKILL.md 的 YAML frontmatter 必须是键值映射。");
+  }
 
-    if (/^[|>][+-]?$/.test(rawValue)) {
-      const block = readBlockScalar(lines, index + 1, rawValue.startsWith(">"));
-      values.set(key, block.value);
-      index = block.lastIndex;
-      continue;
+  const values = new Map<string, ParsedYamlValue>();
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(key)) {
+      throw new SkillPackageError("invalid-skill", `SKILL.md 的 YAML frontmatter 字段名 ${key} 无效。`);
     }
-    if (!rawValue) {
-      if (key !== "metadata") {
-        throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${key} 缺少字符串值。`);
+    if (key === "metadata") {
+      if (!isPlainRecord(value) || Object.keys(value).length === 0) {
+        throw new SkillPackageError("invalid-skill", "SKILL.md 的 metadata 必须包含至少一个键值。");
       }
-      const mapping = readStringMapping(lines, index + 1);
-      values.set(key, mapping.value);
-      index = mapping.lastIndex;
+      const metadata: Record<string, string> = {};
+      for (const [metadataKey, metadataValue] of Object.entries(value)) {
+        if (!/^[A-Za-z0-9_.-]+$/.test(metadataKey)) {
+          throw new SkillPackageError("invalid-skill", `SKILL.md 的 metadata 字段名 ${metadataKey} 无效。`);
+        }
+        metadata[metadataKey] = metadataString(metadataValue, metadataKey);
+      }
+      values.set(key, metadata);
       continue;
     }
-    values.set(key, parseYamlScalar(rawValue, key));
+    if (key === "allowed-tools" && Array.isArray(value) && value.every((item) => typeof item === "string")) {
+      values.set(key, value.join(" "));
+      continue;
+    }
+    if (typeof value !== "string") {
+      throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${key} 必须是字符串。`);
+    }
+    values.set(key, value);
   }
   return values;
 }
 
-function readStringMapping(lines: string[], startIndex: number): { value: Record<string, string>; lastIndex: number } {
-  const value: Record<string, string> = {};
-  let lastIndex = startIndex - 1;
-  let found = false;
-  for (let index = startIndex; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (!line.trim() || line.trimStart().startsWith("#")) {
-      lastIndex = index;
-      continue;
-    }
-    if (!/^\s/.test(line)) break;
-    if (line.includes("\t")) throw new SkillPackageError("invalid-skill", "SKILL.md 的 metadata 不能使用 Tab 缩进。");
-    const match = /^\s{2,}([A-Za-z0-9_.-]+):\s*(.+)$/.exec(line);
-    if (!match) throw new SkillPackageError("invalid-skill", `SKILL.md 的 metadata 第 ${index + 2} 行格式损坏。`);
-    if (Object.prototype.hasOwnProperty.call(value, match[1])) {
-      throw new SkillPackageError("invalid-skill", `SKILL.md 的 metadata 重复定义了 ${match[1]}。`);
-    }
-    value[match[1]] = parseYamlScalar(match[2], `metadata.${match[1]}`);
-    found = true;
-    lastIndex = index;
-  }
-  if (!found) throw new SkillPackageError("invalid-skill", "SKILL.md 的 metadata 必须包含至少一个字符串键值。");
-  return { value, lastIndex };
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function readBlockScalar(lines: string[], startIndex: number, folded: boolean): { value: string; lastIndex: number } {
-  const rawLines: string[] = [];
-  let lastIndex = startIndex - 1;
-  for (let index = startIndex; index < lines.length; index += 1) {
-    const line = lines[index];
-    if (line.trim() && !/^\s/.test(line)) break;
-    rawLines.push(line);
-    lastIndex = index;
+function metadataString(value: unknown, key: string): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || value === null) return String(value);
+  if (Array.isArray(value) || isPlainRecord(value)) {
+    const serialized = JSON.stringify(value);
+    if (serialized.length > 8_192) throw new SkillPackageError("invalid-skill", `SKILL.md 的 metadata.${key} 内容过长。`);
+    return serialized;
   }
-  const nonEmpty = rawLines.filter((line) => line.trim());
-  if (nonEmpty.length === 0) return { value: "", lastIndex };
-  const indentation = Math.min(...nonEmpty.map((line) => line.length - line.trimStart().length));
-  if (indentation < 1) throw new SkillPackageError("invalid-skill", "SKILL.md 的 YAML block scalar 缩进无效。");
-  const stripped = rawLines.map((line) => line.length >= indentation ? line.slice(indentation) : "");
-  const literal = stripped.join("\n").trim();
-  return {
-    value: folded ? literal.replace(/([^\n])\n(?=[^\n])/g, "$1 ") : literal,
-    lastIndex
-  };
-}
-
-function parseYamlScalar(rawValue: string, label: string): string {
-  const raw = rawValue.trim();
-  if (!raw) throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${label} 不能为空。`);
-  if (raw.startsWith("\"") || raw.startsWith("'")) {
-    const quote = raw[0];
-    if (!raw.endsWith(quote) || raw.length < 2) {
-      throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${label} 引号没有正确闭合。`);
-    }
-    if (quote === "\"") {
-      try {
-        const parsed = JSON.parse(raw) as unknown;
-        if (typeof parsed !== "string") throw new Error("YAML 字段不是字符串。");
-        return parsed;
-      } catch {
-        throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${label} 双引号字符串格式损坏。`);
-      }
-    }
-    return raw.slice(1, -1).replace(/''/g, "'");
-  }
-  if (/^[\[\]{}&*!@`]/.test(raw)) {
-    throw new SkillPackageError("invalid-skill", `SKILL.md 的 ${label} 使用了当前安全解析器不支持的 YAML 结构。`);
-  }
-  return raw.replace(/\s+#.*$/, "").trim();
+  throw new SkillPackageError("invalid-skill", `SKILL.md 的 metadata.${key} 类型不受支持。`);
 }
 
 function requiredFrontmatterString(values: Map<string, ParsedYamlValue>, key: string): string {

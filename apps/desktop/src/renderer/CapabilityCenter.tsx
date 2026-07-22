@@ -21,6 +21,7 @@ import {
   XCircle
 } from "lucide-react";
 import "./capability-center.css";
+import type { CapabilitySkillDiscoveryReport } from "../shared/capabilityCenterTypes";
 
 export type CapabilityTab = "plugins" | "skills" | "mcp" | "prompts" | "memories";
 export type CapabilityScope = "global" | "personal" | "project" | "case" | "thread";
@@ -174,6 +175,8 @@ export interface CapabilityCenterProps {
   onBack: () => void;
   onDirtyChange?: (dirty: boolean) => void;
   onImportSkill: () => void | Promise<void>;
+  onDiscoverSkills: () => Promise<CapabilitySkillDiscoveryReport>;
+  onImportDiscoveredSkills: (report: CapabilitySkillDiscoveryReport, skillIds: string[]) => void | Promise<void>;
   onToggleSkill: (id: string, enabled: boolean) => void | Promise<void>;
   onSavePrompt: (id: string, content: string) => void | Promise<void>;
   onResetPrompt?: (id: string) => void | Promise<void>;
@@ -366,6 +369,8 @@ function CapabilityCenter({
   onBack,
   onDirtyChange,
   onImportSkill,
+  onDiscoverSkills,
+  onImportDiscoveredSkills,
   onToggleSkill,
   onSavePrompt,
   onResetPrompt,
@@ -404,6 +409,8 @@ function CapabilityCenter({
   const [deleteMemoryId, setDeleteMemoryId] = useState("");
   const [mcpEditorOpen, setMcpEditorOpen] = useState(false);
   const [memoryEditorOpen, setMemoryEditorOpen] = useState(false);
+  const [skillDiscovery, setSkillDiscovery] = useState<CapabilitySkillDiscoveryReport | null>(null);
+  const [selectedDiscoveredSkillIds, setSelectedDiscoveredSkillIds] = useState<Set<string>>(() => new Set());
   const [mcpDraft, setMcpDraft] = useState<CapabilityMcpDraft>({
     name: "",
     description: "",
@@ -570,10 +577,16 @@ function CapabilityCenter({
     if (activeTab === "skills") {
       const busy = isPending("import-skill");
       return (
-        <button type="button" className="capability-primary-action" disabled={busy} onClick={() => void runOperation("import-skill", onImportSkill)}>
-          {busy ? <LoaderCircle className="capability-spin" size={16} /> : <FolderInput size={16} />}
-          {busy ? "导入中" : "导入 Skill"}
-        </button>
+        <div className="capability-skill-actions">
+          <button type="button" className="capability-secondary-action" disabled={busy || isPending("discover-skills")} onClick={() => void discoverSkills()}>
+            {isPending("discover-skills") ? <LoaderCircle className="capability-spin" size={16} /> : <RefreshCw size={16} />}
+            {isPending("discover-skills") ? "扫描中" : "发现本机 Skills"}
+          </button>
+          <button type="button" className="capability-primary-action" disabled={busy} onClick={() => void runOperation("import-skill", onImportSkill)}>
+            {busy ? <LoaderCircle className="capability-spin" size={16} /> : <FolderInput size={16} />}
+            {busy ? "导入中" : "选择文件夹"}
+          </button>
+        </div>
       );
     }
     if (activeTab === "plugins" && plugins) {
@@ -599,6 +612,55 @@ function CapabilityCenter({
       return <button type="button" className="capability-primary-action" onClick={() => setMemoryEditorOpen(true)}><Brain size={16} />新增记忆</button>;
     }
     return null;
+  }
+
+  async function discoverSkills(): Promise<void> {
+    if (pendingOperations.has("discover-skills")) return;
+    setPendingOperations((current) => new Set(current).add("discover-skills"));
+    setLocalError("");
+    try {
+      const report = await onDiscoverSkills();
+      setSkillDiscovery(report);
+      const selectedNames = new Set<string>();
+      setSelectedDiscoveredSkillIds(new Set(report.items
+        .filter((item) => {
+          const name = item.name.toLocaleLowerCase();
+          if (item.validationStatus !== "valid" || item.alreadyInstalled || selectedNames.has(name) || selectedNames.size >= 100) return false;
+          selectedNames.add(name);
+          return true;
+        })
+        .map((item) => item.id)));
+    } catch (error) {
+      setLocalError(error instanceof Error ? error.message : "扫描本机 Skills 失败。");
+    } finally {
+      setPendingOperations((current) => {
+        const next = new Set(current);
+        next.delete("discover-skills");
+        return next;
+      });
+    }
+  }
+
+  function toggleDiscoveredSkill(id: string): void {
+    setSelectedDiscoveredSkillIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        if (next.size >= 100) {
+          setLocalError("一次最多导入 100 个 Skills，请先完成当前批次。");
+          return current;
+        }
+        const selectedItem = skillDiscovery?.items.find((item) => item.id === id);
+        if (selectedItem) {
+          for (const item of skillDiscovery?.items ?? []) {
+            if (item.name.toLocaleLowerCase() === selectedItem.name.toLocaleLowerCase()) next.delete(item.id);
+          }
+        }
+        next.add(id);
+      }
+      return next;
+    });
   }
 
   function listCount(): number {
@@ -977,6 +1039,44 @@ function CapabilityCenter({
         <section className="capability-list" role="table" aria-label={`${tabLabels[activeTab]}列表`}>{renderList()}</section>
         <section className="capability-detail" aria-label={`${tabLabels[activeTab]}详情`}>{renderDetail()}</section>
       </div>
+
+      {skillDiscovery ? (
+        <CapabilityModal
+          title="发现本机 Skills"
+          icon={<RefreshCw size={17} />}
+          onClose={() => setSkillDiscovery(null)}
+          footer={<>
+            <button type="button" className="capability-secondary-action" onClick={() => setSkillDiscovery(null)}>取消</button>
+            <button
+              type="button"
+              className="capability-primary-action"
+              disabled={selectedDiscoveredSkillIds.size === 0 || isPending("import-discovered-skills")}
+              onClick={() => void runOperation("import-discovered-skills", async () => {
+                await onImportDiscoveredSkills(skillDiscovery, [...selectedDiscoveredSkillIds]);
+                setSkillDiscovery(null);
+              }, "Skills 已导入，可按需启用。")}
+            >
+              {isPending("import-discovered-skills") ? <LoaderCircle className="capability-spin" size={16} /> : <FolderInput size={16} />}
+              导入所选 {selectedDiscoveredSkillIds.size || ""}
+            </button>
+          </>}
+        >
+          <div className="capability-discovery-summary">
+            {skillDiscovery.roots.map((root) => <span key={root.source}>{root.label} · {root.available ? `${root.skillCount} 个` : "未找到"}</span>)}
+          </div>
+          <div className="capability-discovery-list">
+            {skillDiscovery.items.length === 0 ? <div className="capability-discovery-empty">没有发现可导入的 Skill。可将 Skill 文件夹放入 <code>~/.sap-ai-workbench/skills</code> 后重新扫描。</div> : skillDiscovery.items.map((item) => {
+              const disabled = item.validationStatus !== "valid" || item.alreadyInstalled;
+              return <label key={item.id} className={`capability-discovery-item${disabled ? " disabled" : ""}`}>
+                <input type="checkbox" checked={selectedDiscoveredSkillIds.has(item.id)} disabled={disabled} onChange={() => toggleDiscoveredSkill(item.id)} />
+                <span className="capability-discovery-copy"><strong>{item.name}</strong><small>{item.sourceLabel} · {item.relativePath}</small><span>{item.description}</span></span>
+                <span className={`capability-validation-pill ${item.validationStatus === "valid" ? "valid" : "invalid"}`}>{item.alreadyInstalled ? "已导入" : item.validationStatus === "valid" ? item.hasScripts ? "含脚本（禁用）" : "可导入" : "格式错误"}</span>
+              </label>;
+            })}
+          </div>
+          {skillDiscovery.skippedSymlinkCount > 0 ? <p className="capability-discovery-footnote">为防止越界读取，已跳过 {skillDiscovery.skippedSymlinkCount} 个符号链接。</p> : null}
+        </CapabilityModal>
+      ) : null}
 
       {previewOpen && promptPreview ? (
         <CapabilityModal title={promptPreview.title} icon={<FileText size={17} />} onClose={() => setPreviewOpen(false)}>

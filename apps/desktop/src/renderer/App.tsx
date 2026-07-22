@@ -36,7 +36,7 @@ import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
 import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 import type { AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
-import type { CapabilityCenterSnapshot } from "../shared/capabilityCenterTypes";
+import type { CapabilityCenterSnapshot, CapabilitySkillDiscoveryReport } from "../shared/capabilityCenterTypes";
 import type { PromptProfileScope } from "../shared/promptMemoryTypes";
 import { routeSapConnections, type SapConnectionRouteDecision } from "../shared/sapConnectionRouting";
 
@@ -1334,6 +1334,24 @@ function App() {
     if (!bridge) throw new Error("请在桌面应用中导入 Skill。");
     const projectId = capabilitySnapshot?.target.projectId;
     await applyCapabilityMutation(bridge.importCapabilitySkill({ scope: projectId ? { kind: "project", projectId } : { kind: "global" } }));
+  }
+
+  async function discoverCapabilitySkills(): Promise<CapabilitySkillDiscoveryReport> {
+    if (!bridge) throw new Error("请在桌面应用中扫描 Skills。");
+    const projectId = capabilitySnapshot?.target.projectId;
+    const result = await bridge.discoverCapabilitySkills({ scope: projectId ? { kind: "project", projectId } : { kind: "global" } });
+    if (!result.ok) throw new Error(result.error);
+    return result.data;
+  }
+
+  async function importDiscoveredCapabilitySkills(report: CapabilitySkillDiscoveryReport, skillIds: string[]): Promise<void> {
+    if (!bridge) throw new Error("请在桌面应用中导入 Skills。");
+    const projectId = capabilitySnapshot?.target.projectId;
+    await applyCapabilityMutation(bridge.importDiscoveredCapabilitySkills({
+      sessionId: report.sessionId,
+      skillIds,
+      scope: projectId ? { kind: "project", projectId } : { kind: "global" }
+    }));
   }
 
   async function addCapabilityMcp(draft: CapabilityMcpDraft): Promise<void> {
@@ -2984,6 +3002,8 @@ function App() {
             onBack={() => navigateView("case")}
             onDirtyChange={setCenterDraftDirty}
             onImportSkill={importCapabilitySkill}
+            onDiscoverSkills={discoverCapabilitySkills}
+            onImportDiscoveredSkills={importDiscoveredCapabilitySkills}
             onToggleSkill={async (id, enabled) => {
               if (!bridge) throw new Error("请在桌面应用中管理 Skill。");
               await applyCapabilityMutation(bridge.setCapabilitySkillEnabled({ skillId: id, enabled }));

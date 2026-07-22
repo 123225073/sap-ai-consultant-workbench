@@ -61,6 +61,46 @@ export interface ImportCapabilitySkillInput {
   scope: SkillPackageScope;
 }
 
+export type CapabilitySkillDiscoverySource = "agents" | "codex" | "claude" | "skills-manager" | "workbench-inbox";
+
+export interface CapabilitySkillDiscoveryRoot {
+  source: CapabilitySkillDiscoverySource;
+  label: string;
+  available: boolean;
+  skillCount: number;
+}
+
+export interface CapabilitySkillDiscoveryItem {
+  id: string;
+  name: string;
+  description: string;
+  source: CapabilitySkillDiscoverySource;
+  sourceLabel: string;
+  relativePath: string;
+  hasScripts: boolean;
+  alreadyInstalled: boolean;
+  validationStatus: "valid" | "invalid";
+  validationMessage: string | null;
+}
+
+export interface CapabilitySkillDiscoveryReport {
+  sessionId: string;
+  scannedAt: string;
+  roots: CapabilitySkillDiscoveryRoot[];
+  items: CapabilitySkillDiscoveryItem[];
+  skippedSymlinkCount: number;
+}
+
+export interface DiscoverCapabilitySkillsInput {
+  scope: SkillPackageScope;
+}
+
+export interface ImportDiscoveredCapabilitySkillsInput {
+  sessionId: string;
+  skillIds: string[];
+  scope: SkillPackageScope;
+}
+
 export interface ImportCapabilityPluginInput {
   scope: PluginPackageScope;
 }

@@ -1,8 +1,11 @@
 import type {
   CapabilityCenterSnapshot,
+  CapabilitySkillDiscoveryReport,
   CreateCapabilityMemoryInput,
+  DiscoverCapabilitySkillsInput,
   ImportCapabilityPluginInput,
   ImportCapabilitySkillInput,
+  ImportDiscoveredCapabilitySkillsInput,
   RemoveCapabilityMcpInput,
   ReviewCapabilityMemoryInput,
   RevokeCapabilityMemoryInput,
@@ -27,6 +30,7 @@ import { McpConnectionManager } from "./mcpConnectionManager";
 import { PromptMemoryService } from "./promptMemoryService";
 import { PluginPackageService } from "./pluginPackageService";
 import { SkillPackageService } from "./skillPackageService";
+import { SkillDiscoveryService } from "./skillDiscoveryService";
 import { WorkspaceStore } from "./workspaceStore";
 
 const SENSITIVE_MCP_INPUT_FIELD = /(?:api[_-]?key|authorization|cookie|credential|password|passwd|private[_-]?key|secret|token)/i;
@@ -37,7 +41,8 @@ export class CapabilityCenterService {
     private readonly promptMemory: PromptMemoryService,
     private readonly skills: SkillPackageService,
     private readonly mcp: McpConnectionManager,
-    private readonly plugins: PluginPackageService
+    private readonly plugins: PluginPackageService,
+    private readonly skillDiscovery: SkillDiscoveryService
   ) {}
 
   async getSnapshot(): Promise<CapabilityCenterSnapshot> {
@@ -102,6 +107,24 @@ export class CapabilityCenterService {
       throw new Error("Skill 只能安装到当前 Project 或全局范围。");
     }
     return this.skills.preflightImport({ sourceKind: "folder", sourcePath, scope });
+  }
+
+  async discoverLocalSkills(input: DiscoverCapabilitySkillsInput): Promise<CapabilitySkillDiscoveryReport> {
+    const scope = await this.assertCurrentSkillScope(input?.scope);
+    return this.skillDiscovery.discover(scope);
+  }
+
+  async preflightDiscoveredSkillImports(input: ImportDiscoveredCapabilitySkillsInput): Promise<SkillPackagePreview[]> {
+    const scope = await this.assertCurrentSkillScope(input?.scope);
+    const paths = await this.skillDiscovery.resolveSelection(input?.sessionId, input?.skillIds, scope);
+    const previews: SkillPackagePreview[] = [];
+    try {
+      for (const sourcePath of paths) previews.push(await this.skills.preflightImport({ sourceKind: "folder", sourcePath, scope }));
+      return previews;
+    } catch (error) {
+      await Promise.all(previews.map((preview) => this.skills.cancelImport(preview.importId)));
+      throw error;
+    }
   }
 
   confirmSkillImport(importId: string): Promise<SkillPackageRecord> {
@@ -223,6 +246,15 @@ export class CapabilityCenterService {
       projectId: state.activeProjectId || null,
       caseId: state.activeCaseId || null
     };
+  }
+
+  private async assertCurrentSkillScope(scopeInput: unknown) {
+    const scope = parseSkillPackageScope(scopeInput);
+    const target = await this.currentTarget();
+    if (scope.kind === "project" && scope.projectId !== target.projectId) {
+      throw new Error("Skill 只能安装到当前 Project 或全局范围。");
+    }
+    return scope;
   }
 
   private scopesForTarget(target: ContextTarget): PromptProfileScope[] {

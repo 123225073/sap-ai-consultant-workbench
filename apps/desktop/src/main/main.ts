@@ -30,10 +30,11 @@ import { McpConnectionManager } from "./mcpConnectionManager";
 import { PromptMemoryService } from "./promptMemoryService";
 import { PluginPackageService } from "./pluginPackageService";
 import { SkillPackageService } from "./skillPackageService";
+import { SkillDiscoveryService } from "./skillDiscoveryService";
 import { assertNoSensitiveCaseContent } from "./caseWorkflowService";
 import { parseCancelAgentTurnInput, type AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
 import { ExclusiveWorkflowQueue } from "./exclusiveWorkflowQueue";
-import type { CreateCapabilityMemoryInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
+import type { CreateCapabilityMemoryInput, DiscoverCapabilitySkillsInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, ImportDiscoveredCapabilitySkillsInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
 import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 import { routeSapConnections } from "../shared/sapConnectionRouting";
 
@@ -1495,7 +1496,7 @@ function registerWorkbenchHandlers(
   ipcMain.handle("workbench:capability-skill-import", (event, input: ImportCapabilitySkillInput) => trustedResponse(event, appRoot, async () => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender);
     const options: OpenDialogOptions = {
-      title: "选择要导入的 Skill 文件夹",
+      title: "选择单个 Skill 文件夹（应直接包含 SKILL.md）",
       buttonLabel: "检查此 Skill",
       properties: ["openDirectory"]
     };
@@ -1511,7 +1512,7 @@ function registerWorkbenchHandlers(
       type: warningCount > 0 ? "warning" : "info",
       title: "确认导入 Skill",
       message: preview.name,
-      detail: `${preview.description}\n\n${preview.stats.fileCount} 个文件，${preview.resources.length} 个资源。${scriptNotice}${warningCount ? `\n另有 ${warningCount} 项提示，请导入后查看校验详情。` : ""}`,
+      detail: `${preview.description}\n\n${preview.stats.fileCount} 个文件，${preview.resources.length} 个资源。${scriptNotice}\n导入只会增加说明和参考资料，不会自动获得 SAP、文件或命令执行权限。${warningCount ? `\n另有 ${warningCount} 项提示，请导入后查看校验详情。` : ""}`,
       buttons: ["确认导入", "取消"],
       defaultId: 0,
       cancelId: 1,
@@ -1525,6 +1526,45 @@ function registerWorkbenchHandlers(
       return capabilities.getSnapshot();
     }
     await capabilities.confirmSkillImport(preview.importId);
+    return capabilities.getSnapshot();
+  }));
+  ipcMain.handle("workbench:capability-skill-discover", (event, input: DiscoverCapabilitySkillsInput) => trustedResponse(event, appRoot, async () => (
+    capabilities.discoverLocalSkills(input)
+  )));
+  ipcMain.handle("workbench:capability-skill-import-discovered", (event, input: ImportDiscoveredCapabilitySkillsInput) => trustedResponse(event, appRoot, async () => {
+    const previews = await capabilities.preflightDiscoveredSkillImports(input);
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const scriptCount = previews.filter((item) => item.scriptStatus === "present-listed-not-executable").length;
+    const previewNames = previews.slice(0, 20).map((item) => `• ${item.name}`).join("\n");
+    const remainingCount = Math.max(0, previews.length - 20);
+    const confirmationOptions = {
+      type: scriptCount > 0 ? "warning" : "info",
+      title: "确认导入本机 Skills",
+      message: `将导入 ${previews.length} 个 Skills`,
+      detail: `${previewNames}${remainingCount ? `\n• 另有 ${remainingCount} 个` : ""}\n\n${scriptCount ? `其中 ${scriptCount} 个包含 scripts；脚本只会列出，不会执行。\n` : ""}导入不会自动获得 SAP、文件或命令执行权限。`,
+      buttons: ["确认导入", "取消"],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true
+    } satisfies Electron.MessageBoxOptions;
+    const confirmation = parentWindow ? await dialog.showMessageBox(parentWindow, confirmationOptions) : await dialog.showMessageBox(confirmationOptions);
+    if (confirmation.response !== 0) {
+      await Promise.all(previews.map((preview) => capabilities.cancelSkillImport(preview.importId)));
+      return capabilities.getSnapshot();
+    }
+    let importedCount = 0;
+    try {
+      for (const preview of previews) {
+        await capabilities.confirmSkillImport(preview.importId);
+        importedCount += 1;
+      }
+    } catch (error) {
+      await Promise.all(previews.slice(importedCount).map((preview) => capabilities.cancelSkillImport(preview.importId).catch(() => undefined)));
+      const reason = error instanceof Error ? error.message : "来源文件发生变化";
+      throw new Error(importedCount > 0
+        ? `已导入 ${importedCount} 个 Skills，其余项目未导入：${reason}`
+        : `Skills 导入失败：${reason}`);
+    }
     return capabilities.getSnapshot();
   }));
   ipcMain.handle("workbench:capability-skill-enabled", (event, input: SetCapabilitySkillEnabledInput) => trustedResponse(event, appRoot, async () => {
@@ -1861,6 +1901,7 @@ if (!hasSingleInstanceLock) {
     });
     promptMemoryService = new PromptMemoryService(store.getWorkspaceRoot());
     const skillPackageService = new SkillPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "skills"));
+    const skillDiscoveryService = new SkillDiscoveryService(skillPackageService);
     const pluginPackageService = new PluginPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "plugins"));
     mcpConnectionManager = new McpConnectionManager(path.join(store.getWorkspaceRoot(), "capabilities"), (ref) => secretStore.resolveValue(ref));
     await Promise.all([
@@ -1876,7 +1917,7 @@ if (!hasSingleInstanceLock) {
       promptMemoryService
     );
     const agentToolService = new AgentToolService(store, mcpConnectionManager);
-    const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService);
+    const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService, skillDiscoveryService);
     registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, capabilityCenter, appRoot);
     createMainWindow();
 

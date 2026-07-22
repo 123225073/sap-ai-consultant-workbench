@@ -3,7 +3,7 @@ import { constants as fsConstants } from "node:fs";
 import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import { build } from "esbuild";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -11,20 +11,20 @@ const buildDir = await mkdtemp(path.join(os.tmpdir(), "sap-ai-phase52-build-"));
 const workspace = await mkdtemp(path.join(os.tmpdir(), "sap-ai-phase52-skill-"));
 
 try {
-  const outputPath = path.join(buildDir, "skill-package-service.mjs");
+  const outputPath = path.join(buildDir, "skill-package-service.cjs");
   await build({
     entryPoints: [path.join(root, "apps/desktop/src/main/skillPackageService.ts")],
     outfile: outputPath,
     bundle: true,
     platform: "node",
-    format: "esm",
+    format: "cjs",
     target: "node22"
   });
   const {
     SkillPackageService,
     parseSkillMarkdown,
     validateSkillArchiveEntryPath
-  } = await import(`${pathToFileURL(outputPath).href}?v=${Date.now()}`);
+  } = createRequire(import.meta.url)(outputPath);
 
   const parsed = parseSkillMarkdown([
     "---",
@@ -45,6 +45,34 @@ try {
   assert.equal(parsed.frontmatter.metadata.version, "1.0");
   assert.equal(parsed.frontmatter.allowedTools, "Read Bash(git:*)");
   assert.match(parsed.body, /checked evidence/);
+  const compatibleExternalSkill = parseSkillMarkdown([
+    "---",
+    "name: sap-adt-cli",
+    "description: \"Read ABAP metadata from SAP systems via the ADT REST API.",
+    "  Use when the user asks to read or analyze ABAP programs,",
+    "  classes, DDIC tables, or Open SQL data preview.\"",
+    "metadata:",
+    "  version: \"1.0.0\"",
+    "  source_urls:",
+    "    - \"https://example.invalid/skill\"",
+    "  permissions:",
+    "    read_paths: [\"<skill_dir>/references/\"]",
+    "    requires_elevation: false",
+    "---",
+    "# SAP ADT CLI"
+  ].join("\n"));
+  assert.match(compatibleExternalSkill.frontmatter.description, /Open SQL data preview/);
+  assert.equal(compatibleExternalSkill.frontmatter.metadata.version, "1.0.0");
+  assert.equal(compatibleExternalSkill.frontmatter.metadata.source_urls, '["https://example.invalid/skill"]');
+  assert.match(compatibleExternalSkill.frontmatter.metadata.permissions, /requires_elevation/);
+  const longDescription = parseSkillMarkdown([
+    "---",
+    "name: long-description-skill",
+    `description: ${"SAP integration guidance. ".repeat(80)}`,
+    "---",
+    "# Long description"
+  ].join("\n"));
+  assert.ok(longDescription.frontmatter.description.length > 1_024);
   assert.throws(
     () => parseSkillMarkdown("---\nname: broken-skill\ndescription: \"unterminated\n---\nbody"),
     /引号|损坏/

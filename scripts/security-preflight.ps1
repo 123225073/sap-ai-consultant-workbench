@@ -133,6 +133,8 @@ $allowedIpc = @(
   "workbench:capability-plugin-import",
   "workbench:capability-plugin-enabled",
   "workbench:capability-skill-import",
+  "workbench:capability-skill-discover",
+  "workbench:capability-skill-import-discovered",
   "workbench:capability-skill-enabled",
   "workbench:capability-prompt-save",
   "workbench:capability-prompt-enabled",
