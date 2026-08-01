@@ -157,6 +157,8 @@ $allowedIpc = @(
   "workbench:append-message-stream",
   "workbench:get-case-files",
   "workbench:preview-current-case-file",
+  "workbench:import-case-attachments",
+  "workbench:export-case-diagram",
   "workbench:search",
   "workbench:sap-gui-discover",
   "workbench:read-sap-object-evidence",

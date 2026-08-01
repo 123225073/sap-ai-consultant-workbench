@@ -71,10 +71,62 @@ const fakeStorage = {
 const secureStore = new SecureSecretStore(${JSON.stringify(isolatedRepoRoot)}, fakeStorage);
 await secureStore.save(project.id, { kind: "adt-password", connectionId: "adt" }, "legacy-value", null);
 assert(await secureStore.resolveProjectSecret(project.id, { kind: "adt-password", connectionId: "adt-default" }) === "legacy-value", "legacy single-SAP password target was not migrated for adt-default");
-await secureStore.save(project.id, { kind: "adt-password", connectionId: normalizedIds[0] }, "value-a", null);
+const firstSecretHandle = await secureStore.save(project.id, { kind: "adt-password", connectionId: normalizedIds[0] }, "value-a", null);
 await secureStore.save(project.id, { kind: "adt-password", connectionId: normalizedIds[1] }, "value-b", null);
 assert(await secureStore.resolveProjectSecret(project.id, { kind: "adt-password", connectionId: normalizedIds[0] }) === "value-a", "first long SAP target resolved the wrong encrypted value");
 assert(await secureStore.resolveProjectSecret(project.id, { kind: "adt-password", connectionId: normalizedIds[1] }) === "value-b", "second long SAP target resolved the wrong encrypted value");
+assert(await secureStore.resolveProjectValue(firstSecretHandle.secretRef, project.id, ["adt-password"]) === "value-a", "scoped secret resolution rejected the correct Project and purpose");
+let crossProjectSecretBlocked = false;
+try {
+  await secureStore.resolveProjectValue(firstSecretHandle.secretRef, "other-project", ["adt-password"]);
+} catch (error) {
+  crossProjectSecretBlocked = error instanceof Error && error.message.includes("跨 Project");
+}
+assert(crossProjectSecretBlocked, "secure-store reference could be resolved from another Project");
+let crossPurposeSecretBlocked = false;
+try {
+  await secureStore.resolveProjectValue(firstSecretHandle.secretRef, project.id, ["api-key"]);
+} catch (error) {
+  crossPurposeSecretBlocked = error instanceof Error && error.message.includes("用途");
+}
+assert(crossPurposeSecretBlocked, "SAP password reference could be reused as another credential kind");
+const modelKeyHandle = await secureStore.save(project.id, { kind: "api-key", providerId: "provider-a" }, "model-key", null);
+const mcpHeaderHandle = await secureStore.save(project.id, {
+  kind: "mcp-header",
+  connectionId: "mcp-connection-a",
+  headerName: "Authorization"
+}, "mcp-key", null);
+assert(
+  await secureStore.resolveProjectTargetValue(mcpHeaderHandle.secretRef, project.id, {
+    kind: "mcp-header",
+    connectionId: "mcp-connection-a",
+    headerName: "Authorization"
+  }) === "mcp-key",
+  "MCP header secret did not resolve for its exact Project, connection and header"
+);
+for (const wrongTarget of [
+  { kind: "mcp-header", connectionId: "mcp-connection-b", headerName: "Authorization" },
+  { kind: "mcp-header", connectionId: "mcp-connection-a", headerName: "X-API-Key" }
+]) {
+  let wrongMcpTargetBlocked = false;
+  try {
+    await secureStore.resolveProjectTargetValue(mcpHeaderHandle.secretRef, project.id, wrongTarget);
+  } catch (error) {
+    wrongMcpTargetBlocked = error instanceof Error && error.message.includes("连接或用途");
+  }
+  assert(wrongMcpTargetBlocked, "MCP header secret could be reused by another connection or header");
+}
+let modelKeyAsMcpBlocked = false;
+try {
+  await secureStore.resolveProjectTargetValue(modelKeyHandle.secretRef, project.id, {
+    kind: "mcp-header",
+    connectionId: "mcp-connection-a",
+    headerName: "Authorization"
+  });
+} catch (error) {
+  modelKeyAsMcpBlocked = error instanceof Error && error.message.includes("连接或用途");
+}
+assert(modelKeyAsMcpBlocked, "model API key could be reused as an MCP header secret");
 await secureStore.removeProjectTarget(project.id, { kind: "adt-password", connectionId: normalizedIds[0] });
 let removedTargetMissing = false;
 try {

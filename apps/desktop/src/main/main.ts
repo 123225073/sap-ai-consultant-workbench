@@ -32,11 +32,13 @@ import { PluginPackageService } from "./pluginPackageService";
 import { SkillPackageService } from "./skillPackageService";
 import { SkillDiscoveryService } from "./skillDiscoveryService";
 import { assertNoSensitiveCaseContent } from "./caseWorkflowService";
-import { parseCancelAgentTurnInput, type AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
+import { parseAgentThreadReplayInput, parseCancelAgentTurnInput, type AgentInterruptedTurnRecovery, type AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
 import { ExclusiveWorkflowQueue } from "./exclusiveWorkflowQueue";
 import type { CreateCapabilityMemoryInput, DiscoverCapabilitySkillsInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, ImportDiscoveredCapabilitySkillsInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
-import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, ExportCaseDiagramInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ImportCaseAttachmentsInput, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 import { routeSapConnections } from "../shared/sapConnectionRouting";
+import { prepareCaseAttachments } from "./caseAttachmentService";
+import { convertSanitizedSvg } from "./mermaidExportService";
 
 const SENSITIVE_ERROR_PATTERNS = [
   /bearer\s+[a-z0-9._-]+/gi,
@@ -901,6 +903,10 @@ async function appendCaseMessage(
     let effectiveContext = prepared.context;
     try {
       const conversationMessages = await store.getWorkAgentContextHistory(threadId);
+      const projectConfig = await store.getProjectConfig(projectId);
+      const contextModel = projectConfig.apiProviders
+        .find((provider) => provider.id === prepared.providerId)?.models
+        .find((model) => model.id === prepared.modelId);
       const assembledContext = await agentContextService.build({
         requestId,
         target: {
@@ -909,7 +915,9 @@ async function appendCaseMessage(
           caseId
         },
         userContent: targetedInput.content,
-        conversationMessages
+        conversationMessages,
+        contextWindowTokens: contextModel?.contextWindowTokens,
+        reservedOutputTokens: contextModel?.maxOutputTokens ? Math.min(1_200, contextModel.maxOutputTokens) : 1_200
       });
       effectiveContext = applyAgentContextToSafeModelDraft(prepared.context, assembledContext);
       await assertPublicModelEndpoint(prepared.baseUrl);
@@ -1047,7 +1055,9 @@ async function prepareDailyChatAssistantReply(
         caseId: null
       },
       userContent: request.content,
-      conversationMessages
+      conversationMessages,
+      contextWindowTokens: selectedModel?.contextWindowTokens,
+      reservedOutputTokens: selectedModel?.maxOutputTokens ? Math.min(1_200, selectedModel.maxOutputTokens) : 1_200
     });
     let emittedDelta = false;
     const generate = async (activeModelId: string) => {
@@ -1127,7 +1137,8 @@ async function runTrackedCaseMessage(
   agentToolService: AgentToolService,
   requestId: string,
   input: unknown,
-  onDelta?: ModelDeltaHandler
+  onDelta?: ModelDeltaHandler,
+  recoveryOfTurnId?: string
 ): Promise<WorkbenchState> {
   const target = await store.bindCaseWorkflowTarget(input);
   if (!target.threadId || !target.projectId || !target.caseId) throw new Error("当前任务缺少 Project、工作文件夹或会话标识。");
@@ -1140,7 +1151,9 @@ async function runTrackedCaseMessage(
     caseId: target.caseId,
     providerId: target.providerId ?? null,
     modelId: target.modelId || null,
-    userContent: target.content
+    userContent: target.content,
+    resumeInput: target as unknown as Record<string, unknown>,
+    recoveryOfTurnId: recoveryOfTurnId ?? null
   }, async ({ signal, turn, emitDelta, emitItem }) => {
     const execution = await appendCaseMessage(store, secretStore, agentContextService, agentToolService, requestId, turn.id, target, (delta, providerName, modelId) => {
       emitDelta(delta, providerName, modelId);
@@ -1205,7 +1218,8 @@ async function runTrackedDailyChatMessage(
   agentContextService: AgentContextService,
   requestId: string,
   input: unknown,
-  onDelta?: ModelDeltaHandler
+  onDelta?: ModelDeltaHandler,
+  recoveryOfTurnId?: string
 ): Promise<WorkbenchState> {
   const request = parseAppendDailyChatMessageInput(input);
   const before = await store.getState();
@@ -1217,7 +1231,9 @@ async function runTrackedDailyChatMessage(
     legacyThreadId,
     providerId: request.providerId ?? null,
     modelId: request.modelId ?? null,
-    userContent: request.content
+    userContent: request.content,
+    resumeInput: { ...request, threadId: legacyThreadId } as unknown as Record<string, unknown>,
+    recoveryOfTurnId: recoveryOfTurnId ?? null
   }, async ({ signal, turn, emitDelta }) => {
     const state = await appendDailyChatMessage(store, secretStore, agentContextService, requestId, turn.id, { ...request, threadId: legacyThreadId }, (delta, providerName, modelId) => {
       emitDelta(delta, providerName, modelId);
@@ -1341,6 +1357,30 @@ function validProjectId(projectId: unknown, action: string): string {
   return projectId;
 }
 
+function parseImportCaseAttachmentsInput(input: unknown): ImportCaseAttachmentsInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("附件导入请求无效。");
+  const value = input as Partial<ImportCaseAttachmentsInput>;
+  const keys = Object.keys(value).sort().join(",");
+  if (keys !== "caseId,projectId,threadId") throw new Error("附件导入请求字段无效。");
+  for (const [label, id] of [["Project", value.projectId], ["Case", value.caseId], ["任务", value.threadId]] as const) {
+    if (typeof id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)) throw new Error(`${label} ID 无效。`);
+  }
+  return { projectId: value.projectId!, caseId: value.caseId!, threadId: value.threadId! };
+}
+
+function parseExportCaseDiagramInput(input: unknown): ExportCaseDiagramInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("流程图导出请求无效。");
+  const value = input as Partial<ExportCaseDiagramInput>;
+  if (Object.keys(value).sort().join(",") !== "contentBase64,format,sourceRelativePath,sourceSha256") throw new Error("流程图导出请求字段无效。");
+  if (typeof value.sourceRelativePath !== "string" || value.sourceRelativePath.length > 240) throw new Error("流程图来源无效。");
+  if (typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/i.test(value.sourceSha256)) throw new Error("流程图来源校验值无效。");
+  if (value.format !== "svg" && value.format !== "png" && value.format !== "pdf") throw new Error("流程图格式无效。");
+  if (typeof value.contentBase64 !== "string" || value.contentBase64.length < 12 || value.contentBase64.length > 22 * 1024 * 1024 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value.contentBase64)) {
+    throw new Error("流程图导出内容无效。");
+  }
+  return { sourceRelativePath: value.sourceRelativePath, sourceSha256: value.sourceSha256, format: value.format, contentBase64: value.contentBase64 };
+}
+
 async function importKnowledgeTextFile(event: IpcMainInvokeEvent, store: WorkspaceStore, input: unknown): Promise<KnowledgeImportTextFileResult> {
   const request = parseKnowledgeImportTextFileInput(input);
   const parentWindow = BrowserWindow.fromWebContents(event.sender);
@@ -1455,6 +1495,10 @@ function registerWorkbenchHandlers(
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
   ipcMain.handle("workbench:switch-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchDailyChatThread(input)));
   ipcMain.handle("workbench:agent-runtime-health", (event) => trustedResponse(event, appRoot, async () => runtime.getHealth()));
+  ipcMain.handle("workbench:agent-runtime-read-thread", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const request = parseAgentThreadReplayInput(input);
+    return runtime.readThreadByLegacyId(request.scope, request.legacyThreadId, request.afterSequence, request.limit);
+  }));
   ipcMain.handle("workbench:agent-runtime-cancel-turn", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
     const request = parseCancelAgentTurnInput(input);
     if (agentRunOwners.get(request.requestId) !== event.sender.id) {
@@ -1643,6 +1687,33 @@ function registerWorkbenchHandlers(
   }));
   ipcMain.handle("workbench:get-case-files", (event) => trustedResponse(event, appRoot, () => store.getCaseFiles()));
   ipcMain.handle("workbench:preview-current-case-file", (event, input: unknown) => trustedResponse(event, appRoot, () => store.previewCurrentCaseFile(input)));
+  ipcMain.handle("workbench:import-case-attachments", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const target = parseImportCaseAttachmentsInput(input);
+    const parentWindow = BrowserWindow.fromWebContents(event.sender);
+    const options: OpenDialogOptions = {
+      title: "导入当前 Case 的资料附件",
+      buttonLabel: "导入并生成安全摘录",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "支持的资料", extensions: ["pdf", "docx", "xlsx", "csv", "txt", "md"] },
+        { name: "PDF", extensions: ["pdf"] },
+        { name: "Word", extensions: ["docx"] },
+        { name: "Excel/CSV", extensions: ["xlsx", "csv"] },
+        { name: "文本", extensions: ["txt", "md"] }
+      ]
+    };
+    const selection = parentWindow ? await dialog.showOpenDialog(parentWindow, options) : await dialog.showOpenDialog(options);
+    if (selection.canceled || selection.filePaths.length === 0) {
+      return { cancelled: true, message: "已取消附件导入。", items: [] };
+    }
+    const prepared = await prepareCaseAttachments(selection.filePaths);
+    return store.importCaseAttachments(target, prepared);
+  }));
+  ipcMain.handle("workbench:export-case-diagram", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const request = parseExportCaseDiagramInput(input);
+    const output = await convertSanitizedSvg(Buffer.from(request.contentBase64, "base64"), request.format);
+    return store.exportCurrentCaseDiagram({ ...request, contentBase64: output.toString("base64") });
+  }));
   ipcMain.handle("workbench:search", (event, query: string) => trustedResponse(event, appRoot, () => store.search(query)));
   ipcMain.handle("workbench:read-sap-object-evidence", (event, input: unknown) => trustedResponse(event, appRoot, () => readSapObjectEvidence(store, secretStore, input)));
   ipcMain.handle("workbench:sap-gui-discover", (event) => trustedResponse(event, appRoot, () => discoverLocalSapGuiConnections()));
@@ -1682,10 +1753,57 @@ let promptMemoryService: PromptMemoryService | null = null;
 let mcpConnectionManager: McpConnectionManager | null = null;
 
 function broadcastAgentRuntimeEvent(event: AgentRuntimeEvent): void {
-  const ownerId = agentRunOwners.get(event.requestId);
-  if (ownerId === undefined) return;
-  const owner = BrowserWindow.getAllWindows().find((window) => window.webContents.id === ownerId);
-  if (owner && !owner.isDestroyed() && !owner.webContents.isDestroyed()) owner.webContents.send(AGENT_RUNTIME_EVENT_CHANNEL, event);
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(AGENT_RUNTIME_EVENT_CHANNEL, event);
+  }
+}
+
+function isSafeAutomaticRecovery(record: AgentInterruptedTurnRecovery): boolean {
+  const input = record.resumeInput;
+  if (!record.canAutoResume || !input || typeof input.content !== "string" || !input.content.trim()) return false;
+  if (record.scope === "chat") return input.threadId === record.legacyThreadId;
+  return input.threadId === record.legacyThreadId
+    && input.projectId === record.projectId
+    && input.caseId === record.caseId
+    && input.permissionMode === "request_approval"
+    && input.codexAssistEnabled !== true;
+}
+
+async function resumeInterruptedAgentTurns(
+  records: AgentInterruptedTurnRecovery[],
+  runtime: AgentRuntime,
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  agentContextService: AgentContextService,
+  agentToolService: AgentToolService
+): Promise<void> {
+  for (const record of records) {
+    if (!isSafeAutomaticRecovery(record) || !record.resumeInput) continue;
+    const requestId = randomUUID();
+    const ownerId = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents.id : null;
+    if (ownerId !== null) agentRunOwners.set(requestId, ownerId);
+    lifecycleLogger.write("agent-runtime-auto-resume-started", { scope: record.scope, turnId: record.turnId });
+    try {
+      if (record.scope === "chat") {
+        await runTrackedDailyChatMessage(runtime, store, secretStore, agentContextService, requestId, record.resumeInput, undefined, record.turnId);
+      } else {
+        await runTrackedCaseMessage(runtime, store, secretStore, agentContextService, agentToolService, requestId, record.resumeInput, undefined, record.turnId);
+      }
+      lifecycleLogger.write("agent-runtime-auto-resume-completed", { scope: record.scope, turnId: record.turnId });
+    } catch (error) {
+      lifecycleLogger.write("agent-runtime-auto-resume-failed", { scope: record.scope, turnId: record.turnId, message: safeErrorMessage(error) });
+      const recovery = await store.reconcileInterruptedAgentTurns([record]).catch(() => null);
+      if (recovery) {
+        await Promise.all([
+          ...recovery.projected.map((turnId) => runtime.acknowledgeInterruptedTurn(turnId, "projected")),
+          ...recovery.committed.map((turnId) => runtime.acknowledgeInterruptedTurn(turnId, "committed")),
+          ...recovery.unmatched.map((turnId) => runtime.acknowledgeInterruptedTurn(turnId, "unmatched"))
+        ]).catch(() => undefined);
+      }
+    } finally {
+      if (agentRunOwners.get(requestId) === ownerId) agentRunOwners.delete(requestId);
+    }
+  }
 }
 let rendererRecoveryUsed = false;
 let applicationCloseReason: "application-quit" | "window-close" | null = null;
@@ -1877,20 +1995,29 @@ if (!hasSingleInstanceLock) {
     agentRuntime = new AgentRuntime(workspaceHostRoot, broadcastAgentRuntimeEvent);
     const runtimeHealth = await agentRuntime.initialize();
     const pendingRecoveries = agentRuntime.getPendingInterruptedTurns();
+    let automaticRecoveries: AgentInterruptedTurnRecovery[] = [];
     if (pendingRecoveries.length > 0) {
       try {
-        const recovery = await store.reconcileInterruptedAgentTurns(pendingRecoveries);
+        const classification = await store.classifyInterruptedAgentTurns(pendingRecoveries);
+        const projectedIds = new Set(classification.projected);
+        automaticRecoveries = pendingRecoveries.filter((record) => projectedIds.has(record.turnId) && isSafeAutomaticRecovery(record));
+        const manualRecoveries = pendingRecoveries.filter((record) => projectedIds.has(record.turnId) && !isSafeAutomaticRecovery(record));
+        const manualRecovery = manualRecoveries.length > 0
+          ? await store.reconcileInterruptedAgentTurns(manualRecoveries)
+          : { projected: [] as string[], committed: [] as string[], unmatched: [] as string[] };
         await Promise.all([
-          ...recovery.projected.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "projected")),
-          ...recovery.committed.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "committed")),
-          ...recovery.unmatched.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "unmatched"))
+          ...manualRecovery.projected.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "projected")),
+          ...classification.committed.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "committed")),
+          ...classification.unmatched.map((turnId) => agentRuntime!.acknowledgeInterruptedTurn(turnId, "unmatched"))
         ]);
-        lifecycleLogger.write("agent-runtime-recovery-projected", {
-          projected: recovery.projected.length,
-          committed: recovery.committed.length,
-          unmatched: recovery.unmatched.length
+        lifecycleLogger.write("agent-runtime-recovery-classified", {
+          automatic: automaticRecoveries.length,
+          projected: manualRecovery.projected.length,
+          committed: classification.committed.length,
+          unmatched: classification.unmatched.length
         });
       } catch (error) {
+        automaticRecoveries = [];
         lifecycleLogger.write("agent-runtime-recovery-failed", { message: safeErrorMessage(error) });
       }
     }
@@ -1903,7 +2030,19 @@ if (!hasSingleInstanceLock) {
     const skillPackageService = new SkillPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "skills"));
     const skillDiscoveryService = new SkillDiscoveryService(skillPackageService);
     const pluginPackageService = new PluginPackageService(path.join(store.getWorkspaceRoot(), "capabilities", "plugins"));
-    mcpConnectionManager = new McpConnectionManager(path.join(store.getWorkspaceRoot(), "capabilities"), (ref) => secretStore.resolveValue(ref));
+    mcpConnectionManager = new McpConnectionManager(
+      path.join(store.getWorkspaceRoot(), "capabilities"),
+      (ref, context) => {
+        if (context.scope.type !== "project") {
+          throw new Error("全局 MCP 暂不允许引用 Project 密钥；请改为 Project 范围连接。");
+        }
+        return secretStore.resolveProjectTargetValue(ref, context.scope.projectId, {
+          kind: "mcp-header",
+          connectionId: context.connectionId,
+          headerName: context.headerName
+        });
+      }
+    );
     await Promise.all([
       promptMemoryService.initialize(),
       skillPackageService.initialize(),
@@ -1916,10 +2055,15 @@ if (!hasSingleInstanceLock) {
       pluginPackageService,
       promptMemoryService
     );
-    const agentToolService = new AgentToolService(store, mcpConnectionManager);
+    const agentToolService = new AgentToolService(store, mcpConnectionManager, skillPackageService);
     const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService, skillDiscoveryService);
     registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, capabilityCenter, appRoot);
     createMainWindow();
+    if (automaticRecoveries.length > 0) {
+      setTimeout(() => {
+        void resumeInterruptedAgentTurns(automaticRecoveries, agentRuntime!, store, secretStore, agentContextService, agentToolService);
+      }, 750);
+    }
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) {

@@ -74,7 +74,16 @@ export interface ModelProviderConnector {
 }
 
 interface OpenAiModelListResponse {
-  data?: Array<{ id?: unknown; object?: unknown }>;
+  data?: Array<{
+    id?: unknown;
+    object?: unknown;
+    context_length?: unknown;
+    context_window?: unknown;
+    max_model_len?: unknown;
+    max_context_length?: unknown;
+    max_output_tokens?: unknown;
+    max_completion_tokens?: unknown;
+  }>;
   has_more?: unknown;
   last_id?: unknown;
 }
@@ -127,8 +136,32 @@ interface ToolAwareRound {
 type ChatMessagePayload = { role: "system" | "user" | "assistant"; content: string };
 const MAX_TOOL_ROUNDS = 8;
 const MAX_TOOL_CALLS_PER_ROUND = 8;
+const STREAM_RETRY_DELAYS_MS = [800, 2_500, 6_000] as const;
 // Validate every accumulated prefix before emitting its newest delta.
 const SAFE_DRAFT_STREAM_HOLD_CHARS = 0;
+
+function isTransientStreamFailure(caught: unknown): boolean {
+  const message = caught instanceof Error ? `${caught.name} ${caught.message}` : String(caught);
+  return /(ECONNRESET|ETIMEDOUT|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|fetch failed|network|socket|连接重置|网络连接失败|请求超时|HTTP\s+(408|425|429|500|502|503|504)\b)/i.test(message);
+}
+
+async function waitForStreamRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const finish = () => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason instanceof Error ? signal.reason : new DOMException("请求已取消。", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+  });
+}
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -172,12 +205,28 @@ function inferCapabilities(modelId: string): ModelCapability[] {
   return Array.from(capabilities);
 }
 
-function modelSummary(modelId: string, checkedAt: string): ModelSummary {
+function safeTokenLimit(...values: unknown[]): number | undefined {
+  for (const value of values) {
+    const parsed = typeof value === "number" ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN;
+    if (Number.isSafeInteger(parsed) && parsed >= 256 && parsed <= 4_000_000) return parsed;
+  }
+  return undefined;
+}
+
+function modelSummary(modelId: string, checkedAt: string, metadata?: OpenAiModelListResponse["data"] extends Array<infer Item> | undefined ? Item : never): ModelSummary {
+  const contextWindowTokens = metadata
+    ? safeTokenLimit(metadata.context_length, metadata.context_window, metadata.max_model_len, metadata.max_context_length)
+    : undefined;
+  const maxOutputTokens = metadata
+    ? safeTokenLimit(metadata.max_output_tokens, metadata.max_completion_tokens)
+    : undefined;
   return {
     id: modelId,
     displayName: modelId,
     capabilities: inferCapabilities(modelId),
-    lastSeenAt: checkedAt
+    lastSeenAt: checkedAt,
+    ...(contextWindowTokens ? { contextWindowTokens } : {}),
+    ...(maxOutputTokens ? { maxOutputTokens } : {})
   };
 }
 
@@ -446,7 +495,7 @@ async function fetchRemoteModels(input: ModelProviderConnectorInput, protocol: H
     }) as OpenAiModelListResponse;
     for (const item of payload.data ?? []) {
       const id = typeof item.id === "string" ? safeModelId(item.id) : null;
-      if (id) models.set(id, modelSummary(id, checkedAt));
+      if (id) models.set(id, modelSummary(id, checkedAt, item));
       if (models.size > MAX_MODEL_CATALOG_ITEMS) {
         throw new Error(`模型目录超过 ${MAX_MODEL_CATALOG_ITEMS} 项安全预算，已停止读取；请联系渠道管理员缩小目录范围。`);
       }
@@ -566,21 +615,36 @@ async function invokeChatStream(
     }
   };
 
-  const response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
-    method: "POST",
-    headers: {
-      ...protocolHeaders(protocol, input.apiKey, true),
-      Accept: "text/event-stream"
-    },
-    signal: input.signal,
-    body: JSON.stringify(requestBody)
-  }, (chunk) => {
-    fallbackResponseText += chunk;
-    pending += chunk;
-    const events = pending.split(/\r?\n\r?\n/);
-    pending = events.pop() ?? "";
-    for (const eventText of events) consumeEvent(eventText);
-  });
+  let response: Awaited<ReturnType<SecureModelStreamRequester>> | null = null;
+  for (let attempt = 0; attempt <= STREAM_RETRY_DELAYS_MS.length; attempt += 1) {
+    let receivedChunk = false;
+    pending = "";
+    fallbackResponseText = "";
+    try {
+      response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
+        method: "POST",
+        headers: {
+          ...protocolHeaders(protocol, input.apiKey, true),
+          Accept: "text/event-stream"
+        },
+        signal: input.signal,
+        body: JSON.stringify(requestBody)
+      }, (chunk) => {
+        receivedChunk = true;
+        fallbackResponseText += chunk;
+        pending += chunk;
+        const events = pending.split(/\r?\n\r?\n/);
+        pending = events.pop() ?? "";
+        for (const eventText of events) consumeEvent(eventText);
+      });
+      break;
+    } catch (caught) {
+      const retryDelay = STREAM_RETRY_DELAYS_MS[attempt];
+      if (receivedChunk || content.length > 0 || retryDelay === undefined || !isTransientStreamFailure(caught)) throw caught;
+      await waitForStreamRetry(retryDelay, input.signal);
+    }
+  }
+  if (!response) throw new Error(`${apiLabel} 流式连接未建立。`);
   if (pending.trim()) consumeEvent(pending);
 
   if (!content.trim() && !response.contentType.toLowerCase().includes("text/event-stream")) {
@@ -749,18 +813,34 @@ async function invokeToolAwareStreamRound(options: {
     catch { throw new Error(`${apiLabel} 返回了无法解析的工具流数据。`); }
   };
 
-  const response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
-    method: "POST",
-    headers: { ...protocolHeaders(protocol, input.apiKey, true), Accept: "text/event-stream" },
-    signal: input.signal,
-    body: JSON.stringify(requestBody)
-  }, (chunk) => {
-    fallbackResponseText += chunk;
-    pending += chunk;
-    const events = pending.split(/\r?\n\r?\n/);
-    pending = events.pop() ?? "";
-    for (const eventText of events) consumeEvent(eventText);
-  });
+  let response: Awaited<ReturnType<SecureModelStreamRequester>> | null = null;
+  for (let attempt = 0; attempt <= STREAM_RETRY_DELAYS_MS.length; attempt += 1) {
+    let receivedChunk = false;
+    pending = "";
+    fallbackResponseText = "";
+    try {
+      response = await requester(endpoint(input.baseUrl, apiPath), apiLabel, {
+        method: "POST",
+        headers: { ...protocolHeaders(protocol, input.apiKey, true), Accept: "text/event-stream" },
+        signal: input.signal,
+        body: JSON.stringify(requestBody)
+      }, (chunk) => {
+        receivedChunk = true;
+        fallbackResponseText += chunk;
+        pending += chunk;
+        const events = pending.split(/\r?\n\r?\n/);
+        pending = events.pop() ?? "";
+        for (const eventText of events) consumeEvent(eventText);
+      });
+      break;
+    } catch (caught) {
+      const retryDelay = STREAM_RETRY_DELAYS_MS[attempt];
+      const hasToolProgress = openAiCalls.size > 0 || anthropicCalls.size > 0;
+      if (receivedChunk || content.length > 0 || hasToolProgress || retryDelay === undefined || !isTransientStreamFailure(caught)) throw caught;
+      await waitForStreamRetry(retryDelay, input.signal);
+    }
+  }
+  if (!response) throw new Error(`${apiLabel} 工具流式连接未建立。`);
   if (pending.trim()) consumeEvent(pending);
   if (!response.contentType.toLowerCase().includes("text/event-stream") && fallbackResponseText.trim()) {
     try { consumePayload(JSON.parse(fallbackResponseText)); }

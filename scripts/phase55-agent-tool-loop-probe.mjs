@@ -270,16 +270,66 @@ const fakeStore = {
   }
 };
 const fakeMcp = { listConnections: () => [] };
-const serviceSession = await new AgentToolService(fakeStore, fakeMcp).createSession({ threadId: "thread-1", projectId: "project-1", caseId: "case-1" });
+const fakeSkills = {
+  async getCatalog(projectId) {
+    if (projectId !== "project-1") throw new Error("Skill 检索越过了当前 Project");
+    return [{
+      id: "skill-1",
+      name: "sap-inventory-analysis",
+      description: "分析 SAP 库存与工厂数据",
+      scope: { kind: "project", projectId },
+      sha256: "a".repeat(64),
+      validationStatus: "valid"
+    }];
+  },
+  async activateSkill(name, projectId) {
+    if (name !== "sap-inventory-analysis" || projectId !== "project-1") throw new Error("Skill 加载范围错误");
+    return {
+      id: "skill-1",
+      name,
+      description: "分析 SAP 库存与工厂数据",
+      scope: { kind: "project", projectId },
+      sha256: "a".repeat(64),
+      frontmatter: {
+        name,
+        description: "分析 SAP 库存与工厂数据",
+        license: null,
+        compatibility: null,
+        metadata: {},
+        allowedTools: null,
+        additional: {}
+      },
+      instructions: "先确认 SAP 系统、Client、工厂与关键日期，再读取只读证据。",
+      resources: [{
+        relativePath: "scripts/export.ps1",
+        kind: "script",
+        sizeBytes: 120,
+        sha256: "b".repeat(64),
+        depth: 1,
+        executable: true,
+        executionPolicy: "listed-not-executable"
+      }],
+      allowedToolsPolicy: "advisory-only",
+      scriptsExecution: "disabled"
+    };
+  }
+};
+const serviceSession = await new AgentToolService(fakeStore, fakeMcp, fakeSkills).createSession({ threadId: "thread-1", projectId: "project-1", caseId: "case-1" });
 const caseTool = serviceSession.tools.find((tool) => tool.description.includes("当前 Case"));
 const knowledgeTool = serviceSession.tools.find((tool) => tool.description.includes("当前 Project"));
-if (!caseTool || !knowledgeTool) throw new Error("内置只读工具目录缺失");
+const skillSearchTool = serviceSession.tools.find((tool) => tool.description.includes("Skills 中"));
+const skillLoadTool = serviceSession.tools.find((tool) => tool.description.includes("Skill 指令"));
+if (!caseTool || !knowledgeTool || !skillSearchTool || !skillLoadTool) throw new Error("内置只读工具目录缺失");
 if (Object.keys(caseTool.inputSchema.properties).length !== 0) throw new Error("Case 工具仍要求模型猜测内部 ID");
 if (Object.hasOwn(knowledgeTool.inputSchema.properties, "projectId")) throw new Error("知识工具仍向模型暴露内部 Project ID 参数");
 const caseResult = await serviceSession.execute({ callId: "case-call", name: caseTool.name, arguments: {} });
 if (caseResult.isError || !caseResult.content.includes("当前安全摘要")) throw new Error("系统范围注入后的 Case 工具不可用");
 const knowledgeResult = await serviceSession.execute({ callId: "knowledge-call", name: knowledgeTool.name, arguments: { query: "BOM", topK: 5 } });
 if (knowledgeResult.isError || !knowledgeResult.content.includes("published-1") || knowledgeResult.content.includes("candidate-1")) throw new Error("知识工具没有严格限制为当前 Project 的已发布知识");
+const skillSearchResult = await serviceSession.execute({ callId: "skill-search", name: skillSearchTool.name, arguments: { query: "库存分析", topK: 5 } });
+if (skillSearchResult.isError || !skillSearchResult.content.includes("sap-inventory-analysis")) throw new Error("模型不能按需发现当前 Project 的 Skill");
+const skillLoadResult = await serviceSession.execute({ callId: "skill-load", name: skillLoadTool.name, arguments: { name: "sap-inventory-analysis" } });
+if (skillLoadResult.isError || !skillLoadResult.content.includes("先确认 SAP 系统") || !skillLoadResult.content.includes('"scriptsExecution":"disabled"')) throw new Error("Skill 指令没有按只读策略加载");
 
 process.stdout.write("phase55-agent-tool-loop-probe=ok\n");
 `;

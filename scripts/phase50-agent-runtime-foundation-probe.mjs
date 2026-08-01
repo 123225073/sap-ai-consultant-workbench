@@ -108,6 +108,75 @@ try {
   );
   reopened.close();
 
+  const atomicWorkspace = path.join(workspace, "atomic-recovery");
+  await mkdir(atomicWorkspace, { recursive: true });
+  const atomicStore = new AgentEventStore(atomicWorkspace);
+  await atomicStore.initialize();
+  const atomicThread = await atomicStore.ensureThread({ legacyThreadId: "legacy-atomic-recovery", scope: "chat" });
+  const originalRecoveryTurn = await atomicStore.startTurn({
+    threadId: atomicThread.id,
+    requestId: "request-before-restart",
+    userContent: "请在重启后继续",
+    resumeInput: { kind: "daily-chat", threadId: "legacy-atomic-recovery", userContent: "请在重启后继续" }
+  });
+  atomicStore.close();
+
+  const claimedStore = new AgentEventStore(atomicWorkspace);
+  assert.equal((await claimedStore.initialize()).recoveredInterruptedTurns, 1);
+  assert.equal(claimedStore.readPendingInterruptedTurns()[0]?.canAutoResume, true);
+  const replacementTurn = await claimedStore.startTurn({
+    threadId: atomicThread.id,
+    requestId: "request-after-restart",
+    userContent: "请在重启后继续",
+    resumeInput: { kind: "daily-chat", threadId: "legacy-atomic-recovery", userContent: "请在重启后继续" },
+    recoveryOfTurnId: originalRecoveryTurn.id
+  });
+  assert.equal(claimedStore.readPendingInterruptedTurns().length, 0, "旧 Turn 必须与替代 Turn 的创建在同一事务中完成认领");
+  const claimedSnapshot = claimedStore.readThreadSnapshot(atomicThread.id);
+  assert.equal(claimedSnapshot.activeTurn?.id, replacementTurn.id);
+  assert.deepEqual(
+    claimedSnapshot.items.filter((item) => item.turnId === replacementTurn.id).map((item) => item.type),
+    ["turn-status", "resume-request", "user-message"],
+    "替代 Turn 必须原子写入恢复输入和初始事件"
+  );
+  claimedStore.close();
+
+  const secondRestartStore = new AgentEventStore(atomicWorkspace);
+  assert.equal((await secondRestartStore.initialize()).recoveredInterruptedTurns, 1);
+  const replacementRecovery = secondRestartStore.readPendingInterruptedTurns();
+  assert.equal(replacementRecovery.length, 1);
+  assert.equal(replacementRecovery[0]?.turnId, replacementTurn.id);
+  assert.equal(replacementRecovery[0]?.canAutoResume, true, "替代 Turn 再次中断时仍须保留可恢复输入");
+  await secondRestartStore.acknowledgeInterruptedTurn(replacementTurn.id, "projected");
+
+  const longHistoryThread = await secondRestartStore.ensureThread({ legacyThreadId: "legacy-long-history", scope: "chat" });
+  const historicalTurn = await secondRestartStore.startTurn({ threadId: longHistoryThread.id, requestId: "request-long-history" });
+  for (let index = 0; index < 505; index += 1) {
+    await secondRestartStore.appendItem({
+      threadId: longHistoryThread.id,
+      turnId: historicalTurn.id,
+      type: "assistant-delta",
+      payload: { content: `历史分片-${index}` },
+      idempotencyKey: `${historicalTurn.id}:delta:${index}`,
+      deferPersist: true
+    });
+  }
+  await secondRestartStore.updateTurnStatus(historicalTurn.id, "completed");
+  const activeAfterLongHistory = await secondRestartStore.startTurn({
+    threadId: longHistoryThread.id,
+    requestId: "request-after-long-history",
+    userContent: "超过五百条事件后仍需显示当前任务",
+    resumeInput: { kind: "daily-chat", threadId: "legacy-long-history", userContent: "超过五百条事件后仍需显示当前任务" }
+  });
+  const boundedSnapshot = secondRestartStore.readThreadSnapshot(longHistoryThread.id, 0, 500);
+  assert.equal(boundedSnapshot.activeTurn?.id, activeAfterLongHistory.id);
+  assert.ok(
+    boundedSnapshot.items.some((item) => item.turnId === activeAfterLongHistory.id && item.type === "user-message"),
+    "历史超过 500 条时快照仍须补入当前活动 Turn"
+  );
+  assert.equal(boundedSnapshot.nextSequence, boundedSnapshot.items.at(-1)?.sequence, "快照游标不得跳过最后一条已返回事件");
+  secondRestartStore.close();
+
   await rm(path.join(workspace, "agent-events.db"));
   const restored = new AgentEventStore(workspace);
   const restoredHealth = await restored.initialize();
@@ -119,6 +188,43 @@ try {
   const events = [];
   const runtime = new AgentRuntime(workspace, (event) => events.push(event));
   await runtime.initialize();
+  const originalEnsureThread = runtime.eventStore.ensureThread.bind(runtime.eventStore);
+  let releaseEarlyStart;
+  let markEarlyStartEntered;
+  const earlyStartGate = new Promise((resolve) => { releaseEarlyStart = resolve; });
+  const earlyStartEntered = new Promise((resolve) => { markEarlyStartEntered = resolve; });
+  runtime.eventStore.ensureThread = async (...args) => {
+    markEarlyStartEntered();
+    await earlyStartGate;
+    return originalEnsureThread(...args);
+  };
+  let earlyExecutionCalled = false;
+  const earlyRun = runtime.runTurn({
+    requestId: "request-early-cancelled",
+    scope: "chat",
+    legacyThreadId: "legacy-chat-early-cancel",
+    userContent: "立即停止测试"
+  }, async () => {
+    earlyExecutionCalled = true;
+    return { value: true, assistantContent: "不应执行" };
+  });
+  await earlyStartEntered;
+  assert.equal(events.some((event) => event.requestId === "request-early-cancelled"), false);
+  const firstEarlyCancellation = await runtime.cancelRequest("request-early-cancelled");
+  const repeatedEarlyCancellation = await runtime.cancelRequest("request-early-cancelled");
+  assert.equal(firstEarlyCancellation.cancelled, true);
+  assert.equal(repeatedEarlyCancellation.cancelled, true, "重复早停必须保持幂等");
+  releaseEarlyStart();
+  await assert.rejects(earlyRun, /停止|取消/);
+  runtime.eventStore.ensureThread = originalEnsureThread;
+  assert.equal(earlyExecutionCalled, false, "早停排队后不能进入任务执行器");
+  const earlyStartedEvent = events.find((event) => event.requestId === "request-early-cancelled");
+  assert.ok(earlyStartedEvent, "早停后仍需保留可恢复的 Turn 事件");
+  const earlyCancelledSnapshot = runtime.readThread(earlyStartedEvent.threadId);
+  assert.equal(earlyCancelledSnapshot.activeTurn, null);
+  assert.equal(earlyCancelledSnapshot.items.at(-1)?.payload.status, "cancelled");
+  assert.equal((await runtime.cancelRequest("request-early-cancelled")).cancelled, false, "完成后不能残留早停状态");
+
   let releaseExecution;
   const executionStarted = new Promise((resolve) => { releaseExecution = resolve; });
   const run = runtime.runTurn({

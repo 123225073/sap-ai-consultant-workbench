@@ -20,7 +20,7 @@ SAP AI 顾问工作台是一个面向 SAP 顾问的个人本地桌面工作台�
 
 Phase 40/41 已完成生产可用性收敛；Phase 42/43 补齐案件专用开发说明书与流程图、成果版本历史、完整备份、受控数据迁移、知识后端冲突门禁和桌面 UAT；Phase 44 完成完整模型目录选择、OpenAI/Anthropic 流式回复和真实已配置渠道回测。代码签名保留为可选发布能力，不是个人分发前提。
 
-Phase 50-57 已完成独立 Agent Runtime 的首个可运行基线：事件账本、同 Thread 单回合编排、OpenAI/Anthropic Compatible 工具循环、本地内置只读 Tool Runtime、上下文预算、自动 checkpoint、分层提示词与记忆、Skills、本机 Skills 发现、声明式 Plugin、HTTPS Streamable HTTP MCP 连接/发现和能力中心均已有真实代码与专项探针。外部 MCP 工具执行、受限子 Agent、任意 Skill 脚本和 STDIO MCP 尚未作为正式功能开放。
+Phase 50-58 已完成独立 Agent Runtime 的首个可运行基线：事件账本、同 Thread 单回合编排、OpenAI/Anthropic Compatible 工具循环、本地内置只读 Tool Runtime、模型窗口感知预算、自动 checkpoint、分层提示词与记忆、Skills、本机 Skills 发现、声明式 Plugin、HTTPS Streamable HTTP MCP 连接/发现和能力中心均已有真实代码与专项探针。商业化加固进一步补上安全崩溃续接、Skills 按需搜索/加载、记忆相关性 Top-K、无中段遗漏的会话检查点、MCP 密钥 Project/用途隔离、Case 附件安全解析、受限 Mermaid 静态预览与 SVG/PNG/PDF 导出。外部 MCP 工具执行、受限子 Agent、任意 Skill 脚本和 STDIO MCP 尚未作为正式功能开放。
 
 项目名称中的 SAP 仅用于说明产品服务的业务领域。这是个人独立产品，不代表 SAP SE 官方产品或官方背书，也不使用 SAP Logo。
 
@@ -51,6 +51,8 @@ MVP 只做个人本地版：
 - [对抗式审计矩阵](docs/architecture/ADVERSARIAL_AUDIT_MATRIX.md)
 - [多 Agent 执行模型](docs/architecture/MULTI_AGENT_EXECUTION_MODEL.md)
 - [独立 Agent Runtime 总体架构](docs/architecture/INDEPENDENT_AGENT_RUNTIME.md)
+- [前沿 Agent 产品技术对标研究](docs/research/2026-07-31-frontier-agent-benchmark.md)
+- [商业化与前沿 Agent 能力就绪审查](docs/architecture/reviews/2026-07-31-commercial-agent-readiness-review.md)
 - [Codex 公开运行时官方源码研究](docs/research/2026-07-15-codex-runtime-primary-source-study.md)
 - [ADR-0002：核心 AI 运行时独立于 Codex](docs/adr/0002-independent-agent-runtime.md)
 - [Phase 50 基础设计](docs/superpowers/specs/2026-07-15-phase-50-independent-agent-runtime-foundation-design.md)

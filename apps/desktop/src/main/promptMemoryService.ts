@@ -1127,6 +1127,7 @@ function safeAuditKind(value: ContextItemKind | PromptLayerName): ContextItemKin
 function safeAuditReason(value: ContextExclusionReason): ContextExclusionReason {
   const allowed: ContextExclusionReason[] = [
     "cross-project", "cross-case", "cross-thread", "sensitive-content", "duplicate-content", "budget-trimmed",
+    "memory-not-relevant", "memory-top-k",
     "candidate-not-confirmed", "memory-rejected", "memory-revoked", "memory-expired", "conflict-older"
   ];
   if (!allowed.includes(value)) throw new Error("ContextAudit 排除原因无效。");

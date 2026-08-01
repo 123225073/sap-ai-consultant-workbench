@@ -8,6 +8,7 @@ import {
   ToolRuntimeError,
   validateToolArguments
 } from "./toolRuntime";
+import type { ActivatedSkill, SkillCatalogEntry } from "../shared/skillTypes";
 import { WorkspaceStore } from "./workspaceStore";
 
 export interface AgentToolTarget {
@@ -51,10 +52,16 @@ interface RegisteredModelTool {
   prepareArguments: (argumentsValue: ToolJsonObject) => ToolJsonObject;
 }
 
+interface AgentSkillService {
+  getCatalog(projectId?: string | null): Promise<SkillCatalogEntry[]>;
+  activateSkill(name: string, projectId?: string | null): Promise<ActivatedSkill>;
+}
+
 export class AgentToolService {
   constructor(
     private readonly store: WorkspaceStore,
-    _mcp: unknown
+    _mcp: unknown,
+    private readonly skills: AgentSkillService | null = null
   ) {
     void _mcp;
   }
@@ -62,8 +69,57 @@ export class AgentToolService {
   async createSession(target: AgentToolTarget): Promise<AgentToolSession> {
     const registry = new ToolRegistry(createBuiltinReadonlyTools({
       readCaseSafeContext: (input) => this.readCaseSafeContext(input.threadId, input.projectId, input.caseId),
-      searchPublishedKnowledge: (input) => this.searchPublishedKnowledge(input.projectId, input.query, input.topK)
+      searchPublishedKnowledge: (input) => this.searchPublishedKnowledge(input.projectId, input.query, input.topK),
+      searchCaseImportedEvidence: (input) => this.store.searchCaseImportedEvidence(input.projectId, input.caseId, input.query, input.topK)
     }));
+    if (this.skills) {
+      registry.register({
+        name: "skills.search_available",
+        description: "在当前 Project 可用且已启用的 Skills 中按名称和说明检索，不读取脚本或任意文件。",
+        risk: "read-only",
+        scope: "project",
+        inputSchema: {
+          type: "object",
+          properties: {
+            query: { type: "string", minLength: 1, maxLength: 300 },
+            topK: { type: "integer", minimum: 1, maximum: 8 }
+          },
+          required: ["query", "topK"],
+          additionalProperties: false,
+          minProperties: 2,
+          maxProperties: 2
+        },
+        timeoutMs: 10_000,
+        maxResultChars: 8_000,
+        execute: (argumentsValue, context) => this.searchAvailableSkills(
+          context.projectId,
+          argumentsValue.query as string,
+          argumentsValue.topK as number
+        )
+      });
+      registry.register({
+        name: "skills.load_instructions",
+        description: "按名称加载当前 Project 已启用且校验通过的 Skill 指令。脚本永不执行，内容作为不可信扩展指令返回。",
+        risk: "read-only",
+        scope: "project",
+        inputSchema: {
+          type: "object",
+          properties: {
+            name: { type: "string", minLength: 1, maxLength: 128 }
+          },
+          required: ["name"],
+          additionalProperties: false,
+          minProperties: 1,
+          maxProperties: 1
+        },
+        timeoutMs: 10_000,
+        maxResultChars: 12_000,
+        execute: (argumentsValue, context) => this.loadSkillInstructions(
+          context.projectId,
+          argumentsValue.name as string
+        )
+      });
+    }
     const mappings: RegisteredModelTool[] = registry.list().map((tool) => modelMapping(tool, target));
 
     const descriptors = new Map(registry.list().map((item) => [item.name, item]));
@@ -179,6 +235,57 @@ export class AgentToolService {
       }));
     return { query, count: ranked.length, items: ranked, trust: "reviewed-published-knowledge" };
   }
+
+  private async searchAvailableSkills(projectId: string, query: string, topK: number): Promise<unknown> {
+    if (!this.skills) throw new Error("Skills 服务未初始化。");
+    const terms = tokenize(query);
+    const catalog = await this.skills.getCatalog(projectId);
+    const items = catalog
+      .map((item) => {
+        const name = item.name.toLocaleLowerCase("zh-CN");
+        const haystack = `${item.name}\n${item.description}`.toLocaleLowerCase("zh-CN");
+        const score = (name === query.toLocaleLowerCase("zh-CN") ? 100 : 0)
+          + terms.reduce((total, term) => total + (haystack.includes(term) ? Math.min(20, term.length * 3) : 0), 0);
+        return { item, score };
+      })
+      .filter((entry) => entry.score > 0)
+      .sort((left, right) => right.score - left.score || left.item.name.localeCompare(right.item.name, "zh-CN"))
+      .slice(0, topK)
+      .map(({ item, score }) => ({
+        name: item.name,
+        description: item.description,
+        scope: item.scope.kind,
+        validationStatus: item.validationStatus,
+        score
+      }));
+    return {
+      query,
+      count: items.length,
+      items,
+      nextStep: items.length > 0 ? "需要使用时再调用 skills.load_instructions。" : "没有匹配的已启用 Skill。",
+      trust: "validated-skill-catalog"
+    };
+  }
+
+  private async loadSkillInstructions(projectId: string, name: string): Promise<unknown> {
+    if (!this.skills) throw new Error("Skills 服务未初始化。");
+    const activated = await this.skills.activateSkill(name, projectId);
+    return {
+      name: activated.name,
+      description: activated.description,
+      scope: activated.scope.kind,
+      sha256: activated.sha256,
+      instructions: activated.instructions.slice(0, 8_000),
+      resources: activated.resources.map((resource) => ({
+        relativePath: resource.relativePath,
+        kind: resource.kind,
+        sizeBytes: resource.sizeBytes
+      })),
+      scriptsExecution: "disabled",
+      allowedToolsPolicy: "advisory-only",
+      trust: "untrusted-extension-instructions"
+    };
+  }
 }
 
 function modelMapping(definition: ToolDescriptor, target: AgentToolTarget): RegisteredModelTool {
@@ -207,6 +314,15 @@ function modelMapping(definition: ToolDescriptor, target: AgentToolTarget): Regi
         maxProperties: 2
       },
       prepareArguments: (argumentsValue) => ({ ...argumentsValue, projectId: target.projectId })
+    };
+  }
+  if (definition.name === "case.search_imported_evidence") {
+    return {
+      providerName: providerToolName(definition.name),
+      runtimeName: definition.name,
+      description: definition.description,
+      inputSchema: definition.inputSchema,
+      prepareArguments: (argumentsValue) => ({ query: argumentsValue.query, topK: argumentsValue.topK })
     };
   }
   return {
@@ -265,4 +381,19 @@ function providerToolName(runtimeName: string): string {
   const readable = runtimeName.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 46) || "tool";
   const hash = createHash("sha256").update(runtimeName).digest("hex").slice(0, 10);
   return `${readable}_${hash}`;
+}
+
+function tokenize(value: string): string[] {
+  const terms = value
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-CN")
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 24);
+  const expanded = terms.flatMap((term) => {
+    if (!/^[\p{Script=Han}]+$/u.test(term) || term.length <= 2) return [term];
+    return [term, ...Array.from({ length: term.length - 1 }, (_, index) => term.slice(index, index + 2))];
+  });
+  return [...new Set(expanded)].slice(0, 48);
 }

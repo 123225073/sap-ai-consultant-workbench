@@ -472,11 +472,22 @@ try {
       __phase43.clickText('成果动作');
       await __phase43.until(() => Boolean(document.querySelector('[aria-label="案件动作确认"]')));
       __phase43.setValue(document.querySelector('[aria-label="选择成果动作"]'), ${JSON.stringify(actionId)});
-      __phase43.clickText('开始生成');
-      await __phase43.until(async () => {
-        const response = await window.workbench.previewCurrentCaseFile({ relativePath: ${JSON.stringify(expectedPath)} });
-        return response.ok && response.data.content.length > 100;
-      });
+      await __phase43.until(() => document.querySelector('.action-target-line code')?.textContent?.trim() === ${JSON.stringify(expectedPath)});
+      const startButton = [...document.querySelectorAll('button')].find((item) => __phase43.normalize(item.textContent) === '开始生成');
+      if (!startButton || startButton.disabled) throw new Error('artifact-action-not-ready:${actionId}');
+      startButton.click();
+      try {
+        await __phase43.until(async () => {
+          const response = await window.workbench.previewCurrentCaseFile({ relativePath: ${JSON.stringify(expectedPath)} });
+          return response.ok && response.data.content.length > 100;
+        }, 30000);
+      } catch (error) {
+        const preview = await window.workbench.previewCurrentCaseFile({ relativePath: ${JSON.stringify(expectedPath)} });
+        const actionTarget = document.querySelector('.action-target-line code')?.textContent?.trim() ?? 'missing';
+        const actionButton = [...document.querySelectorAll('button')].find((item) => ['开始生成', '生成中'].includes(__phase43.normalize(item.textContent)));
+        throw new Error('artifact-action-timeout:${actionId};target=' + actionTarget + ';button=' + (actionButton?.textContent?.trim() ?? 'missing') + ';preview=' + JSON.stringify(preview));
+      }
+      await __phase43.until(() => !document.querySelector('[aria-label="案件动作确认"]'), 20000);
       return true;
     })()`);
   }
@@ -491,12 +502,81 @@ try {
   await capture("work-development-spec");
 
   await runArtifactAction("draw-flow", "outputs/逻辑说明图.mmd");
+  process.stdout.write("phase43-stage=flow-action-completed\n");
   const flowResult = await evaluateJson(`await (async () => {
     const response = await window.workbench.previewCurrentCaseFile({ relativePath: 'outputs/逻辑说明图.mmd' });
     return { ok: response.ok, content: response.ok ? response.data.content : response.error };
   })()`);
+  process.stdout.write(`phase43-stage=flow-source-checked;chars=${flowResult.content?.length ?? 0}\n`);
   assert(flowResult.ok && /^(flowchart|graph)\s+(TD|TB|LR|RL|BT)/i.test(flowResult.content.trim()), "流程图生成有效 Mermaid flowchart 源码");
   assert(!/(click|href|https?:|javascript:|<script)/i.test(flowResult.content), "Mermaid 流程图不包含脚本或外部链接");
+  const visibleFileRows = await evaluateJson(`[...document.querySelectorAll('.file-row-button')].map((item) => __phase43.normalize(item.textContent))`);
+  process.stdout.write("phase43-stage=flow-file-rows-read\n");
+  assert(visibleFileRows.some((text) => text.includes("逻辑说明图.mmd")), `流程图成果出现在右侧可预览文件树：${visibleFileRows.join("|")}`);
+  await pageSession.evaluate(`(async () => {
+    const row = [...document.querySelectorAll('.file-row-button')].find((item) => __phase43.normalize(item.textContent).includes('逻辑说明图.mmd'));
+    row.click();
+    return true;
+  })()`);
+  process.stdout.write("phase43-stage=flow-file-clicked\n");
+  await waitFor(
+    () => pageSession.evaluate(`[...document.querySelectorAll('.mermaid-preview-actions button')].some((item) => __phase43.normalize(item.textContent) === '图形')`),
+    5000,
+    "Mermaid 图形按钮"
+  );
+  process.stdout.write("phase43-stage=flow-render-button-ready\n");
+  await pageSession.evaluate(`(() => {
+    const renderButton = [...document.querySelectorAll('.mermaid-preview-actions button')].find((item) => __phase43.normalize(item.textContent) === '图形');
+    if (!renderButton || renderButton.disabled) throw new Error('mermaid-render-not-ready');
+    renderButton.click();
+    return true;
+  })()`);
+  process.stdout.write("phase43-stage=flow-render-clicked\n");
+  await waitFor(
+    () => pageSession.evaluate(`Boolean(document.querySelector('.mermaid-preview-canvas svg'))`),
+    12000,
+    "Mermaid 静态 SVG 渲染"
+  );
+  process.stdout.write("phase43-stage=flow-svg-ready\n");
+  const mermaidUiSafety = await evaluateJson(`(() => {
+    const svg = document.querySelector('.mermaid-preview-canvas svg');
+    const elements = svg ? [svg, ...svg.querySelectorAll('*')] : [];
+    return {
+      rendered: Boolean(svg),
+      unsafeTag: Boolean(svg?.querySelector('script,foreignObject,iframe,object,embed,image,a')),
+      unsafeAttribute: elements.some((element) => [...element.attributes].some((attribute) => /^on/i.test(attribute.name) || /^(?:href|xlink:href|src)$/i.test(attribute.name)))
+    };
+  })()`);
+  process.stdout.write("phase43-stage=flow-svg-safety-checked\n");
+  assert(mermaidUiSafety.rendered && !mermaidUiSafety.unsafeTag && !mermaidUiSafety.unsafeAttribute, "Mermaid 实际界面仅挂载清洗后的静态 SVG");
+  for (const format of ["SVG", "PNG", "PDF"]) {
+    process.stdout.write(`phase43-stage=flow-export-${format.toLowerCase()}-start\n`);
+    await pageSession.evaluate(`(() => {
+      const button = [...document.querySelectorAll('.mermaid-preview-actions button')].find((item) => __phase43.normalize(item.textContent) === ${JSON.stringify(format)});
+      if (!button || button.disabled) throw new Error('mermaid-export-not-ready:${format}');
+      button.click();
+      return true;
+    })()`);
+    try {
+      await waitFor(
+        () => pageSession.evaluate(`(() => {
+          const finished = ![...document.querySelectorAll('.mermaid-preview-actions button')].some((item) => __phase43.normalize(item.textContent) === '导出中');
+          const hasOutput = [...document.querySelectorAll('.file-row span')].some((item) => __phase43.normalize(item.textContent).toLowerCase().endsWith('.${format.toLowerCase()}'));
+          return finished && hasOutput;
+        })()`),
+        30000,
+        `Mermaid ${format} 导出`
+      );
+    } catch (error) {
+      const diagnostic = await evaluateJson(`({
+        notice: document.querySelector('.phase-notice')?.textContent ?? '',
+        buttons: [...document.querySelectorAll('.mermaid-preview-actions button')].map((item) => __phase43.normalize(item.textContent)),
+        files: [...document.querySelectorAll('.file-row span')].map((item) => __phase43.normalize(item.textContent))
+      })`);
+      throw new Error(`Mermaid ${format} 导出失败：${error.message}；${JSON.stringify(diagnostic)}`);
+    }
+    process.stdout.write(`phase43-stage=flow-export-${format.toLowerCase()}-done\n`);
+  }
   await capture("work-mermaid-flow");
 
   await pageSession.evaluate(`(async () => {

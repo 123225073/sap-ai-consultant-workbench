@@ -16,9 +16,18 @@ export interface SearchPublishedKnowledgeInput {
   signal: AbortSignal;
 }
 
+export interface SearchCaseImportedEvidenceInput {
+  projectId: string;
+  caseId: string;
+  query: string;
+  topK: number;
+  signal: AbortSignal;
+}
+
 export interface BuiltinReadonlyToolDependencies {
   readCaseSafeContext: (input: ReadSafeCaseContextInput) => Promise<unknown> | unknown;
   searchPublishedKnowledge: (input: SearchPublishedKnowledgeInput) => Promise<unknown> | unknown;
+  searchCaseImportedEvidence: (input: SearchCaseImportedEvidenceInput) => Promise<unknown> | unknown;
 }
 
 const CASE_SAFE_CONTEXT_SCHEMA: ToolJsonObjectSchema = {
@@ -63,6 +72,18 @@ const PUBLISHED_KNOWLEDGE_SEARCH_SCHEMA: ToolJsonObjectSchema = {
   maxProperties: 3
 };
 
+const CASE_IMPORTED_EVIDENCE_SEARCH_SCHEMA: ToolJsonObjectSchema = {
+  type: "object",
+  properties: {
+    query: { type: "string", minLength: 1, maxLength: 500 },
+    topK: { type: "integer", minimum: 1, maximum: 8 }
+  },
+  required: ["query", "topK"],
+  additionalProperties: false,
+  minProperties: 2,
+  maxProperties: 2
+};
+
 export function createBuiltinReadonlyTools(dependencies: BuiltinReadonlyToolDependencies): ToolDefinition[] {
   assertDependencies(dependencies);
   return [
@@ -98,6 +119,22 @@ export function createBuiltinReadonlyTools(dependencies: BuiltinReadonlyToolDepe
         topK: argumentsValue.topK as number,
         signal: context.signal
       })
+    },
+    {
+      name: "case.search_imported_evidence",
+      description: "只在当前 Case 的已脱敏附件摘录中检索，返回带相对来源路径的有限片段；不会把原始 PDF、Word、Excel 或其他 Project 文件直接送入模型。",
+      risk: "read-only",
+      scope: "case",
+      inputSchema: CASE_IMPORTED_EVIDENCE_SEARCH_SCHEMA,
+      timeoutMs: 10_000,
+      maxResultChars: 16_000,
+      execute: async (argumentsValue, context) => dependencies.searchCaseImportedEvidence({
+        projectId: context.projectId,
+        caseId: requireCaseId(context),
+        query: argumentsValue.query as string,
+        topK: argumentsValue.topK as number,
+        signal: context.signal
+      })
     }
   ];
 }
@@ -112,7 +149,7 @@ function requireCaseId(context: ToolHandlerContext): string {
 }
 
 function assertDependencies(dependencies: BuiltinReadonlyToolDependencies): void {
-  if (!dependencies || typeof dependencies.readCaseSafeContext !== "function" || typeof dependencies.searchPublishedKnowledge !== "function") {
-    throw new Error("内置只读工具必须由 main process 注入 Case 安全上下文和已发布知识适配器。");
+  if (!dependencies || typeof dependencies.readCaseSafeContext !== "function" || typeof dependencies.searchPublishedKnowledge !== "function" || typeof dependencies.searchCaseImportedEvidence !== "function") {
+    throw new Error("内置只读工具必须由 main process 注入 Case 安全上下文、附件摘录和已发布知识适配器。");
   }
 }

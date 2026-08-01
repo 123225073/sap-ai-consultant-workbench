@@ -19,6 +19,7 @@ import { containsSensitiveContent, estimateTokenCount, PromptMemoryService } fro
 
 export const CONTEXT_WARNING_RATIO = 0.75 as const;
 export const CONTEXT_HARD_RATIO = 0.88 as const;
+const MAX_MEMORIES_PER_TURN = 12;
 
 type ContextBudgetLevel = "within-budget" | "checkpoint-recommended" | "compaction-required";
 
@@ -84,7 +85,20 @@ export class ContextEngine {
       });
     }
 
-    for (const memory of resolvedMemories.included) {
+    const relevantMemories = selectRelevantMemories(
+      resolvedMemories.included,
+      input.currentTaskInstruction?.content ?? "",
+      MAX_MEMORIES_PER_TURN
+    );
+    for (const excluded of relevantMemories.excluded) {
+      excludedAudit.push({
+        ref: `memory:${excluded.memory.id}`,
+        kind: memoryContextKind(excluded.memory),
+        reason: excluded.reason,
+        estimatedTokens: estimateTokenCount(excluded.memory.content)
+      });
+    }
+    for (const memory of relevantMemories.included) {
       candidates.push({
         ref: `memory:${memory.id}`,
         kind: memoryContextKind(memory),
@@ -279,6 +293,67 @@ function memoryContextKind(memory: MemoryItemRecord): ContextItemKind {
   if (memory.scope.type === "personal") return "personal-memory";
   if (memory.scope.type === "project") return "project-memory";
   return "case-memory";
+}
+
+function selectRelevantMemories(
+  memories: MemoryItemRecord[],
+  query: string,
+  topK: number
+): {
+  included: MemoryItemRecord[];
+  excluded: Array<{ memory: MemoryItemRecord; reason: "memory-not-relevant" | "memory-top-k" }>;
+} {
+  const terms = tokenizeForRelevance(query);
+  const constraints = memories.filter((memory) => memory.kind === "constraint");
+  const ranked = memories.filter((memory) => memory.kind !== "constraint").map((memory) => {
+    const haystack = `${memory.topicKey ?? ""} ${memory.content}`.normalize("NFKC").toLocaleLowerCase("zh-CN");
+    const lexicalScore = terms.reduce(
+      (score, term) => score + (haystack.includes(term) ? Math.min(30, term.length * 4) : 0),
+      0
+    );
+    const scopeScore = memory.scope.type === "case" ? 30 : memory.scope.type === "project" ? 20 : 10;
+    const kindScore = memory.kind === "preference" ? 35 : memory.kind === "decision" ? 25 : 0;
+    return { memory, lexicalScore, score: lexicalScore + scopeScore + kindScore };
+  });
+  const relevant = terms.length === 0
+    ? ranked
+    : ranked.filter((entry) =>
+      entry.lexicalScore > 0
+      || entry.memory.kind === "constraint"
+      || entry.memory.kind === "preference"
+      || entry.memory.scope.type === "case"
+    );
+  relevant.sort((left, right) =>
+    right.score - left.score
+    || right.memory.updatedAt.localeCompare(left.memory.updatedAt)
+    || left.memory.id.localeCompare(right.memory.id)
+  );
+  // User-confirmed constraints are hard working boundaries. They remain candidates
+  // regardless of the ordinary relevance Top-K and can only be excluded by the
+  // explicit context budget audit later in the pipeline.
+  const includedIds = new Set([
+    ...constraints.map((memory) => memory.id),
+    ...relevant.slice(0, topK).map((entry) => entry.memory.id)
+  ]);
+  return {
+    included: memories.filter((memory) => includedIds.has(memory.id)),
+    excluded: memories
+      .filter((memory) => !includedIds.has(memory.id))
+      .map((memory) => ({
+        memory,
+        reason: relevant.some((entry) => entry.memory.id === memory.id) ? "memory-top-k" as const : "memory-not-relevant" as const
+      }))
+  };
+}
+
+function tokenizeForRelevance(value: string): string[] {
+  return [...new Set(value
+    .normalize("NFKC")
+    .toLocaleLowerCase("zh-CN")
+    .split(/[^\p{L}\p{N}_-]+/u)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2)
+    .slice(0, 32))];
 }
 
 function memoryPriority(memory: MemoryItemRecord): number {

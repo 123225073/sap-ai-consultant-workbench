@@ -4,6 +4,7 @@ export type AgentTurnStatus = "queued" | "running" | "waiting-approval" | "compl
 
 export type AgentItemType =
   | "user-message"
+  | "resume-request"
   | "assistant-delta"
   | "assistant-message"
   | "assistant-message-part"
@@ -53,6 +54,7 @@ export interface AgentItemRecord {
 
 export interface AgentRuntimeEvent extends AgentItemRecord {
   requestId: string;
+  legacyThreadId: string;
   scope: AgentThreadScope;
   projectId: string | null;
   caseId: string | null;
@@ -85,6 +87,17 @@ export interface AgentInterruptedTurnRecovery {
   projectId: string | null;
   caseId: string | null;
   startedAt: string;
+  providerId: string | null;
+  modelId: string | null;
+  resumeInput: Record<string, unknown> | null;
+  canAutoResume: boolean;
+}
+
+export interface AgentThreadReplayInput {
+  scope: AgentThreadScope;
+  legacyThreadId: string;
+  afterSequence?: number;
+  limit?: number;
 }
 
 export function parseCancelAgentTurnInput(input: unknown): CancelAgentTurnInput {
@@ -92,6 +105,20 @@ export function parseCancelAgentTurnInput(input: unknown): CancelAgentTurnInput 
   const value = input as Partial<CancelAgentTurnInput>;
   return {
     requestId: safeRuntimeId(value.requestId, "请求 ID")
+  };
+}
+
+export function parseAgentThreadReplayInput(input: unknown): AgentThreadReplayInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("恢复会话请求无效。");
+  const value = input as Partial<AgentThreadReplayInput>;
+  if (value.scope !== "work" && value.scope !== "chat") throw new Error("恢复会话范围无效。");
+  const afterSequence = Number.isFinite(value.afterSequence) ? Math.max(0, Math.trunc(value.afterSequence as number)) : 0;
+  const limit = Number.isFinite(value.limit) ? Math.max(1, Math.min(500, Math.trunc(value.limit as number))) : 500;
+  return {
+    scope: value.scope,
+    legacyThreadId: safeRuntimeId(value.legacyThreadId, "会话 ID"),
+    afterSequence,
+    limit
   };
 }
 

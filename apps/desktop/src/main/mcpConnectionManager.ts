@@ -64,7 +64,14 @@ interface ConnectFlight {
   promise: Promise<McpConnectionSummary>;
 }
 
-export type McpSecretResolver = (secretRef: string) => Promise<string>;
+export interface McpSecretResolutionContext {
+  connectionId: string;
+  scope: McpConnectionScope;
+  headerName: string;
+  purpose: "mcp-http-header";
+}
+
+export type McpSecretResolver = (secretRef: string, context: McpSecretResolutionContext) => Promise<string>;
 
 export class McpConnectionError extends Error {
   constructor(
@@ -392,7 +399,7 @@ export class McpConnectionManager {
       );
     }
     const client = new Client({ name: "sap-ai-consultant-workbench", version: "0.1.0" }, { capabilities: {} });
-    const transport = await this.createHttpTransport(record.transport);
+    const transport = await this.createHttpTransport(record);
     try {
       await client.connect(transport, {
         timeout: CONNECTION_TIMEOUT_MS,
@@ -406,9 +413,20 @@ export class McpConnectionManager {
     }
   }
 
-  private async createHttpTransport(config: McpHttpTransportConfig): Promise<StreamableHTTPClientTransport> {
+  private async createHttpTransport(record: McpConnectionRecord): Promise<StreamableHTTPClientTransport> {
+    const config = record.transport;
+    if (config.type !== "streamable-http") {
+      throw new McpConnectionError("invalid-config", "当前 MCP 连接不是 HTTPS Streamable HTTP。");
+    }
     const headers = new Headers();
-    for (const [name, ref] of Object.entries(config.headerRefs)) headers.set(name, await this.resolveSecret(ref));
+    for (const [name, ref] of Object.entries(config.headerRefs)) {
+      headers.set(name, await this.resolveSecret(ref, {
+        connectionId: record.id,
+        scope: record.scope,
+        headerName: name,
+        purpose: "mcp-http-header"
+      }));
+    }
     const secureFetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = input instanceof URL ? input : typeof input === "string" ? new URL(input) : new URL(input.url);
       await assertSafeHttpEndpoint(url);

@@ -66,7 +66,7 @@ try {
   assert.ok(firstCheckpoint);
   assert.equal(firstCheckpoint.version, 1);
   assert.equal(firstCheckpoint.sourceItemRefs.length, 26);
-  assert.match(firstCheckpoint.content, /确定性压缩/);
+  assert.match(firstCheckpoint.content, /确定性保留首尾与关键约束摘录/);
   assert.doesNotMatch(firstCheckpoint.content, /phase56sensitivevalue/);
   assert.ok(first.items.some((item) => item.kind === "thread-checkpoint"));
 
@@ -101,6 +101,29 @@ try {
   assert.equal(third.checkpointUpdated, true);
   assert.equal(third.history.length, 10);
   assert.equal(promptMemory.getActiveThreadCheckpoint(target)?.version, 2);
+
+  const longTarget = { threadId: "thread-phase56-long", projectId: "project-phase56", caseId: "case-phase56" };
+  const longMessages = Array.from({ length: 120 }, (_, index) => ({
+    ref: `message:phase56-long-${index}`,
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: index === 61
+      ? `${"普通背景说明 ".repeat(40)}。中段关键约束：生产系统只读，目标工厂为 8000。${"保留上下文 ".repeat(40)}`
+      : `长会话第 ${index + 1} 条：${"用于检查无损会话检查点 ".repeat(40)}`,
+    createdAt: new Date(Date.UTC(2026, 6, 16, 5, index)).toISOString()
+  }));
+  const longResult = await service.build({
+    requestId: "request-phase56-long",
+    target: longTarget,
+    userContent: "继续处理长会话。",
+    conversationMessages: longMessages
+  });
+  assert.equal(longResult.checkpointUpdated, true);
+  const longCheckpoint = promptMemory.getActiveThreadCheckpoint(longTarget);
+  assert.ok(longCheckpoint);
+  assert.match(longCheckpoint.content, /格式版本：3/);
+  assert.match(longCheckpoint.content, /中段关键约束：生产系统只读，目标工厂为 8000/);
+  assert.equal(longCheckpoint.sourceItemRefs.includes("message:phase56-long-61"), true);
+  assert.equal(longCheckpoint.sourceItemRefs.length, 110);
 
   const ordinary = await service.captureExplicitUserMemory({
     requestId: "request-phase56-ordinary",

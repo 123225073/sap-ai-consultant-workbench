@@ -65,7 +65,8 @@ try {
         authorization: "Bearer should-never-leak-1234567890",
         items: [{ id: "knowledge-1", title: "BOM 规则", summary: "API_KEY=phase50-probe-sensitive-value", details: "已发布摘要".repeat(4_000) }]
       };
-    }
+    },
+    searchCaseImportedEvidence: ({ projectId, caseId, query, topK }) => ({ projectId, caseId, query, topK, items: [] })
   });
   const executor = new ToolExecutor(registry, new PolicyEngine());
   const workScope = { threadId: "thread-1", projectId: "project-1", caseId: "case-1" };
@@ -173,6 +174,7 @@ try {
   assert.doesNotMatch(builtinSource, /from\s+["'][^"']*(?:renderer|workspaceStore|node:fs|node:path)/i);
   assert.match(builtinSource, /readCaseSafeContext/);
   assert.match(builtinSource, /searchPublishedKnowledge/);
+  assert.match(builtinSource, /searchCaseImportedEvidence/);
 
   console.log("Phase 50 minimal read-only Tool Runtime probe passed.");
 } finally {

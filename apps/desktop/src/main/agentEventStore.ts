@@ -87,6 +87,9 @@ export interface StartAgentTurnInput {
   requestId: string;
   providerId?: string | null;
   modelId?: string | null;
+  userContent?: string;
+  resumeInput?: Record<string, unknown> | null;
+  recoveryOfTurnId?: string | null;
 }
 
 export interface AppendAgentItemInput {
@@ -225,11 +228,58 @@ export class AgentEventStore {
       lastSequence: 0,
       errorCode: null
     };
-    db.exec({
-      sql: `INSERT INTO agent_turns (id, thread_id, request_id, status, provider_id, model_id, started_at, completed_at, last_sequence, error_code)
-            VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL)`,
-      bind: [turn.id, turn.threadId, turn.requestId, turn.status, turn.providerId, turn.modelId, turn.startedAt]
-    });
+    let transactionStarted = false;
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      transactionStarted = true;
+      if (input.recoveryOfTurnId) {
+        const source = this.readTurn(input.recoveryOfTurnId);
+        if (!source || source.threadId !== input.threadId || source.status !== "interrupted" || source.errorCode !== "application-restarted") {
+          throw new Error("待续接任务已被处理或不属于当前会话。");
+        }
+      }
+      db.exec({
+        sql: `INSERT INTO agent_turns (id, thread_id, request_id, status, provider_id, model_id, started_at, completed_at, last_sequence, error_code)
+              VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, NULL)`,
+        bind: [turn.id, turn.threadId, turn.requestId, turn.status, turn.providerId, turn.modelId, turn.startedAt]
+      });
+      let nextSequence = numeric((db.exec({
+        sql: "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM agent_items WHERE thread_id = ?",
+        bind: [input.threadId], rowMode: "object", returnValue: "resultRows"
+      }) as Array<{ next_sequence?: SqlValue }>)[0]?.next_sequence);
+      const insertInitialItem = (type: AgentItemType, payload: Record<string, unknown>, idempotencyKey: string) => {
+        const sanitized = sanitizePayload(payload);
+        const payloadJson = JSON.stringify(sanitized);
+        if (Buffer.byteLength(payloadJson, "utf8") > MAX_PAYLOAD_BYTES) throw new Error("运行记录内容超过 64 KB 安全上限，已拒绝保存。");
+        db.exec({
+          sql: `INSERT INTO agent_items (id, thread_id, turn_id, sequence, type, payload_json, idempotency_key, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          bind: [`agent-item-${randomUUID()}`, input.threadId, turn.id, nextSequence, type, payloadJson, idempotencyKey, startedAt]
+        });
+        nextSequence += 1;
+      };
+      if (typeof input.userContent === "string") {
+        insertInitialItem("turn-status", { status: "running" }, `${turn.id}:status:running`);
+        if (input.resumeInput) insertInitialItem("resume-request", { input: input.resumeInput }, `${turn.id}:resume-request`);
+        insertInitialItem("user-message", { content: input.userContent }, `${turn.id}:user-message`);
+        turn.lastSequence = nextSequence - 1;
+        db.exec({ sql: "UPDATE agent_turns SET last_sequence = ? WHERE id = ?", bind: [turn.lastSequence, turn.id] });
+      }
+      if (input.recoveryOfTurnId) {
+        db.exec({
+          sql: `UPDATE agent_turns SET error_code = 'application-restarted-resumed'
+                WHERE id = ? AND thread_id = ? AND status = 'interrupted' AND error_code = 'application-restarted'`,
+          bind: [input.recoveryOfTurnId, input.threadId]
+        });
+      }
+      db.exec("COMMIT");
+      transactionStarted = false;
+    } catch (error) {
+      if (transactionStarted) {
+        try { db.exec("ROLLBACK"); } catch { /* Preserve original error. */ }
+      }
+      throw error;
+    }
     await this.persist();
     return turn;
   }
@@ -309,13 +359,25 @@ export class AgentEventStore {
   readThreadSnapshot(threadId: string, afterSequence = 0, limit = 500): AgentThreadSnapshot {
     const thread = this.readThread(threadId);
     if (!thread) throw new Error("运行会话不存在。");
-    const items = this.readItems(threadId, afterSequence, limit);
+    const activeTurn = this.readActiveTurn(threadId);
+    const initialItems = this.readItems(threadId, afterSequence, limit);
+    const activeItems = activeTurn && !initialItems.some((item) => item.turnId === activeTurn.id)
+      ? this.readTurnItems(activeTurn.id)
+      : [];
+    const items = [...initialItems, ...activeItems]
+      .filter((item, index, all) => all.findIndex((candidate) => candidate.id === item.id) === index)
+      .sort((left, right) => left.sequence - right.sequence);
     return {
       thread,
-      activeTurn: this.readActiveTurn(threadId),
+      activeTurn,
       items,
-      nextSequence: (items.at(-1)?.sequence ?? afterSequence) + 1
+      nextSequence: items.at(-1)?.sequence ?? afterSequence
     };
+  }
+
+  readThreadSnapshotByLegacyId(scope: AgentThreadScope, legacyThreadId: string, afterSequence = 0, limit = 500): AgentThreadSnapshot | null {
+    const thread = this.readThreadByLegacyId(scope, legacyThreadId);
+    return thread ? this.readThreadSnapshot(thread.id, afterSequence, limit) : null;
   }
 
   readItems(threadId: string, afterSequence = 0, limit = 500): AgentItemRecord[] {
@@ -334,7 +396,7 @@ export class AgentEventStore {
     const db = this.assertReady();
     const safeLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
     const rows = db.exec({
-      sql: `SELECT t.id AS turn_id, t.thread_id AS agent_thread_id, t.started_at,
+      sql: `SELECT t.id AS turn_id, t.thread_id AS agent_thread_id, t.started_at, t.provider_id, t.model_id,
                    th.legacy_thread_id, th.scope, th.project_id, th.case_id
             FROM agent_turns t
             JOIN agent_threads th ON th.id = t.thread_id
@@ -347,19 +409,36 @@ export class AgentEventStore {
     return rows.map((row) => {
       const scope = textValue(row.scope);
       if (scope !== "work" && scope !== "chat") throw new Error("运行恢复记录范围损坏。");
+      const turnId = textValue(row.turn_id);
+      const turnItems = this.readTurnItems(turnId);
+      const resumeItem = turnItems.find((item) => item.type === "resume-request");
+      const resumeInput = resumeItem?.payload.input && typeof resumeItem.payload.input === "object" && !Array.isArray(resumeItem.payload.input)
+        ? resumeItem.payload.input as Record<string, unknown>
+        : null;
+      const hasUnsafeProgress = turnItems.some((item) => item.type === "assistant-delta"
+        || item.type === "assistant-message"
+        || item.type === "assistant-message-part"
+        || item.type === "tool-call"
+        || item.type === "tool-decision"
+        || item.type === "tool-result"
+        || item.type === "artifact-reference");
       return {
-        turnId: textValue(row.turn_id),
+        turnId,
         agentThreadId: textValue(row.agent_thread_id),
         legacyThreadId: textValue(row.legacy_thread_id),
         scope,
         projectId: nullableText(row.project_id),
         caseId: nullableText(row.case_id),
-        startedAt: textValue(row.started_at)
+        startedAt: textValue(row.started_at),
+        providerId: nullableText(row.provider_id),
+        modelId: nullableText(row.model_id),
+        resumeInput,
+        canAutoResume: Boolean(resumeInput) && !hasUnsafeProgress
       };
     });
   }
 
-  async acknowledgeInterruptedTurn(turnId: string, outcome: "projected" | "committed" | "unmatched"): Promise<void> {
+  async acknowledgeInterruptedTurn(turnId: string, outcome: "projected" | "committed" | "unmatched" | "resumed"): Promise<void> {
     const db = this.assertReady();
     const turn = this.readTurn(turnId);
     if (!turn || turn.status !== "interrupted" || turn.errorCode !== "application-restarted") return;
@@ -369,7 +448,9 @@ export class AgentEventStore {
       type: "error",
       payload: {
         code: "application-restarted",
-        message: outcome === "committed"
+        message: outcome === "resumed"
+          ? "应用已在安全条件下自动续接上次未完成的任务。"
+          : outcome === "committed"
           ? "应用上次关闭前回复已经保存，但运行完成状态尚未来得及确认，已在原会话提示用户检查现有回复。"
           : outcome === "projected"
             ? "应用上次关闭时任务尚未完成，已在原会话显示中断提示。"
@@ -447,6 +528,16 @@ export class AgentEventStore {
       bind: [threadId, idempotencyKey], rowMode: "object", returnValue: "resultRows"
     }) as ItemRow[];
     return rows[0] ? itemFromRow(rows[0]) : null;
+  }
+
+  private readTurnItems(turnId: string): AgentItemRecord[] {
+    const db = this.assertReady();
+    const rows = db.exec({
+      sql: `SELECT id, thread_id, turn_id, sequence, type, payload_json, idempotency_key, created_at
+            FROM agent_items WHERE turn_id = ? ORDER BY sequence ASC`,
+      bind: [turnId], rowMode: "object", returnValue: "resultRows"
+    }) as ItemRow[];
+    return rows.map(itemFromRow);
   }
 
   private migrate(): void {

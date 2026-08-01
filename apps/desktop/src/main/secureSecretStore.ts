@@ -82,13 +82,38 @@ export class SecureSecretStore {
 
   async resolveValue(ref: string): Promise<string> {
     this.assertProviderReady();
-    const blobPath = this.assertInsideSecureRoot(path.join(this.secureRoot, refToFileName(ref)));
-    const raw = await fs.readFile(blobPath, "utf8");
-    const blob = JSON.parse(raw) as StoredSecretBlob;
-    if (blob.ref !== ref || !isManagedSecretRef(blob.ref)) {
-      throw new Error("安全引用与本地记录不匹配。");
+    return this.decryptBlob(await this.readBlob(ref));
+  }
+
+  async resolveProjectValue(ref: string, projectId: string, allowedKinds: readonly SecretKind[]): Promise<string> {
+    this.assertProviderReady();
+    const normalizedProjectId = cleanSecretTargetSegment(projectId, "project");
+    if (!Array.isArray(allowedKinds) || allowedKinds.length === 0) {
+      throw new Error("安全引用用途未声明，已阻止读取。");
     }
-    return this.provider.decryptString(Buffer.from(blob.encryptedValue, "base64"));
+    const blob = await this.readBlob(ref);
+    if (blob.projectId !== normalizedProjectId) {
+      throw new Error("安全引用不属于当前 Project，已阻止跨 Project 读取。");
+    }
+    if (!allowedKinds.includes(blob.kind)) {
+      throw new Error("安全引用用途与当前操作不匹配，已阻止读取。");
+    }
+    return this.decryptBlob(blob);
+  }
+
+  async resolveProjectTargetValue(ref: string, projectId: string, target: ProjectSecretTarget): Promise<string> {
+    this.assertProviderReady();
+    const normalizedProjectId = cleanSecretTargetSegment(projectId, "project");
+    const blob = await this.readBlob(ref);
+    const expectedTargetIds = new Set(secretTargetIdCandidates(target));
+    if (
+      blob.projectId !== normalizedProjectId
+      || blob.kind !== target.kind
+      || !expectedTargetIds.has(blob.targetId)
+    ) {
+      throw new Error("安全引用与当前 Project、连接或用途不匹配，已阻止读取。");
+    }
+    return this.decryptBlob(blob);
   }
 
   async resolveProjectSecret(projectId: string, target: ProjectSecretTarget): Promise<string> {
@@ -102,7 +127,12 @@ export class SecureSecretStore {
     if (!ref) {
       throw new Error("安全存储里没有找到当前目标的密钥。");
     }
-    return this.resolveValue(ref);
+    const blob = await this.readBlob(ref);
+    const expectedTargetIds = new Set(secretTargetIdCandidates(target));
+    if (blob.projectId !== normalizedProjectId || blob.kind !== target.kind || !expectedTargetIds.has(blob.targetId)) {
+      throw new Error("安全引用与当前 Project 或目标不匹配，已阻止读取。");
+    }
+    return this.decryptBlob(blob);
   }
 
   async removeProjectTarget(projectId: string, target: ProjectSecretTarget): Promise<number> {
@@ -156,6 +186,28 @@ export class SecureSecretStore {
 
   private createRef(): string {
     return `${REF_PREFIX}sec_${crypto.randomBytes(16).toString("hex")}`;
+  }
+
+  private async readBlob(ref: string): Promise<StoredSecretBlob> {
+    const blobPath = this.assertInsideSecureRoot(path.join(this.secureRoot, refToFileName(ref)));
+    const raw = await fs.readFile(blobPath, "utf8");
+    const blob = JSON.parse(raw) as StoredSecretBlob;
+    if (
+      blob.schemaVersion !== 1
+      || blob.ref !== ref
+      || !isManagedSecretRef(blob.ref)
+      || typeof blob.projectId !== "string"
+      || typeof blob.targetId !== "string"
+      || !["adt-password", "api-key", "feishu-token", "codex-token", "mcp-header"].includes(blob.kind)
+      || typeof blob.encryptedValue !== "string"
+    ) {
+      throw new Error("安全引用与本地记录不匹配。");
+    }
+    return blob;
+  }
+
+  private decryptBlob(blob: StoredSecretBlob): string {
+    return this.provider.decryptString(Buffer.from(blob.encryptedValue, "base64"));
   }
 
   private async findLatestRef(projectId: string, kind: SecretKind, targetId: string): Promise<string | null> {

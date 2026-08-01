@@ -11,6 +11,8 @@ export interface AgentTurnTarget {
   providerId?: string | null;
   modelId?: string | null;
   userContent: string;
+  resumeInput?: Record<string, unknown> | null;
+  recoveryOfTurnId?: string | null;
 }
 
 export interface AgentTurnExecutionContext {
@@ -46,6 +48,8 @@ const MAX_EVENT_TEXT_CHARS = 12_000;
 export class AgentRuntime {
   private readonly eventStore: AgentEventStore;
   private readonly activeRuns = new Map<string, ActiveRun>();
+  private readonly startingRequests = new Set<string>();
+  private readonly pendingCancellations = new Set<string>();
 
   constructor(workspaceRoot: string, private readonly onEvent?: AgentRuntimeEventListener) {
     this.eventStore = new AgentEventStore(workspaceRoot);
@@ -60,20 +64,34 @@ export class AgentRuntime {
   }
 
   async runTurn<T>(target: AgentTurnTarget, execute: (context: AgentTurnExecutionContext) => Promise<AgentTurnExecutionResult<T>>): Promise<T> {
-    const thread = await this.eventStore.ensureThread({
-      legacyThreadId: target.legacyThreadId,
-      scope: target.scope,
-      projectId: target.scope === "work" ? target.projectId ?? null : null,
-      caseId: target.scope === "work" ? target.caseId ?? null : null
-    });
-    const turn = await this.eventStore.startTurn({
-      threadId: thread.id,
-      requestId: target.requestId,
-      providerId: target.providerId,
-      modelId: target.modelId
-    });
+    this.startingRequests.add(target.requestId);
+    let thread;
+    let turn;
+    try {
+      thread = await this.eventStore.ensureThread({
+        legacyThreadId: target.legacyThreadId,
+        scope: target.scope,
+        projectId: target.scope === "work" ? target.projectId ?? null : null,
+        caseId: target.scope === "work" ? target.caseId ?? null : null
+      });
+      turn = await this.eventStore.startTurn({
+        threadId: thread.id,
+        requestId: target.requestId,
+        providerId: target.providerId,
+        modelId: target.modelId,
+        userContent: target.userContent,
+        resumeInput: target.resumeInput,
+        recoveryOfTurnId: target.recoveryOfTurnId
+      });
+    } catch (error) {
+      this.startingRequests.delete(target.requestId);
+      this.pendingCancellations.delete(target.requestId);
+      throw error;
+    }
     const controller = new AbortController();
     this.activeRuns.set(target.requestId, { threadId: thread.id, turnId: turn.id, requestId: target.requestId, controller });
+    this.startingRequests.delete(target.requestId);
+    if (this.pendingCancellations.delete(target.requestId)) controller.abort(cancelledError());
 
     let deltaIndex = 0;
     let itemIndex = 0;
@@ -126,7 +144,11 @@ export class AgentRuntime {
 
     try {
       await this.appendAndEmit(target, turn, "turn-status", { status: "running" }, `${turn.id}:status:running`);
+      if (target.resumeInput) {
+        await this.appendAndEmit(target, turn, "resume-request", { input: target.resumeInput }, `${turn.id}:resume-request`);
+      }
       await this.appendAndEmit(target, turn, "user-message", { content: target.userContent }, `${turn.id}:user-message`);
+      if (controller.signal.aborted) throw cancelledError();
       const result = await execute({ signal: controller.signal, turn, emitDelta, emitItem });
       flushPendingDelta();
       await writeChain;
@@ -187,8 +209,14 @@ export class AgentRuntime {
 
   async cancelRequest(requestId: string): Promise<{ cancelled: boolean; message: string }> {
     const active = this.activeRuns.get(requestId);
-    if (!active) return { cancelled: false, message: "该任务已经结束或不在当前进程中运行。" };
-    active.controller.abort(cancelledError());
+    if (active) {
+      active.controller.abort(cancelledError());
+      return { cancelled: true, message: "正在停止本次任务，已经完成的只读结果会保留。" };
+    }
+    if (!this.startingRequests.has(requestId)) {
+      return { cancelled: false, message: "该任务已经结束或不在当前进程中运行。" };
+    }
+    this.pendingCancellations.add(requestId);
     return { cancelled: true, message: "正在停止本次任务，已经完成的只读结果会保留。" };
   }
 
@@ -196,17 +224,23 @@ export class AgentRuntime {
     return this.eventStore.readThreadSnapshot(threadId, afterSequence, limit);
   }
 
+  readThreadByLegacyId(scope: AgentThreadScope, legacyThreadId: string, afterSequence = 0, limit = 500): AgentThreadSnapshot | null {
+    return this.eventStore.readThreadSnapshotByLegacyId(scope, legacyThreadId, afterSequence, limit);
+  }
+
   getPendingInterruptedTurns(): AgentInterruptedTurnRecovery[] {
     return this.eventStore.readPendingInterruptedTurns();
   }
 
-  acknowledgeInterruptedTurn(turnId: string, outcome: "projected" | "committed" | "unmatched"): Promise<void> {
+  acknowledgeInterruptedTurn(turnId: string, outcome: "projected" | "committed" | "unmatched" | "resumed"): Promise<void> {
     return this.eventStore.acknowledgeInterruptedTurn(turnId, outcome);
   }
 
   close(): void {
     for (const run of this.activeRuns.values()) run.controller.abort(new Error("应用正在关闭。"));
     this.activeRuns.clear();
+    this.startingRequests.clear();
+    this.pendingCancellations.clear();
     this.eventStore.close();
   }
 
@@ -222,6 +256,7 @@ export class AgentRuntime {
     this.onEvent?.({
       ...item,
       requestId: target.requestId,
+      legacyThreadId: target.legacyThreadId,
       scope: target.scope,
       projectId: target.scope === "work" ? target.projectId ?? null : null,
       caseId: target.scope === "work" ? target.caseId ?? null : null

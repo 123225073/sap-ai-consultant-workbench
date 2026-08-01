@@ -234,6 +234,7 @@ export function createSecureModelStreamRequester(
           callback(null, selected.address, family);
         }) as never
       }, (response) => {
+        let responseEnded = false;
         const statusCode = response.statusCode ?? 0;
         if (statusCode >= 300 && statusCode < 400) {
           response.resume();
@@ -263,8 +264,18 @@ export function createSecureModelStreamRequester(
         });
         response.on("end", () => {
           if (settled) return;
+          responseEnded = true;
           settled = true;
           resolve({ contentType });
+        });
+        response.on("aborted", () => {
+          finishReject(new Error(`${apiLabel} 流式连接在完成前中断。`));
+        });
+        response.on("error", () => {
+          finishReject(new Error(`${apiLabel} 流式网络连接失败。`));
+        });
+        response.on("close", () => {
+          if (!responseEnded) finishReject(new Error(`${apiLabel} 流式连接在完成前关闭。`));
         });
       });
 

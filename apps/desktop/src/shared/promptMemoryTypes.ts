@@ -224,6 +224,8 @@ export type ContextExclusionReason =
   | "sensitive-content"
   | "duplicate-content"
   | "budget-trimmed"
+  | "memory-not-relevant"
+  | "memory-top-k"
   | MemoryResolutionExclusionReason;
 
 export interface ContextAuditSelection {

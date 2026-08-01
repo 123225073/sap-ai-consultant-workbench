@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import {
   assertNoSensitiveCaseContent,
   buildAssistantContent,
@@ -49,12 +50,14 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatMessage, DailyChatThread, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkThread } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseAttachmentImportItem, CaseAttachmentImportResult, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatMessage, DailyChatThread, ExportCaseDiagramInput, ExportCaseDiagramResult, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkThread } from "../shared/workbenchTypes";
 import type { AgentInterruptedTurnRecovery } from "../shared/agentRuntimeTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
 import { renderFeishuHandoffArtifacts } from "./feishuHandoffService";
 import { decideInterruptedTurnProjection } from "./agentRecovery";
+import type { PreparedCaseAttachment } from "./caseAttachmentService";
+import { containsUnsafeSensitiveText, redactSensitiveText } from "./contentSafety";
 
 interface StoredState {
   schemaVersion: number;
@@ -288,6 +291,27 @@ function hasUnsafeIndexableContent(input: string): boolean {
   const lines = input.split(/\r?\n/).filter((line) => line.trim().length > 0);
   const structuredRows = lines.filter((line) => line.split(/\t|,|\|/).filter((cell) => cell.trim().length > 0).length >= 5);
   return structuredRows.length >= 6;
+}
+
+function compactTimestamp(): string {
+  return new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+}
+
+function assertDiagramExportBytes(format: ExportCaseDiagramInput["format"], bytes: Buffer): void {
+  if (format === "png") {
+    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    if (!bytes.subarray(0, 8).equals(signature)) throw new Error("PNG 流程图内容无效。");
+    return;
+  }
+  if (format === "pdf") {
+    if (bytes.subarray(0, 5).toString("ascii") !== "%PDF-") throw new Error("PDF 流程图内容无效。");
+    return;
+  }
+  const svg = bytes.toString("utf8").trim();
+  if (!svg.startsWith("<svg") || !svg.endsWith("</svg>")) throw new Error("SVG 流程图内容无效。");
+  if (/<script\b|<foreignObject\b|\son[a-z]+\s*=|(?:href|src)\s*=\s*["'](?:https?:|file:|javascript:|data:text\/html)/i.test(svg)) {
+    throw new Error("SVG 包含不允许的脚本、事件或外部资源。");
+  }
 }
 
 function safeIndexSummary(input: string): string {
@@ -1391,7 +1415,13 @@ function normalizeModels(value: unknown): ModelSummary[] {
       id,
       displayName: text(candidate.displayName, id),
       capabilities,
-      lastSeenAt: nullableIso(candidate.lastSeenAt) ?? nowIso()
+      lastSeenAt: nullableIso(candidate.lastSeenAt) ?? nowIso(),
+      ...(Number.isSafeInteger(candidate.contextWindowTokens) && (candidate.contextWindowTokens ?? 0) >= 256 && (candidate.contextWindowTokens ?? 0) <= 4_000_000
+        ? { contextWindowTokens: candidate.contextWindowTokens }
+        : {}),
+      ...(Number.isSafeInteger(candidate.maxOutputTokens) && (candidate.maxOutputTokens ?? 0) >= 64 && (candidate.maxOutputTokens ?? 0) <= 200_000
+        ? { maxOutputTokens: candidate.maxOutputTokens }
+        : {})
     }];
   });
 }
@@ -1783,6 +1813,27 @@ export class WorkspaceStore {
       await this.ensureCaseFiles(state);
       await this.refreshSearchIndex(state);
       return this.withFiles(state);
+    });
+  }
+
+  async classifyInterruptedAgentTurns(records: AgentInterruptedTurnRecovery[]): Promise<{ projected: string[]; committed: string[]; unmatched: string[] }> {
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const projected: string[] = [];
+      const committed: string[] = [];
+      const unmatched: string[] = [];
+      for (const record of records.slice(0, 100)) {
+        const thread = record.scope === "chat"
+          ? state.chatThreads.find((item) => item.id === record.legacyThreadId)
+          : state.workThreads.find((item) => item.id === record.legacyThreadId && item.projectId === record.projectId && item.caseId === record.caseId);
+        if (!thread) {
+          unmatched.push(record.turnId);
+          continue;
+        }
+        const decision = decideInterruptedTurnProjection(thread.messages, record.turnId);
+        (decision.committed ? committed : projected).push(record.turnId);
+      }
+      return { projected, committed, unmatched };
     });
   }
 
@@ -2509,6 +2560,177 @@ export class WorkspaceStore {
       content: redacted.content,
       redactions: redacted.redactions
     };
+  }
+
+  async importCaseAttachments(
+    target: { projectId: string; caseId: string; threadId: string },
+    attachments: PreparedCaseAttachment[]
+  ): Promise<CaseAttachmentImportResult> {
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === target.projectId);
+      const caseItem = project?.cases.find((item) => item.id === target.caseId);
+      const thread = state.workThreads.find((item) => item.id === target.threadId && item.projectId === target.projectId && item.caseId === target.caseId);
+      if (!project || !caseItem || !thread || thread.status !== "active") throw new Error("附件目标任务已经切换、归档或不存在，请重新选择附件。");
+      if (attachments.length < 1) throw new Error("没有可导入的附件。");
+
+      const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
+      const items: CaseAttachmentImportItem[] = [];
+      const generatedFiles: CaseGeneratedFile[] = [];
+      for (const [index, attachment] of attachments.entries()) {
+        const safeName = containsUnsafeSensitiveText(attachment.displayName)
+          ? `附件-${index + 1}${attachment.extension}`
+          : attachment.displayName;
+        const originalRelativePath = await this.uniqueCaseRelativePath(caseRoot, `evidence/imports/originals/${safeName}`);
+        const extractedName = `${path.parse(safeName).name}-摘录.md`;
+        const extractedRelativePath = await this.uniqueCaseRelativePath(caseRoot, `evidence/imports/extracted/${extractedName}`);
+        const warningLines = attachment.warnings.length > 0
+          ? attachment.warnings.map((warning) => `- ${warning}`).join("\n")
+          : "- 无";
+        const extractedContent = [
+          `# ${path.parse(safeName).name} · 安全解析摘录`,
+          "",
+          "## 来源", "",
+          `- 原件：${originalRelativePath}`,
+          `- 文件类型：${attachment.extension.slice(1).toUpperCase()}`,
+          `- 原件大小：${attachment.sizeBytes} bytes`,
+          `- 摘录字符数：${attachment.extractedCharacters}`,
+          `- 已脱敏：${attachment.redactions} 处`,
+          `- 是否截断：${attachment.truncated ? "是；原件仍完整保留" : "否"}`,
+          "", "## 解析提示", "", warningLines,
+          "", "## 安全边界", "",
+          "该摘录由本机解析生成，可被当前 Case 的只读检索工具按需读取。原始附件不会直接进入模型上下文，也不会跨 Project 使用。",
+          "", "## 摘录正文", "", attachment.extractedMarkdown.trim() || "[未提取到可用文本]", ""
+        ].join("\n");
+        assertNoSensitiveCaseContent(extractedContent);
+        generatedFiles.push({ relativePath: extractedRelativePath, purpose: "evidence", content: extractedContent });
+        items.push({
+          displayName: safeName,
+          fileType: attachment.extension.slice(1),
+          sizeBytes: attachment.sizeBytes,
+          originalRelativePath,
+          extractedRelativePath,
+          extractedCharacters: attachment.extractedCharacters,
+          redactions: attachment.redactions,
+          truncated: attachment.truncated,
+          warnings: attachment.warnings
+        });
+      }
+
+      const manifestRelativePath = await this.uniqueCaseRelativePath(caseRoot, `evidence/imports/导入记录-${compactTimestamp()}.md`);
+      const manifestContent = [
+        "# Case 附件导入记录", "",
+        `- 导入时间：${nowIso()}`,
+        `- Project：${project.name}`,
+        `- Case：${caseItem.title}`,
+        `- 文件数：${items.length}`,
+        "- 安全策略：原件本地保存；仅脱敏摘录可由当前 Case 的只读工具按需读取。", "",
+        "## 文件", "",
+        ...items.flatMap((item, index) => [
+          `### ${index + 1}. ${item.displayName}`, "",
+          `- 原件：${item.originalRelativePath}`,
+          `- 摘录：${item.extractedRelativePath}`,
+          `- 大小：${item.sizeBytes} bytes`,
+          `- 脱敏：${item.redactions} 处`,
+          `- 截断：${item.truncated ? "是" : "否"}`, ""
+        ])
+      ].join("\n");
+      assertNoSensitiveCaseContent(manifestContent);
+      generatedFiles.push({ relativePath: manifestRelativePath, purpose: "evidence", content: manifestContent });
+
+      for (let index = 0; index < attachments.length; index += 1) {
+        await this.writeBinaryCaseFile(caseRoot, items[index].originalRelativePath, attachments[index].originalBytes);
+      }
+      for (const file of generatedFiles) await this.writeGeneratedFile(caseRoot, file);
+
+      const generatedPaths = [...items.flatMap((item) => [item.originalRelativePath, item.extractedRelativePath]), manifestRelativePath];
+      const assistant = createCaseMessage(
+        "assistant",
+        caseItem.id,
+        `已将 ${items.length} 个附件导入当前 Case。原件仅本地保存；已生成脱敏摘录，模型需要时只能通过当前 Case 的只读工具按需检索。`,
+        "problem-analysis",
+        "local-attachment-import",
+        generatedPaths
+      );
+      thread.messages.push(assistant);
+      thread.updatedAt = nowIso();
+      caseItem.messages = thread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+      caseItem.updatedAt = thread.updatedAt;
+      caseItem.currentSummary = `已导入 ${items.length} 个本地附件并生成脱敏摘录，等待结合问题进行只读分析。`;
+      caseItem.summary = caseItem.currentSummary;
+      await this.saveState(state);
+      await this.refreshSearchIndex(state);
+      return {
+        cancelled: false,
+        message: `已导入 ${items.length} 个附件，并生成可追溯的脱敏摘录。`,
+        items,
+        state: await this.withFiles(state)
+      };
+    });
+  }
+
+  async searchCaseImportedEvidence(projectId: string, caseId: string, query: string, topK: number): Promise<unknown> {
+    const state = await this.loadOrCreateState();
+    const project = state.projects.find((item) => item.id === projectId);
+    const caseItem = project?.cases.find((item) => item.id === caseId);
+    if (!project || !caseItem) throw new Error("当前 Project 或 Case 已不存在。");
+    const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
+    const extractedRoot = this.assertInsideWorkspace(path.join(caseRoot, "evidence", "imports", "extracted"));
+    let entries: Array<{ name: string; isFile(): boolean; isSymbolicLink(): boolean }> = [];
+    try {
+      entries = await fs.readdir(extractedRoot, { withFileTypes: true });
+    } catch (error) {
+      if (isFileNotFound(error)) return { query, count: 0, items: [], trust: "local-redacted-case-evidence" };
+      throw error;
+    }
+    const terms = query.normalize("NFKC").toLocaleLowerCase("zh-CN").split(/[^\p{L}\p{N}_-]+/u).filter((term) => term.length >= 2).slice(0, 24);
+    const candidates: Array<{ relativePath: string; title: string; score: number; excerpt: string }> = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || entry.isSymbolicLink() || !entry.name.toLowerCase().endsWith(".md")) continue;
+      const target = this.assertInsideWorkspace(path.join(extractedRoot, entry.name));
+      const stat = await fs.lstat(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 768 * 1024) continue;
+      const raw = await fs.readFile(target, "utf8");
+      const safe = redactSensitiveText(raw).content;
+      const haystack = safe.toLocaleLowerCase("zh-CN");
+      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+      if (terms.length > 0 && score === 0) continue;
+      const matchIndex = terms.map((term) => haystack.indexOf(term)).filter((index) => index >= 0).sort((left, right) => left - right)[0] ?? 0;
+      const start = Math.max(0, matchIndex - 500);
+      candidates.push({
+        relativePath: `evidence/imports/extracted/${entry.name}`,
+        title: entry.name.replace(/\.md$/i, ""),
+        score,
+        excerpt: safe.slice(start, start + 3_000)
+      });
+    }
+    const items = candidates.sort((left, right) => right.score - left.score || left.title.localeCompare(right.title, "zh-CN")).slice(0, Math.max(1, Math.min(8, topK)));
+    return { query, count: items.length, items, trust: "local-redacted-case-evidence" };
+  }
+
+  async exportCurrentCaseDiagram(input: ExportCaseDiagramInput): Promise<ExportCaseDiagramResult> {
+    return this.runExclusive(async () => {
+      const state = await this.loadOrCreateState();
+      const project = state.projects.find((item) => item.id === state.activeProjectId) ?? this.ensureFallbackProject(state);
+      const caseItem = this.getActiveCase(state);
+      if (!/^outputs\/[A-Za-z0-9_\-\u4e00-\u9fff .]+\.mmd$/u.test(input.sourceRelativePath)) throw new Error("只能导出当前 Case 的 Mermaid 源文件。");
+      if (input.format !== "svg" && input.format !== "png" && input.format !== "pdf") throw new Error("不支持的流程图导出格式。");
+      const caseRoot = await this.safeCaseRootForAccess(project, caseItem);
+      const sourcePath = this.assertInsideWorkspace(path.join(caseRoot, input.sourceRelativePath));
+      const sourceStat = await fs.lstat(sourcePath);
+      if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) throw new Error("流程图源文件不存在或不安全。");
+      if (sourceStat.size > MAX_PREVIEW_BYTES) throw new Error("流程图源文件过大，无法安全导出。");
+      const sourceBytes = await fs.readFile(sourcePath);
+      const sourceSha256 = createHash("sha256").update(sourceBytes).digest("hex");
+      if (sourceSha256 !== input.sourceSha256.toLowerCase()) throw new Error("流程图源文件在渲染后发生变化，请重新预览再导出。");
+      const bytes = Buffer.from(input.contentBase64, "base64");
+      if (bytes.length < 8 || bytes.length > 15 * 1024 * 1024) throw new Error("流程图导出内容大小无效。");
+      assertDiagramExportBytes(input.format, bytes);
+      const stem = path.parse(input.sourceRelativePath).name.replace(/[^A-Za-z0-9_\-\u4e00-\u9fff]/gu, "-").slice(0, 72) || "流程图";
+      const relativePath = await this.uniqueCaseRelativePath(caseRoot, `outputs/${stem}-${compactTimestamp()}.${input.format}`);
+      await this.writeBinaryCaseFile(caseRoot, relativePath, bytes);
+      return { relativePath, format: input.format, sizeBytes: bytes.length, state: await this.withFiles(state) };
+    });
   }
 
   async search(query: string): Promise<SearchResult[]> {
@@ -4294,6 +4516,38 @@ export class WorkspaceStore {
     return resolvedTarget;
   }
 
+  private async uniqueCaseRelativePath(caseRoot: string, preferredRelativePath: string): Promise<string> {
+    const normalized = preferredRelativePath.replaceAll("\\", "/");
+    const parsed = path.posix.parse(normalized);
+    for (let index = 1; index <= 10_000; index += 1) {
+      const suffix = index === 1 ? "" : `-${index}`;
+      const candidate = path.posix.join(parsed.dir, `${parsed.name}${suffix}${parsed.ext}`);
+      const target = this.generatedFileTarget(caseRoot, { relativePath: candidate, purpose: parsed.dir.startsWith("outputs") ? "output" : "evidence", content: "" });
+      try {
+        await fs.lstat(target);
+      } catch (error) {
+        if (isFileNotFound(error)) return candidate;
+        throw error;
+      }
+    }
+    throw new Error("无法为附件或流程图生成唯一文件名。");
+  }
+
+  private async writeBinaryCaseFile(caseRoot: string, relativePath: string, bytes: Buffer): Promise<string> {
+    const purpose: CaseGeneratedFile["purpose"] = relativePath.replaceAll("\\", "/").startsWith("outputs/") ? "output" : "evidence";
+    const target = this.generatedFileTarget(caseRoot, { relativePath, purpose, content: "" });
+    const safeTarget = await this.assertSafeGeneratedWriteTarget(caseRoot, target);
+    const tempPath = `${safeTarget}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+    try {
+      await fs.writeFile(tempPath, bytes, { flag: "wx" });
+      await fs.rename(tempPath, safeTarget);
+      return safeTarget;
+    } catch (error) {
+      await this.cleanupIncompleteBinaryWrite(tempPath);
+      throw error;
+    }
+  }
+
   private async writeGeneratedFile(caseRoot: string, file: CaseGeneratedFile): Promise<void> {
     const target = this.generatedFileTarget(caseRoot, file);
     const safeTarget = await this.assertSafeGeneratedWriteTarget(caseRoot, target);
@@ -4503,6 +4757,12 @@ export class WorkspaceStore {
       fs.rm(item.tempPath, { force: true })
     ]));
     return results.every((result) => result.status === "fulfilled");
+  }
+
+  private async cleanupIncompleteBinaryWrite(tempPath: string): Promise<void> {
+    const safeTempPath = this.assertInsideWorkspace(tempPath);
+    if (!safeTempPath.endsWith(".tmp")) throw new Error("二进制写入临时文件路径无效。");
+    await fs.rm(safeTempPath, { force: true }).catch(() => undefined);
   }
 
   private async recoverInterruptedTextBatchTransactions(): Promise<void> {

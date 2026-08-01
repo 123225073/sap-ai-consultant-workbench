@@ -18,6 +18,7 @@ import {
   MessageSquare,
   MoreHorizontal,
   PanelLeft,
+  Paperclip,
   Plug,
   Plus,
   Search,
@@ -34,8 +35,9 @@ import ConfigCenter from "./ConfigCenter";
 import CapabilityCenter, { type CapabilityMcpDraft, type CapabilityMcpConnection, type CapabilityMemoryDraft, type CapabilityMemoryItem, type CapabilityPluginItem, type CapabilityPromptItem, type CapabilitySkillItem } from "./CapabilityCenter";
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
+import MermaidPreview from "./MermaidPreview";
 import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
-import type { AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
+import type { AgentRuntimeEvent, AgentThreadSnapshot } from "../shared/agentRuntimeTypes";
 import type { CapabilityCenterSnapshot, CapabilitySkillDiscoveryReport } from "../shared/capabilityCenterTypes";
 import type { PromptProfileScope } from "../shared/promptMemoryTypes";
 import { routeSapConnections, type SapConnectionRouteDecision } from "../shared/sapConnectionRouting";
@@ -846,6 +848,7 @@ function App() {
   const [sapConnectionMode, setSapConnectionMode] = useState<"auto" | "manual">("auto");
   const [manualSapConnectionIds, setManualSapConnectionIds] = useState<string[]>([]);
   const [feishuHandoffBusy, setFeishuHandoffBusy] = useState(false);
+  const [attachmentImportBusy, setAttachmentImportBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [knowledgeFocusItemId, setKnowledgeFocusItemId] = useState("");
   const [centerDraftDirty, setCenterDraftDirty] = useState(false);
@@ -867,6 +870,7 @@ function App() {
   const cancelRequestedRef = useRef(false);
   const pendingStopRef = useRef(false);
   const activeAgentRunRef = useRef<ActiveAgentRun | null>(null);
+  const directStreamRequestIdsRef = useRef(new Set<string>());
 
   const bridge = window.workbench;
 
@@ -895,6 +899,22 @@ function App() {
   useEffect(() => {
     if (!bridge) return;
     return bridge.onAgentRuntimeEvent((event) => {
+      const eventContextKey = event.scope === "chat" ? `chat:${event.legacyThreadId}` : `work:${event.legacyThreadId}`;
+      if (eventContextKey !== activeConversationKeyRef.current) return;
+      if (event.type === "assistant-delta") {
+        if (directStreamRequestIdsRef.current.has(event.requestId)) return;
+        const delta = typeof event.payload.delta === "string" ? event.payload.delta : "";
+        if (!delta) return;
+        setStreamingTurn((current) => current && current.contextKey === eventContextKey
+          ? {
+              ...current,
+              assistantContent: current.assistantContent + delta,
+              providerName: typeof event.payload.providerName === "string" ? event.payload.providerName : current.providerName,
+              modelId: typeof event.payload.modelId === "string" ? event.payload.modelId : current.modelId
+            }
+          : current);
+        return;
+      }
       if (event.type === "tool-call") {
         setStreamingTurn((current) => current?.scope === "case"
           ? { ...current, activityLabel: "正在读取已启用的只读工具" }
@@ -930,8 +950,14 @@ function App() {
         return;
       }
       if (status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted") {
+        directStreamRequestIdsRef.current.delete(event.requestId);
         if (activeAgentRunRef.current?.turnId === event.turnId) activeAgentRunRef.current = null;
         setActiveAgentRun((current) => current?.turnId === event.turnId ? null : current);
+        setSendingMessage(false);
+        finishStreamingTurn();
+        void bridge.getState().then((response) => {
+          if (response.ok && activeConversationKeyRef.current === eventContextKey) setState(response.data);
+        });
       }
     });
   }, [bridge]);
@@ -945,6 +971,75 @@ function App() {
     : `work:${currentWorkThread?.id ?? "new"}`;
   const activeConversationKeyRef = useRef(activeConversationKey);
   activeConversationKeyRef.current = activeConversationKey;
+
+  useEffect(() => {
+    if (!bridge) return;
+    const scope = activeView === "chat" ? "chat" as const : "work" as const;
+    const legacyThreadId = activeView === "chat" ? activeChat?.id : currentWorkThread?.id;
+    if (!legacyThreadId) return;
+    const contextKey = `${scope}:${legacyThreadId}`;
+    let disposed = false;
+    let observedActiveTurn = false;
+    let polling = false;
+
+    const applySnapshot = async (snapshot: AgentThreadSnapshot | null) => {
+      if (disposed || activeConversationKeyRef.current !== contextKey) return;
+      const turn = snapshot?.activeTurn;
+      if (!turn) {
+        if (!observedActiveTurn) return;
+        observedActiveTurn = false;
+        activeAgentRunRef.current = null;
+        setActiveAgentRun(null);
+        setSendingMessage(false);
+        finishStreamingTurn();
+        const refreshed = await bridge.getState();
+        if (!disposed && refreshed.ok) setState(refreshed.data);
+        return;
+      }
+      observedActiveTurn = true;
+      const turnItems = snapshot.items.filter((item) => item.turnId === turn.id);
+      const userContent = turnItems.find((item) => item.type === "user-message")?.payload.content;
+      const deltas = turnItems
+        .filter((item) => item.type === "assistant-delta")
+        .map((item) => typeof item.payload.delta === "string" ? item.payload.delta : "")
+        .join("");
+      const lastDelta = [...turnItems].reverse().find((item) => item.type === "assistant-delta");
+      const run = { requestId: turn.requestId, turnId: turn.id, scope };
+      activeAgentRunRef.current = run;
+      setActiveAgentRun(run);
+      setSendingMessage(true);
+      setStreamingTurn((current) => {
+        const existingContent = current?.contextKey === contextKey ? current.assistantContent : "";
+        const assistantContent = deltas.length >= existingContent.length && deltas.startsWith(existingContent) ? deltas : existingContent;
+        return {
+          scope: scope === "chat" ? "daily-chat" : "case",
+          contextKey,
+          userContent: typeof userContent === "string" ? userContent : current?.userContent ?? "正在恢复上次任务",
+          assistantContent,
+          providerName: typeof lastDelta?.payload.providerName === "string" ? lastDelta.payload.providerName : current?.providerName ?? "模型渠道",
+          modelId: typeof lastDelta?.payload.modelId === "string" ? lastDelta.payload.modelId : current?.modelId ?? turn.modelId ?? "恢复中",
+          activityLabel: assistantContent ? "正在续接回复" : "正在恢复连接"
+        };
+      });
+    };
+
+    const poll = async () => {
+      if (polling || disposed) return;
+      polling = true;
+      try {
+        const response = await bridge.readAgentThread({ scope, legacyThreadId, afterSequence: 0, limit: 500 });
+        if (response.ok) await applySnapshot(response.data);
+      } finally {
+        polling = false;
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 900);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [bridge, activeView, activeChat?.id, currentWorkThread?.id]);
   const visibleProjects = useMemo(() => {
     return (state?.projects ?? [])
       .filter((item) => item.isVisible !== false)
@@ -1804,6 +1899,11 @@ function App() {
   }
 
   function receiveStreamEvent(event: AiConversationStreamEvent, expectedContextKey: string) {
+    if (event.phase === "completed") {
+      directStreamRequestIdsRef.current.delete(event.requestId);
+      return;
+    }
+    directStreamRequestIdsRef.current.add(event.requestId);
     if (event.phase !== "delta" || !event.delta) return;
     const pending = pendingStreamRef.current;
     pendingStreamRef.current = pending && pending.scope === event.scope && pending.contextKey === expectedContextKey
@@ -2135,6 +2235,25 @@ function App() {
       }
     } finally {
       setFeishuHandoffBusy(false);
+    }
+  }
+
+  async function importCaseAttachments() {
+    if (!bridge || !project || !currentCase || !currentWorkThread) {
+      setNotice("请先选择一个有效的 Work 任务和工作文件夹。");
+      return;
+    }
+    setAttachmentImportBusy(true);
+    try {
+      const response = await bridge.importCaseAttachments({ projectId: project.id, caseId: currentCase.id, threadId: currentWorkThread.id });
+      if (!response.ok) {
+        setNotice(response.error);
+        return;
+      }
+      if (response.data.state) setState(response.data.state);
+      setNotice(response.data.message);
+    } finally {
+      setAttachmentImportBusy(false);
     }
   }
 
@@ -3233,6 +3352,10 @@ function App() {
             <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索文件" aria-label="搜索当前工作文件夹文件" />
           </label>
           <div className="file-panel-actions">
+            <button type="button" onClick={() => void importCaseAttachments()} disabled={attachmentImportBusy || !currentCase || !currentWorkThread} title="导入 PDF、Word、Excel、CSV 或文本；原件仅本地保存，另生成脱敏摘录。">
+              <Paperclip size={15} />
+              {attachmentImportBusy ? "解析中" : "添加资料"}
+            </button>
             <button type="button" onClick={() => void prepareFeishuHandoff()} disabled={feishuHandoffBusy || outputFileCount === 0} title="只生成本地飞书草稿，不发布或更新云端文档。">
               <FileText size={15} />
               {feishuHandoffBusy ? "生成中" : "飞书本地草稿"}
@@ -3264,7 +3387,9 @@ function App() {
                   {filePreview.truncated ? <span>已截断</span> : null}
                   {filePreview.redactions > 0 ? <span>已脱敏 {filePreview.redactions} 处</span> : null}
                 </div>
-                <pre>{filePreview.content}</pre>
+                {filePreview.fileType === "mmd" && !filePreview.truncated
+                  ? <MermaidPreview preview={filePreview} onStateChange={setState} onNotice={setNotice} />
+                  : <pre>{filePreview.content}</pre>}
               </>
             ) : filePreviewError ? <p>{filePreviewError}</p> : <p>选择 Markdown、文本、CSV 或 Mermaid 文件进行只读预览。</p>}
           </section>

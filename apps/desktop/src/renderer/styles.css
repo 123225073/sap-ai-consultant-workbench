@@ -6,6 +6,57 @@
   text-rendering: optimizeLegibility;
 }
 
+.mermaid-preview {
+  display: grid;
+  gap: 10px;
+  min-height: 220px;
+}
+
+.mermaid-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mermaid-preview-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid var(--border-color, #d8dde6);
+  border-radius: 7px;
+  background: #fff;
+  color: #344054;
+  cursor: pointer;
+}
+
+.mermaid-preview-actions button:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.mermaid-preview-canvas {
+  min-height: 200px;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.mermaid-preview-canvas svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-width: 320px;
+}
+
+.mermaid-preview-error {
+  margin: 0;
+  color: #b42318;
+}
+
 * {
   box-sizing: border-box;
 }

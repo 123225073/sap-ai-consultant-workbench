@@ -1,6 +1,6 @@
 export type CaseStatus = "active" | "solved" | "archived";
 export type ConfigStatus = "not-configured" | "saved" | "pending-verification" | "verified" | "failed";
-export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-token";
+export type SecretKind = "adt-password" | "api-key" | "feishu-token" | "codex-token" | "mcp-header";
 export type SecretState = "not-set" | "set-in-secure-store" | "missing" | "failed" | "needs-rotation";
 export type SecretStoreKind = "electron-safe-storage";
 export type TaskMode = "problem-analysis" | "abap-development" | "document-generation" | "flow-diagram";
@@ -85,6 +85,7 @@ export interface ProjectSecretTarget {
   kind: SecretKind;
   providerId?: string;
   connectionId?: string;
+  headerName?: string;
 }
 
 export interface ProjectSecretInput {
@@ -193,6 +194,8 @@ export interface ModelSummary {
   displayName: string;
   capabilities: ModelCapability[];
   lastSeenAt: string;
+  contextWindowTokens?: number;
+  maxOutputTokens?: number;
 }
 
 export interface FeishuConfig {
@@ -967,6 +970,47 @@ export interface CaseFilePreview {
   truncated: boolean;
   content: string;
   redactions: number;
+}
+
+export interface ImportCaseAttachmentsInput {
+  projectId: string;
+  caseId: string;
+  threadId: string;
+}
+
+export interface CaseAttachmentImportItem {
+  displayName: string;
+  fileType: string;
+  sizeBytes: number;
+  originalRelativePath: string;
+  extractedRelativePath: string;
+  extractedCharacters: number;
+  redactions: number;
+  truncated: boolean;
+  warnings: string[];
+}
+
+export interface CaseAttachmentImportResult {
+  cancelled: boolean;
+  message: string;
+  items: CaseAttachmentImportItem[];
+  state?: WorkbenchState;
+}
+
+export type CaseDiagramExportFormat = "svg" | "png" | "pdf";
+
+export interface ExportCaseDiagramInput {
+  sourceRelativePath: string;
+  sourceSha256: string;
+  format: CaseDiagramExportFormat;
+  contentBase64: string;
+}
+
+export interface ExportCaseDiagramResult {
+  relativePath: string;
+  format: CaseDiagramExportFormat;
+  sizeBytes: number;
+  state: WorkbenchState;
 }
 
 export interface SearchResult {

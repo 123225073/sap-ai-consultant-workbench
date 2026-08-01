@@ -159,6 +159,22 @@ try {
   );
 
   const engine = new ContextEngine(service);
+  const hardConstraintIds = [];
+  for (let index = 0; index < 14; index += 1) {
+    const candidate = await service.createMemoryCandidate({
+      scope: projectAScope,
+      kind: "constraint",
+      content: `HARD_CONSTRAINT_${index}：必须保留的项目工作边界。`,
+      provenance: { sourceType: "user", sourceRef: `constraint-${index}`, capturedAt: sourceTime }
+    });
+    await service.reviewMemory({
+      memoryId: candidate.id,
+      expectedScope: projectAScope,
+      decision: "confirm",
+      reviewedBy: "user"
+    });
+    hardConstraintIds.push(candidate.id);
+  }
   const assembled = await engine.build({
     turnId: "turn-phase51-a",
     target: targetA,
@@ -195,6 +211,14 @@ try {
 
   const contextText = assembled.items.map((item) => item.content).join("\n");
   assert.match(contextText, /PROJECT_A_ONLY/);
+  for (let index = 0; index < hardConstraintIds.length; index += 1) {
+    assert.match(contextText, new RegExp(`HARD_CONSTRAINT_${index}(?!\\d)`));
+    assert.equal(
+      assembled.audit.excluded.some((item) => item.ref === `memory:${hardConstraintIds[index]}` && item.reason === "memory-top-k"),
+      false,
+      "confirmed constraint was incorrectly excluded by the ordinary memory Top-K"
+    );
+  }
   assert.match(contextText, /已完成：确认项目 A 术语/);
   assert.doesNotMatch(contextText, /PROJECT_B_ONLY|OTHER_CASE_ONLY|PENDING_ONLY|EXPIRED_ONLY|REVOKED_ONLY/);
   assert.doesNotMatch(contextText, /CROSS_PROJECT_EVIDENCE|CROSS_CASE_EVIDENCE|phase51sensitivevalue/);
