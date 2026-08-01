@@ -52,7 +52,7 @@
       "node_modules/@sqlite.org/sqlite-wasm/**/*"
     ],
     "directories": {
-      "output": "../../release/0.1.0",
+      "output": "../../release/0.1.1",
       "buildResources": "build-resources"
     },
     "files": [
