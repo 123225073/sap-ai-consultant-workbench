@@ -345,12 +345,40 @@ try {
   })()`);
 
   const outsideDismissal = await evaluateJson(`await (async () => {
-    const threadMenu = document.querySelector('.thread-menu');
+    const threadMenu = document.querySelector('.conversation-row-shell .thread-menu');
     if (!threadMenu) throw new Error('missing-thread-menu');
-    threadMenu?.querySelector('summary')?.click();
-    await __phase43.until(() => Boolean(threadMenu?.open));
+    const threadMenuTrigger = threadMenu.querySelector('.floating-menu-trigger');
+    if (!threadMenuTrigger) throw new Error('missing-thread-menu-trigger');
+    threadMenuTrigger.click();
+    await __phase43.until(() => threadMenuTrigger.getAttribute('aria-expanded') === 'true');
+    await __phase43.until(() => Boolean(document.querySelector('.thread-menu-panel')));
+    const menuPanel = document.querySelector('.thread-menu-panel');
+    const menuButtons = [...(menuPanel?.querySelectorAll('button') ?? [])];
+    const menuRect = menuPanel?.getBoundingClientRect();
+    const visibleMenuItems = menuButtons.filter((button) => {
+      const rect = button.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2;
+      const centerY = rect.top + rect.height / 2;
+      const hitStack = document.elementsFromPoint(centerX, centerY);
+      return rect.width > 0
+        && rect.height > 0
+        && centerX >= 0
+        && centerX <= window.innerWidth
+        && centerY >= 0
+        && centerY <= window.innerHeight
+        && hitStack.some((element) => element === button || button.contains(element));
+    });
+    const menuGeometry = {
+      itemCount: menuButtons.length,
+      visibleItemCount: visibleMenuItems.length,
+      panelInsideViewport: Boolean(menuRect)
+        && menuRect.left >= 0
+        && menuRect.right <= window.innerWidth
+        && menuRect.top >= 0
+        && menuRect.bottom <= window.innerHeight
+    };
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    await __phase43.until(() => !threadMenu?.open);
+    await __phase43.until(() => threadMenuTrigger.getAttribute('aria-expanded') === 'false');
 
     const modelTrigger = document.querySelector('.model-select');
     if (!modelTrigger) throw new Error('missing-model-picker');
@@ -359,10 +387,10 @@ try {
     document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
     await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'false');
 
-    threadMenu?.querySelector('summary')?.click();
-    await __phase43.until(() => Boolean(threadMenu?.open));
+    threadMenuTrigger.click();
+    await __phase43.until(() => threadMenuTrigger.getAttribute('aria-expanded') === 'true');
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-    await __phase43.until(() => !threadMenu?.open);
+    await __phase43.until(() => threadMenuTrigger.getAttribute('aria-expanded') === 'false');
 
     modelTrigger?.click();
     await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'true');
@@ -370,11 +398,45 @@ try {
     await __phase43.until(() => modelTrigger?.getAttribute('aria-expanded') === 'false');
 
     return {
-      threadMenuClosed: !threadMenu?.open,
-      modelPickerClosed: modelTrigger?.getAttribute('aria-expanded') === 'false'
+      threadMenuClosed: threadMenuTrigger.getAttribute('aria-expanded') === 'false',
+      modelPickerClosed: modelTrigger?.getAttribute('aria-expanded') === 'false',
+      menuGeometry
     };
   })()`);
+  assert(
+    outsideDismissal.menuGeometry.itemCount >= 2
+      && outsideDismissal.menuGeometry.visibleItemCount === outsideDismissal.menuGeometry.itemCount
+      && outsideDismissal.menuGeometry.panelInsideViewport,
+    "会话更多菜单的全部选项完整可见且可以点击"
+  );
   assert(outsideDismissal.threadMenuClosed && outsideDismissal.modelPickerClosed, "会话菜单和模型选择器支持点击空白处或 Esc 收起");
+
+  const hierarchyDisclosure = await evaluateJson(`await (async () => {
+    const customerHeading = document.querySelector('.customer-project-card.active .project-switch');
+    if (!customerHeading) throw new Error('missing-customer-heading');
+    const customerTreeId = customerHeading.getAttribute('aria-controls');
+    customerHeading.click();
+    await __phase43.until(() => customerHeading.getAttribute('aria-expanded') === 'false' && !document.getElementById(customerTreeId));
+    customerHeading.click();
+    await __phase43.until(() => customerHeading.getAttribute('aria-expanded') === 'true' && Boolean(document.getElementById(customerTreeId)));
+
+    const workProjectHeading = document.querySelector('.customer-project-card.active .work-project-open');
+    if (!workProjectHeading) throw new Error('missing-work-project-heading');
+    const threadListId = workProjectHeading.getAttribute('aria-controls');
+    workProjectHeading.click();
+    await __phase43.until(() => workProjectHeading.getAttribute('aria-expanded') === 'false' && !document.getElementById(threadListId));
+    workProjectHeading.click();
+    await __phase43.until(() => workProjectHeading.getAttribute('aria-expanded') === 'true' && Boolean(document.getElementById(threadListId)));
+
+    return {
+      customerExpanded: customerHeading.getAttribute('aria-expanded') === 'true',
+      workProjectExpanded: workProjectHeading.getAttribute('aria-expanded') === 'true',
+      hideButtons: document.querySelectorAll('.project-hide-button').length,
+      customerActionCount: document.querySelectorAll('.customer-project-card.active .project-actions > *').length
+    };
+  })()`);
+  assert(hierarchyDisclosure.customerExpanded && hierarchyDisclosure.workProjectExpanded, "客户项目和运维项目标题支持点击收起及再次展开");
+  assert(hierarchyDisclosure.hideButtons === 0 && hierarchyDisclosure.customerActionCount <= 2, "客户项目移除隐藏按钮并将低频配置收进更多菜单");
 
   const uatStatePath = path.join(isolatedRepoRoot, "local-data", "workbench", "app-state.json");
   const uatState = JSON.parse(await readFile(uatStatePath, "utf8"));
@@ -742,7 +804,7 @@ try {
       composerInside: inside(composer),
       sendInside: inside(send),
       conversationWidth: Math.round(conversation?.width ?? 0),
-      projectSettingsVisible: inside(document.querySelector('.project-settings-button')?.getBoundingClientRect())
+      projectSettingsVisible: inside(document.querySelector('.project-menu .floating-menu-trigger')?.getBoundingClientRect())
     };
   })()`);
   assert(minimumViewport.noHorizontalPageOverflow && minimumViewport.composerInside && minimumViewport.sendInside, "680×520 最小窗口输入区仍完整可操作");

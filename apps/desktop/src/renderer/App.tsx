@@ -1,4 +1,5 @@
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -7,10 +8,10 @@ import {
   BookOpen,
   Bot,
   ChevronDown,
+  ChevronRight,
   Copy,
   Database,
   Eye,
-  EyeOff,
   File,
   FileSpreadsheet,
   FileText,
@@ -78,13 +79,6 @@ function samePromptScope(left: PromptProfileScope, right: PromptProfileScope): b
   if (left.type === "project" && right.type === "project") return left.projectId === right.projectId;
   if (left.type === "case" && right.type === "case") return left.projectId === right.projectId && left.caseId === right.caseId;
   return false;
-}
-
-function workFolderLabel(caseItem: CaseSummary | undefined): string {
-  if (!caseItem) return "未知";
-  return caseItem.folderSource === "linked-local"
-    ? `电脑文件夹 · ${caseItem.linkedFolderName || caseItem.title}`
-    : `运维项目 · ${caseItem.title}`;
 }
 
 function isVisibleWorkProject(caseItem: CaseSummary): boolean {
@@ -258,6 +252,96 @@ function groupDailyChatThreads(threads: DailyChatThread[]): { label: string; thr
     .filter((group) => group.threads.length > 0);
 }
 
+function FloatingActionMenu({
+  label,
+  title,
+  disabled = false,
+  className = "",
+  panelClassName = "",
+  children
+}: {
+  label: string;
+  title: string;
+  disabled?: boolean;
+  className?: string;
+  panelClassName?: string;
+  children: (close: () => void) => ReactNode;
+}) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: -9999, top: -9999 });
+
+  useEffect(() => {
+    if (!open) return;
+
+    function updatePosition() {
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger || !panel) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const panelWidth = panel.offsetWidth || 160;
+      const panelHeight = panel.offsetHeight || 120;
+      const gutter = 8;
+      const gap = 4;
+      const left = Math.min(Math.max(gutter, triggerRect.right - panelWidth), window.innerWidth - panelWidth - gutter);
+      const spaceBelow = window.innerHeight - triggerRect.bottom - gutter;
+      const top = spaceBelow >= panelHeight + gap
+        ? triggerRect.bottom + gap
+        : Math.max(gutter, triggerRect.top - panelHeight - gap);
+      setPosition({ left, top });
+    }
+
+    function closeOnOutsidePointer(event: PointerEvent) {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+
+    function closeOnEscape(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
+    }
+
+    const frame = window.requestAnimationFrame(updatePosition);
+    document.addEventListener("pointerdown", closeOnOutsidePointer, true);
+    window.addEventListener("keydown", closeOnEscape);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      document.removeEventListener("pointerdown", closeOnOutsidePointer, true);
+      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
+
+  return <span className={`floating-action-menu ${className}`.trim()}>
+    <button
+      ref={triggerRef}
+      type="button"
+      className="floating-menu-trigger"
+      disabled={disabled}
+      aria-label={label}
+      aria-expanded={open}
+      aria-haspopup="menu"
+      title={title}
+      onClick={() => setOpen((current) => !current)}
+    >
+      <MoreHorizontal size={16} />
+    </button>
+    {open ? createPortal(
+      <div ref={panelRef} className={`floating-action-menu-panel ${panelClassName}`.trim()} style={position} role="menu">
+        {children(() => setOpen(false))}
+      </div>,
+      document.body
+    ) : null}
+  </span>;
+}
+
 function ConversationThreadRow({
   title,
   subtitle,
@@ -277,26 +361,20 @@ function ConversationThreadRow({
   onCopyId: () => void;
   onStatus: (status: ConversationThreadStatus) => void;
 }) {
-  function closeMenu(event: ReactMouseEvent<HTMLButtonElement>) {
-    const menu = event.currentTarget.closest("details");
-    if (menu instanceof HTMLDetailsElement) menu.open = false;
-  }
-
   return (
     <div className={`conversation-row-shell${active ? " active" : ""}`}>
       <button type="button" className="conversation-row-main" onClick={onOpen}>
         <MessageSquare size={15} />
         <span><strong>{title}</strong><small>{subtitle}</small></span>
       </button>
-      <details className={`thread-menu${busy ? " busy" : ""}`} data-dismiss-on-outside="true">
-        <summary aria-label={`管理会话 ${title}`} aria-disabled={busy} title={busy ? "当前有回复正在生成，完成后可管理会话" : "管理会话"} onClick={(event) => { if (busy) event.preventDefault(); }}><MoreHorizontal size={16} /></summary>
-        <div>
-          <button type="button" onClick={(event) => { closeMenu(event); onCopyId(); }}><Copy size={14} />复制会话 ID</button>
-          {status === "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("archived"); }}><Archive size={14} />归档</button> : null}
-          {status === "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("removed"); }}><Trash2 size={14} />移除</button> : null}
-          {status !== "active" ? <button type="button" disabled={busy} onClick={(event) => { closeMenu(event); onStatus("active"); }}><RotateCcw size={14} />恢复</button> : null}
-        </div>
-      </details>
+      <FloatingActionMenu className="thread-menu" panelClassName="thread-menu-panel" disabled={busy} label={`管理会话 ${title}`} title={busy ? "当前有回复正在生成，完成后可管理会话" : "管理会话"}>
+        {(close) => <>
+          <button type="button" onClick={() => { close(); onCopyId(); }}><Copy size={14} />复制会话 ID</button>
+          {status === "active" ? <button type="button" disabled={busy} onClick={() => { close(); onStatus("archived"); }}><Archive size={14} />归档</button> : null}
+          {status === "active" ? <button type="button" disabled={busy} onClick={() => { close(); onStatus("removed"); }}><Trash2 size={14} />移除</button> : null}
+          {status !== "active" ? <button type="button" disabled={busy} onClick={() => { close(); onStatus("active"); }}><RotateCcw size={14} />恢复</button> : null}
+        </>}
+      </FloatingActionMenu>
     </div>
   );
 }
@@ -308,11 +386,9 @@ function CustomerProjectTree({
   activeView,
   activeThreadId,
   busy,
-  visibleProjectCount,
   legacy = false,
   onSwitch,
   onConfig,
-  onHide,
   onCreateWorkProject,
   onCreateThread,
   onOpenThread,
@@ -325,11 +401,9 @@ function CustomerProjectTree({
   activeView: string;
   activeThreadId?: string;
   busy: boolean;
-  visibleProjectCount: number;
   legacy?: boolean;
   onSwitch: () => void;
   onConfig?: () => void;
-  onHide?: () => void;
   onCreateWorkProject: () => void;
   onCreateThread: (caseId: string) => void;
   onOpenThread: (threadId: string) => void;
@@ -337,32 +411,78 @@ function CustomerProjectTree({
   onThreadStatus: (threadId: string, status: ConversationThreadStatus) => void;
 }) {
   const workProjects = item.cases.filter(isVisibleWorkProject);
+  const [expanded, setExpanded] = useState(active);
+  const [expandedWorkProjectIds, setExpandedWorkProjectIds] = useState<Set<string>>(() => new Set(workProjects.map((workProject) => workProject.id)));
+
+  useEffect(() => {
+    if (active) setExpanded(true);
+  }, [active]);
+
+  useEffect(() => {
+    setExpandedWorkProjectIds((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const workProject of workProjects) {
+        if (!next.has(workProject.id)) {
+          next.add(workProject.id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [workProjects.map((workProject) => workProject.id).join("|")]);
+
+  function toggleCustomerProject() {
+    if (!active) {
+      onSwitch();
+      setExpanded(true);
+      return;
+    }
+    setExpanded((current) => !current);
+  }
+
+  function toggleWorkProject(workProjectId: string) {
+    setExpandedWorkProjectIds((current) => {
+      const next = new Set(current);
+      if (next.has(workProjectId)) next.delete(workProjectId);
+      else next.add(workProjectId);
+      return next;
+    });
+  }
+
+  const customerExpanded = active && expanded;
   return <section className={`project-card customer-project-card${active ? " active" : ""}${legacy ? " legacy-demo-project-card" : ""}`}>
     <div className="project-card-title">
-      <button type="button" className="project-switch" onClick={onSwitch} title={`切换到客户项目：${item.name}`}>
-        <strong>{item.name}</strong>
-        <div className="project-tags">
-          <StatusPill label={projectKindLabel(item)} tone={legacy ? "neutral" : "blue"} />
-          {item.sapVersion === "UNKNOWN" ? <StatusPill label={item.systemLabel} tone="neutral" /> : <StatusPill {...sapSidebarStatus(item)} />}
-        </div>
+      <button type="button" className="project-switch" onClick={toggleCustomerProject} aria-expanded={customerExpanded} aria-controls={`work-project-tree-${item.id}`} title={customerExpanded ? `收起客户项目：${item.name}` : `展开客户项目：${item.name}`}>
+        {customerExpanded ? <ChevronDown className="tree-chevron" size={15} /> : <ChevronRight className="tree-chevron" size={15} />}
+        <span className="project-switch-copy">
+          <strong>{item.name}</strong>
+          <span className="project-tags">
+            <StatusPill label={projectKindLabel(item)} tone={legacy ? "neutral" : "blue"} />
+            {item.sapVersion === "UNKNOWN" ? <StatusPill label={item.systemLabel} tone="neutral" /> : <StatusPill {...sapSidebarStatus(item)} />}
+          </span>
+        </span>
       </button>
       <div className="project-actions">
         <button type="button" className="icon-button project-add-work-button" onClick={onCreateWorkProject} aria-label={`在 ${item.name} 下新建运维项目`} title="新建运维项目"><FolderPlus size={15} /><span>项目</span></button>
-        {onConfig ? <button type="button" className="icon-button project-settings-button" onClick={onConfig} aria-label={`配置 ${item.name}`} title="配置该客户项目的 SAP landscape"><Settings size={16} /></button> : null}
-        {onHide ? <button type="button" className="icon-button project-hide-button" disabled={visibleProjectCount <= 1} onClick={onHide} aria-label={`从侧边栏隐藏 ${item.name}`} title="只从侧边栏隐藏，不删除项目文件"><EyeOff size={16} /></button> : null}
+        {onConfig ? <FloatingActionMenu className="project-menu" panelClassName="project-menu-panel" label={`管理客户项目 ${item.name}`} title="更多客户项目操作">
+          {(close) => <button type="button" onClick={() => { close(); onConfig(); }}><Settings size={14} />配置 SAP 系统</button>}
+        </FloatingActionMenu> : null}
       </div>
     </div>
-    {active ? <div className="work-project-tree">
+    {customerExpanded ? <div className="work-project-tree" id={`work-project-tree-${item.id}`}>
       {workProjects.length === 0 ? <div className="work-project-empty"><span>暂无运维项目</span><button type="button" onClick={onCreateWorkProject}><Plus size={14} />新建</button></div> : workProjects.map((workProject) => {
         const threads = workThreads.filter((thread) => thread.projectId === item.id && thread.caseId === workProject.id && thread.status === "active");
-        return <section className="work-project-group" key={workProject.id}>
+        const workProjectExpanded = expandedWorkProjectIds.has(workProject.id);
+        return <section className={`work-project-group${workProjectExpanded ? " expanded" : " collapsed"}`} key={workProject.id}>
           <header>
-            <button type="button" className="work-project-open" onClick={() => threads[0] && onOpenThread(threads[0].id)} title={workFolderLabel(workProject)}>
+            <button type="button" className="work-project-open" onClick={() => toggleWorkProject(workProject.id)} aria-expanded={workProjectExpanded} aria-controls={`work-project-threads-${workProject.id}`} title={workProjectExpanded ? `收起运维项目：${workProject.title}` : `展开运维项目：${workProject.title}`}>
+              {workProjectExpanded ? <ChevronDown className="tree-chevron" size={14} /> : <ChevronRight className="tree-chevron" size={14} />}
               <Folder size={14} /><span><strong>{workProject.title}</strong><small>{workProject.folderSource === "linked-local" ? workProject.linkedFolderName || "电脑文件夹" : "共享项目文件夹"}</small></span>
             </button>
             <button type="button" className="icon-button work-project-add-thread" onClick={() => onCreateThread(workProject.id)} aria-label={`在 ${workProject.title} 下新建对话`} title="新建对话线程"><Plus size={14} /><span>对话</span></button>
           </header>
-          <div className="work-project-threads">
+          {workProjectExpanded ? <div className="work-project-threads" id={`work-project-threads-${workProject.id}`}>
             {threads.map((thread) => <ConversationThreadRow
               key={thread.id}
               title={thread.title}
@@ -374,7 +494,7 @@ function CustomerProjectTree({
               onCopyId={() => onCopyThreadId(thread.id)}
               onStatus={(status) => onThreadStatus(thread.id, status)}
             />)}
-          </div>
+          </div> : null}
         </section>;
       })}
     </div> : null}
@@ -1857,24 +1977,6 @@ function App() {
     }
   }
 
-  async function hideProjectFromSidebar(projectId: string) {
-    if (!bridge) {
-      setNotice("请在桌面应用中隐藏项目。");
-      return;
-    }
-    const response = await bridge.hideProjectFromSidebar({ projectId });
-    if (response.ok) {
-      setState(response.data);
-      setActiveView("case");
-      setSelectedPreviewPath(null);
-      setFilePreview(null);
-      setFilePreviewError(null);
-      setNotice("客户项目仅从侧边栏隐藏；其运维项目、文件、配置、规范和知识仍保存在本机。");
-    } else {
-      setNotice(response.error);
-    }
-  }
-
   async function restoreProjectToSidebar(projectId: string) {
     if (!bridge) {
       setNotice("请在桌面应用中恢复项目。");
@@ -2937,7 +3039,7 @@ function App() {
               </div></div> : null}
 
               <div className="project-list work-project-list">
-                {sapProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} onSwitch={() => void switchProject(item.id)} onConfig={() => void switchProject(item.id, "config")} onHide={() => void hideProjectFromSidebar(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
+                {sapProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} onSwitch={() => void switchProject(item.id)} onConfig={() => void switchProject(item.id, "config")} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
               </div>
 
               {otherWorkProjects.length ? <section className="other-work-section">
@@ -2945,7 +3047,7 @@ function App() {
                   <span>其他工作</span>
                 </div>
                 <div className="project-list other-project-list">
-                  {otherWorkProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} onSwitch={() => void switchProject(item.id)} onHide={() => void hideProjectFromSidebar(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
+                  {otherWorkProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} onSwitch={() => void switchProject(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
                 </div>
               </section> : null}
 
@@ -2956,7 +3058,7 @@ function App() {
                   </div>
                   <p className="sidebar-section-note">历史演示，仅为兼容保留。</p>
                   <div className="project-list legacy-demo-project-list">
-                    {legacyDemoProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} legacy onSwitch={() => void switchProject(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
+                    {legacyDemoProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} legacy onSwitch={() => void switchProject(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
                   </div>
                 </section>
               ) : null}

@@ -645,12 +645,6 @@ button {
   background: #eff6ff;
 }
 
-.project-hide-button:disabled {
-  color: #9ca3af;
-  cursor: not-allowed;
-  background: #f3f4f6;
-}
-
 .project-switch {
   min-width: 0;
   flex: 1;
@@ -4979,7 +4973,6 @@ select:focus-visible,
     grid-template-columns: 164px minmax(0, 1fr);
   }
 
-  .project-hide-button,
   .profile,
   .other-work-section > .sidebar-empty-note {
     display: none;
@@ -5105,30 +5098,30 @@ select:focus-visible,
   position: relative;
 }
 
-.thread-menu summary {
+.floating-menu-trigger {
   width: 26px;
   height: 26px;
   display: grid;
   place-items: center;
+  border: 0;
   border-radius: 6px;
+  padding: 0;
   color: #64748b;
+  background: transparent;
   cursor: pointer;
-  list-style: none;
+  transition: color 120ms ease, background-color 120ms ease, opacity 120ms ease;
 }
 
-.thread-menu summary::-webkit-details-marker {
-  display: none;
-}
-
-.thread-menu summary:hover {
+.floating-menu-trigger:hover,
+.floating-menu-trigger:focus-visible,
+.floating-menu-trigger[aria-expanded="true"] {
+  color: #1f2937;
   background: #ffffff;
 }
 
-.thread-menu > div {
-  position: absolute;
-  top: 30px;
-  right: 0;
-  z-index: 35;
+.floating-action-menu-panel {
+  position: fixed;
+  z-index: 1000;
   width: 150px;
   display: grid;
   gap: 2px;
@@ -5139,7 +5132,7 @@ select:focus-visible,
   background: #ffffff;
 }
 
-.thread-menu > div button {
+.floating-action-menu-panel button {
   min-height: 32px;
   display: flex;
   align-items: center;
@@ -5151,7 +5144,8 @@ select:focus-visible,
   font-size: 12px;
 }
 
-.thread-menu > div button:hover {
+.floating-action-menu-panel button:hover,
+.floating-action-menu-panel button:focus-visible {
   background: #f3f5f8;
 }
 
@@ -5405,13 +5399,29 @@ select:focus-visible,
 }
 
 .project-switch {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  justify-content: center;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
   min-height: 32px;
-  padding: 0 6px;
+  padding: 2px 4px;
+  border-radius: 6px;
+}
+
+.project-switch:hover,
+.project-switch:focus-visible {
+  background: #e8edf3;
+}
+
+.project-switch-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.tree-chevron {
+  flex: 0 0 auto;
+  color: #64748b;
 }
 
 .project-switch .project-tags {
@@ -5444,12 +5454,7 @@ select:focus-visible,
 
 .project-actions {
   flex-wrap: nowrap;
-}
-
-.project-hide-button,
-.project-settings-button {
-  width: 28px;
-  height: 28px;
+  align-items: center;
 }
 
 .project-add-work-button {
@@ -5476,13 +5481,8 @@ select:focus-visible,
   background: #ffedd5;
 }
 
-.project-settings-button {
-  color: #475569;
-}
-
-.project-settings-button:hover {
-  color: #111827;
-  background: #eef2f7;
+.project-menu-panel {
+  width: 158px;
 }
 
 .work-project-tree {
@@ -5495,7 +5495,8 @@ select:focus-visible,
 
 .work-project-group {
   min-width: 0;
-  overflow: hidden;
+  position: relative;
+  overflow: visible;
   border: 1px solid #d8dee8;
   border-radius: 7px;
   background: #ffffff;
@@ -5511,15 +5512,26 @@ select:focus-visible,
   background: #f8fafc;
 }
 
+.work-project-group.collapsed > header {
+  border-bottom-color: transparent;
+  border-radius: 6px;
+}
+
 .work-project-open {
   min-width: 0;
   display: grid;
-  grid-template-columns: 15px minmax(0, 1fr);
+  grid-template-columns: 14px 15px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
-  padding: 3px 0;
+  padding: 3px 2px;
+  border-radius: 5px;
   color: #1f2937;
   text-align: left;
+}
+
+.work-project-open:hover,
+.work-project-open:focus-visible {
+  background: #eef2f7;
 }
 
 .work-project-open > span,
@@ -5586,6 +5598,16 @@ select:focus-visible,
 .work-project-threads .conversation-row-shell {
   min-height: 30px;
   border-radius: 5px;
+}
+
+.work-project-threads .thread-menu .floating-menu-trigger {
+  opacity: 0.55;
+}
+
+.work-project-threads .conversation-row-shell:hover .thread-menu .floating-menu-trigger,
+.work-project-threads .conversation-row-shell:focus-within .thread-menu .floating-menu-trigger,
+.work-project-threads .thread-menu .floating-menu-trigger[aria-expanded="true"] {
+  opacity: 1;
 }
 
 .work-project-threads .conversation-row-main {
@@ -6160,12 +6182,8 @@ select:focus-visible,
   white-space: nowrap;
 }
 
-.thread-menu.busy > summary {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.thread-menu button:disabled {
+.floating-menu-trigger:disabled,
+.floating-action-menu-panel button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
