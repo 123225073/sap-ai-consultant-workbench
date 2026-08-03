@@ -844,6 +844,59 @@ export interface SwitchCaseInput {
   caseId: string;
 }
 
+export interface AgentToolPreferences {
+  caseContextEnabled: boolean;
+  importedEvidenceEnabled: boolean;
+  publishedKnowledgeEnabled: boolean;
+  sapReadonlyEnabled: boolean;
+  sapDataPreviewEnabled: boolean;
+}
+
+export type SapDataSourceType = "table" | "view" | "cds";
+export type SapDataFilterOperator = "eq" | "ne" | "gt" | "ge" | "lt" | "le" | "like";
+
+export interface SapDataPreviewFilter {
+  field: string;
+  operator: SapDataFilterOperator;
+  value: string;
+}
+
+export interface SapDataPreviewRequest {
+  intent: "sap-readonly-data";
+  operation: "discover" | "read";
+  objectName: string;
+  objectType: SapDataSourceType;
+  columns: string[];
+  filters: SapDataPreviewFilter[];
+  maxRows: number;
+  readOnly: true;
+  queryContext?: string;
+}
+
+export interface SapDataPreviewResult {
+  state: WorkbenchState;
+  intent: "sap-readonly-data";
+  operation: "discover" | "read";
+  source: {
+    objectName: string;
+    objectType: SapDataSourceType;
+    systemId: string;
+    client: string;
+  };
+  rowCount: number;
+  truncated: boolean;
+  columns: string[];
+  analysisRows: Array<Record<string, string>>;
+  analysisRowsTruncated: boolean;
+  generatedFiles: string[];
+  safeSummary: {
+    filterCount: number;
+    selectedColumnCount: number;
+    dataRowsStoredLocally: boolean;
+    scopeNote: string;
+  };
+}
+
 export interface ProjectConfig {
   schemaVersion: 3;
   projectId: string;
@@ -851,6 +904,7 @@ export interface ProjectConfig {
   adt: AdtConfig;
   adtConnections: AdtConfig[];
   activeAdtConnectionId: string;
+  agentTools: AgentToolPreferences;
   feishu: FeishuConfig;
   apiProviders: ApiProviderConfig[];
   codex: CodexConfig;
@@ -905,6 +959,7 @@ export interface CaseSummary {
   folderName: string;
   folderSource?: "managed" | "linked-local";
   linkedFolderName?: string | null;
+  isPlaceholder?: boolean;
   currentSummary: string;
   knowledgeReferences: CaseKnowledgeReference[];
   messages: CaseMessage[];

@@ -93,7 +93,7 @@ assert(dailyChatSendRegion.includes("projectId: selectedSafeDraftModel ? project
 assert(dailyChatSendRegion.includes("providerId: selectedSafeDraftModel?.provider.id"), "daily chat should pass explicit model channel provenance");
 assert(!dailyChatSendRegion.includes("caseId:"), "daily chat must not pass a case binding");
 assert(appSource.includes("conversation-sidebar-section"), "conversation sidebar section missing");
-assert(appSource.includes('aria-label="新建任务"'), "new task dialog missing");
+assert(appSource.includes('aria-label="新建运维项目"'), "new work project dialog missing");
 assert(appSource.includes("newCaseProjectId") && appSource.includes("bridge.createWorkThread"), "new task must use the selected project");
 assert(appSource.includes("task-folder-mode") && appSource.includes('setNewTaskFolderMode("existing")'), "new task must support new and existing folder binding");
 assert(styles.includes(".conversation-sidebar-section") && styles.includes(".task-folder-mode") && styles.includes(".daily-chat-boundary"), "new sidebar/chat styles missing");

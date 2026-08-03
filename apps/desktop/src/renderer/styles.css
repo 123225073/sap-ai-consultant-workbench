@@ -1047,7 +1047,54 @@ button {
   color: #596273;
 }
 
-.streaming-message-body p {
+.message-body hr {
+  margin: 18px 0;
+  border: 0;
+  border-top: 1px solid #dfe4eb;
+}
+
+.message-body a {
+  color: #1d5fd1;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.markdown-table-scroll {
+  max-width: 100%;
+  margin: 12px 0 16px;
+  overflow-x: auto;
+  border: 1px solid #dfe4eb;
+  border-radius: 7px;
+}
+
+.markdown-table-scroll table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  background: #fff;
+}
+
+.markdown-table-scroll th,
+.markdown-table-scroll td {
+  padding: 9px 11px;
+  border-right: 1px solid #e6eaf0;
+  border-bottom: 1px solid #e6eaf0;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.markdown-table-scroll th {
+  color: #273449;
+  background: #f4f6f9;
+  font-weight: 650;
+}
+
+.markdown-table-scroll tr:last-child td { border-bottom: 0; }
+.markdown-table-scroll th:last-child,
+.markdown-table-scroll td:last-child { border-right: 0; }
+
+.streaming-message-body .message-body p {
   min-height: 24px;
 }
 
@@ -2578,28 +2625,59 @@ button {
 }
 
 .config-tabs,
+.config-domain-navigation,
 .config-tab-stack,
 .config-main > .config-tab-panel,
 .config-main > .config-heading,
 .config-main > .config-notice,
 .config-main > .config-notice-secondary,
 .config-main > .inline-warning {
-  width: min(1040px, 100%);
+  width: min(1180px, 100%);
   margin-right: auto;
   margin-left: auto;
 }
 
-.config-tabs {
+.config-domain-navigation {
   position: sticky;
   top: 0;
   z-index: 8;
-  display: flex;
-  gap: 2px;
-  overflow-x: auto;
-  margin-top: 12px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid #dfe4eb;
+  margin-top: 10px;
+  margin-bottom: 18px;
+  padding-top: 8px;
   background: #ffffff;
+}
+
+.config-domain-navigation-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 7px;
+  color: #64748b;
+}
+
+.config-domain-navigation-label span {
+  color: #334155;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.config-domain-navigation-label small {
+  font-size: 11px;
+}
+
+.config-tabs {
+  display: flex;
+  gap: 0;
+  overflow-x: auto;
+  width: 100%;
+  margin: 0;
+  border: 1px solid #dfe4eb;
+  border-radius: 9px;
+  background: #f8fafc;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
   scrollbar-width: none;
 }
 
@@ -2616,10 +2694,17 @@ button {
   grid-template-rows: auto auto;
   column-gap: 7px;
   align-content: center;
+  position: relative;
+  border-right: 1px solid #e5e9f0;
   border-bottom: 2px solid transparent;
-  padding: 6px 10px;
+  padding: 7px 12px 6px;
   color: #5b6472;
+  background: transparent;
   text-align: left;
+}
+
+.config-tabs button:last-child {
+  border-right: 0;
 }
 
 .config-tabs button svg {
@@ -2646,8 +2731,72 @@ button {
 .config-tabs button.active {
   border-bottom-color: #2563eb;
   color: #2563eb;
-  background: #f5f8ff;
+  background: #ffffff;
+  box-shadow: inset 0 2px 0 #2563eb;
 }
+
+.config-tab-group-label {
+  flex: 0 0 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 1px solid #dfe4eb;
+  padding: 6px 4px;
+  color: #64748b;
+  background: #eef2f6;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-align: center;
+  writing-mode: vertical-rl;
+}
+
+.authorization-boundary {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+  border: 1px solid #b9cbe3;
+  border-left: 3px solid #4f76a8;
+  border-radius: 6px;
+  padding: 11px 13px;
+  color: #334155;
+  background: #f5f8fc;
+}
+
+.authorization-boundary strong { font-size: 13px; }
+.authorization-boundary span { color: #64748b; font-size: 12px; line-height: 1.5; }
+
+.tool-authorization-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.tool-authorization-list > label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: center;
+  min-height: 84px;
+  border: 1px solid #dfe4eb;
+  border-radius: 7px;
+  padding: 13px 14px;
+  background: #fff;
+}
+
+.tool-authorization-list > label:has(input:checked) {
+  border-color: #9db8dd;
+  background: #f6f9fe;
+}
+
+.tool-authorization-list label span,
+.tool-authorization-list label strong,
+.tool-authorization-list label small { display: block; }
+.tool-authorization-list label strong { color: #1f2937; font-size: 13px; }
+.tool-authorization-list label small { margin-top: 5px; color: #64748b; font-size: 11px; line-height: 1.45; }
+.tool-authorization-list input { width: 18px; height: 18px; accent-color: #2563eb; }
 
 .config-tab-stack {
   margin-top: 0;
@@ -2715,6 +2864,27 @@ button {
   margin-bottom: 16px;
 }
 
+.config-domain-title {
+  margin: -2px -2px 18px;
+  border-bottom: 1px solid #e5e9f0;
+  padding: 0 2px 16px;
+}
+
+.config-eyebrow,
+.config-section-kicker {
+  display: block;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.config-domain-title h2 {
+  margin-top: 3px;
+}
+
 .setup-card-title svg,
 .optional-title svg {
   color: #2563eb;
@@ -2743,11 +2913,12 @@ button {
 .sap-gui-discovery {
   display: grid;
   gap: 9px;
-  margin-bottom: 16px;
-  border: 1px solid #dbe4f0;
-  border-radius: 7px;
-  padding: 12px;
-  background: #f8fafc;
+  margin-bottom: 18px;
+  border: 1px solid #cbd9ea;
+  border-left: 3px solid #6b8fbe;
+  border-radius: 6px;
+  padding: 13px 14px;
+  background: #f7f9fc;
 }
 
 .sap-gui-discovery-heading,
@@ -2761,12 +2932,17 @@ button {
 .sap-gui-discovery-heading > div {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .sap-gui-discovery strong {
   color: #111827;
-  font-size: 13px;
+  font-size: 14px;
+}
+
+.sap-gui-discovery .config-section-kicker {
+  color: #56749a;
+  font-size: 10px;
 }
 
 .sap-gui-discovery span,
@@ -3034,6 +3210,132 @@ button {
   display: grid;
   gap: 10px;
   margin-top: 10px;
+}
+
+.sap-connection-workbench {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.72fr) minmax(460px, 1.45fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid #d8dee8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.sap-connection-workbench .adt-connection-list {
+  min-width: 0;
+  min-height: 100%;
+  margin: 0;
+  border-right: 1px solid #d8dee8;
+  border-bottom: 0;
+  padding: 15px 13px;
+  background: #f6f8fb;
+}
+
+.sap-connection-workbench .model-channel-toolbar {
+  align-items: flex-start;
+}
+
+.sap-connection-workbench .model-channel-toolbar > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.sap-connection-workbench .model-channel-toolbar > div:first-child > span:last-child {
+  color: #64748b;
+}
+
+.sap-connection-workbench .model-channel-toolbar strong {
+  font-size: 14px;
+}
+
+.sap-connection-workbench .adt-system-groups {
+  max-height: 680px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+
+.sap-connection-workbench .adt-system-group {
+  border-color: #dfe5ed;
+  background: #ffffff;
+}
+
+.sap-connection-workbench .model-channel-list button {
+  min-height: 50px;
+  border-left: 3px solid transparent;
+  padding: 7px 9px;
+}
+
+.sap-connection-workbench .model-channel-list button.active {
+  border-color: #9bbcf4;
+  border-left-color: #2563eb;
+  background: #edf4ff;
+  box-shadow: 0 1px 2px rgb(37 99 235 / 7%);
+}
+
+.sap-connection-editor {
+  min-width: 0;
+  padding: 18px 20px 20px;
+}
+
+.sap-connection-editor-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin: -2px 0 18px;
+  border-bottom: 1px solid #e5e9f0;
+  padding-bottom: 13px;
+}
+
+.sap-connection-editor-heading > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.sap-connection-editor-heading strong {
+  overflow: hidden;
+  color: #111827;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sap-connection-editor-heading small {
+  color: #64748b;
+  font-size: 11px;
+}
+
+.sap-connection-editor-heading .danger-icon-button {
+  flex: 0 0 auto;
+  width: 32px;
+  min-width: 32px;
+  min-height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0;
+  color: #b42318;
+  background: #ffffff;
+}
+
+.sap-connection-editor-heading .danger-icon-button:hover:not(:disabled) {
+  color: #991b1b;
+  background: #fff1f2;
+}
+
+.sap-connection-editor-heading .danger-icon-button:disabled {
+  border-color: #e5e9f0;
+  color: #b8c0cc;
+  background: #f8fafc;
+  cursor: not-allowed;
+}
+
+.sap-connection-actions {
+  border-top: 1px solid #e5e9f0;
+  padding-top: 16px;
 }
 
 .adt-system-group {
@@ -4498,6 +4800,10 @@ select:focus-visible,
     justify-content: center;
   }
 
+  .sap-connection-workbench {
+    grid-template-columns: minmax(238px, 0.62fr) minmax(390px, 1fr);
+  }
+
   .knowledge-edit-dates,
   .knowledge-edit-actions {
     grid-template-columns: 1fr;
@@ -4548,7 +4854,7 @@ select:focus-visible,
   .workspace,
   .workspace.files-collapsed {
     position: relative;
-    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-columns: 272px minmax(0, 1fr);
   }
 
   .files-panel {
@@ -4557,7 +4863,7 @@ select:focus-visible,
     top: 0;
     right: 0;
     bottom: 0;
-    width: min(328px, calc(100vw - 260px));
+    width: min(328px, calc(100vw - 292px));
     box-shadow: -16px 0 36px rgb(15 23 42 / 14%);
   }
 
@@ -4584,7 +4890,7 @@ select:focus-visible,
 @media (max-width: 1020px) {
   .workspace,
   .workspace.files-collapsed {
-    grid-template-columns: 224px minmax(0, 1fr);
+    grid-template-columns: 248px minmax(0, 1fr);
   }
 
   .topbar {
@@ -4610,6 +4916,19 @@ select:focus-visible,
 
   .model-channel-list {
     grid-template-columns: 1fr;
+  }
+
+  .sap-connection-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .sap-connection-workbench .adt-connection-list {
+    border-right: 0;
+    border-bottom: 1px solid #d8dee8;
+  }
+
+  .sap-connection-workbench .adt-system-groups {
+    max-height: 320px;
   }
 }
 
@@ -4686,6 +5005,21 @@ select:focus-visible,
   .phase-notice {
     margin-right: 12px;
     margin-left: 12px;
+  }
+
+  .config-domain-navigation-label small {
+    display: none;
+  }
+
+  .sap-gui-discovery-heading,
+  .sap-gui-import-row,
+  .sap-connection-editor-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .sap-connection-editor {
+    padding: 16px 14px 18px;
   }
 
   .case-action-control span,
@@ -4953,11 +5287,11 @@ select:focus-visible,
 
 /* Phase 40: quiet, task-first workbench */
 .workspace {
-  grid-template-columns: 240px minmax(0, 1fr) 296px;
+  grid-template-columns: 280px minmax(0, 1fr) 296px;
 }
 
 .workspace.files-collapsed {
-  grid-template-columns: 240px minmax(0, 1fr);
+  grid-template-columns: 280px minmax(0, 1fr);
 }
 
 .sidebar {
@@ -4993,6 +5327,20 @@ select:focus-visible,
   font-size: 12px;
 }
 
+.primary-nav .new-work-project-nav {
+  color: #9a4f09;
+  border: 1px solid #fed7aa;
+  background: #fff8ed;
+  font-weight: 650;
+}
+
+.primary-nav .new-work-project-nav:hover,
+.primary-nav .new-work-project-nav:focus-visible {
+  color: #7c3f08;
+  border-color: #fb923c;
+  background: #ffedd5;
+}
+
 .sidebar-search {
   height: 34px;
   margin: 0 8px 8px;
@@ -5003,11 +5351,31 @@ select:focus-visible,
   padding: 8px 8px 5px;
 }
 
-.project-header > button[aria-label="新建 Project"] {
-  width: 30px;
+.project-header > button[aria-label="新建 Project"],
+.project-header > button[aria-label="新建客户项目"] {
+  width: auto;
   min-width: 30px;
   justify-content: center;
-  padding: 0;
+  padding: 0 8px;
+}
+
+.project-header .new-customer-project-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  border-radius: 7px;
+  background: #eff6ff;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.project-header .new-customer-project-button:hover,
+.project-header .new-customer-project-button.active {
+  color: #fff;
+  border-color: #2563eb;
+  background: #2563eb;
 }
 
 .project-list {
@@ -5020,6 +5388,18 @@ select:focus-visible,
   padding: 4px;
 }
 
+.customer-project-card {
+  border: 1px solid #dbeafe;
+  border-left: 3px solid #3b82f6;
+  background: linear-gradient(135deg, #f8fbff 0%, #f3f7ff 100%);
+}
+
+.customer-project-card.active {
+  border-color: #93c5fd;
+  border-left-color: #2563eb;
+  box-shadow: 0 4px 12px rgb(37 99 235 / 8%);
+}
+
 .project-card-title {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -5027,12 +5407,18 @@ select:focus-visible,
 }
 
 .project-switch {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
   min-height: 32px;
   padding: 0 6px;
+}
+
+.project-switch .project-tags {
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .project-card-title strong {
@@ -5068,6 +5454,30 @@ select:focus-visible,
   height: 28px;
 }
 
+.project-add-work-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 50px;
+  height: 26px;
+  padding: 0 6px;
+  gap: 3px;
+  color: #9a4f09;
+  border: 1px solid #fed7aa;
+  border-radius: 6px;
+  background: #fff7ed;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.project-add-work-button:hover {
+  color: #7c3f08;
+  border-color: #fb923c;
+  background: #ffedd5;
+}
+
 .project-settings-button {
   color: #475569;
 }
@@ -5075,6 +5485,186 @@ select:focus-visible,
 .project-settings-button:hover {
   color: #1d4ed8;
   background: #eff6ff;
+}
+
+.work-project-tree {
+  display: grid;
+  gap: 5px;
+  margin: 4px 2px 1px 8px;
+  padding-left: 7px;
+  border-left: 2px solid #fdba74;
+}
+
+.work-project-group {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #fed7aa;
+  border-radius: 7px;
+  background: #fffdf9;
+}
+
+.work-project-group > header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: 36px;
+  padding: 2px 3px 2px 6px;
+  border-bottom: 1px solid #ffedd5;
+  background: linear-gradient(90deg, #fff7ed 0%, #fffdf9 72%);
+}
+
+.work-project-open {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 15px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: #7c3f08;
+  text-align: left;
+}
+
+.work-project-open > span,
+.work-project-open strong,
+.work-project-open small {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-project-open strong {
+  font-size: 12px;
+}
+
+.work-project-open small {
+  margin-top: 1px;
+  color: #8490a3;
+  font-size: 10px;
+}
+
+.work-project-add-thread {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: auto;
+  min-width: 50px;
+  height: 25px;
+  padding: 0 6px;
+  gap: 2px;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+  border-radius: 6px;
+  background: #ecfdf5;
+  font-size: 10px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.work-project-add-thread:hover {
+  color: #065f46;
+  border-color: #34d399;
+  background: #d1fae5;
+}
+
+.work-project-threads {
+  display: grid;
+  gap: 1px;
+  padding: 2px 3px 3px 7px;
+}
+
+.work-project-threads .conversation-row-shell {
+  border-left: 2px solid #a7f3d0;
+  background: #f8fffc;
+}
+
+.work-project-threads .conversation-row-shell.active {
+  border-left-color: #10b981;
+  background: #ecfdf5;
+}
+
+.work-project-threads .conversation-row-shell {
+  min-height: 30px;
+  border-radius: 5px;
+}
+
+.work-project-threads .conversation-row-main {
+  min-height: 30px;
+  padding-left: 3px;
+}
+
+.work-project-threads .conversation-row-main small {
+  display: none;
+}
+
+.work-project-empty {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 8px;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.work-project-empty button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #2563eb;
+  font-size: 11px;
+}
+
+.customer-project-empty-state {
+  display: grid;
+  place-items: center;
+  padding: 32px;
+}
+
+.customer-project-empty-state > div {
+  width: min(520px, 100%);
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: #64748b;
+  text-align: center;
+}
+
+.customer-project-empty-state h1,
+.customer-project-empty-state p {
+  margin: 0;
+}
+
+.customer-project-empty-state h1 {
+  color: #0f172a;
+  font-size: 22px;
+}
+
+.customer-project-empty-state > div > div {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.customer-project-empty-state button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 0 12px;
+  color: #334155;
+  background: #ffffff;
+}
+
+.customer-project-empty-state button.primary {
+  border-color: #2563eb;
+  color: #ffffff;
+  background: #2563eb;
 }
 
 .case-list {

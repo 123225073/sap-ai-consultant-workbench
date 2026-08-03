@@ -50,7 +50,7 @@ function scoreConnection(connection: AdtConfig, query: string): { score: number;
   let score = 0;
   const directSystem = containsTerm(query, connection.systemId);
   const clientTermMatched = containsTerm(query, connection.client);
-  const explicitClientPattern = new RegExp(`(?:CLIENT|MANDANT|客户端|客户号|租户)\\s*[:#/-]?\\s*${connection.client}(?:\\D|$)`, "i");
+  const explicitClientPattern = new RegExp(`(?:(?:CLIENT|MANDANT|客户端|客户号|租户|系统)\\s*[:#/-]?\\s*${connection.client}(?:\\D|$)|(?:^|\\D)${connection.client}\\s*(?:系统|客户端|CLIENT)(?:\\D|$))`, "i");
   const directClient = clientTermMatched && (directSystem || explicitClientPattern.test(query));
   const directEnvironment = environmentTerms[connection.environment].some((term) => containsTerm(query, term));
   if (directClient) score += 120;

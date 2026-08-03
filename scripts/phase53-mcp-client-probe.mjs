@@ -325,7 +325,17 @@ try {
   assert.deepEqual(approvedSummary.approvedReadOnlyTools, []);
   assert.deepEqual(approvedSummary.enabledTools, []);
   assert.equal(approvedSummary.discovery?.tools.find((item) => item.name === "reported_readonly")?.userApprovedReadOnly, false);
-  const agentSession = await new AgentToolService({}, manager).createSession({
+  const agentSession = await new AgentToolService({
+    getProjectConfig: async () => ({
+      agentTools: {
+        caseContextEnabled: false,
+        importedEvidenceEnabled: false,
+        publishedKnowledgeEnabled: false,
+        sapReadonlyEnabled: false,
+        sapDataPreviewEnabled: false
+      }
+    })
+  }, manager).createSession({
     threadId: "thread-a",
     projectId: projectA,
     caseId: null

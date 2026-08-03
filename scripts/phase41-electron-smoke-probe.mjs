@@ -125,15 +125,15 @@ try {
     const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const root = document.querySelector('#root');
     if (!root || root.childElementCount === 0 || !document.body.innerText.includes('Work')) throw new Error('blank-root');
-    document.querySelector('[aria-label="新建 Project"]')?.click();
+    document.querySelector('[aria-label="新建客户项目"]')?.click();
     await wait(60);
-    const nameInput = document.querySelector('[aria-label="项目名称"]');
+    const nameInput = document.querySelector('[aria-label="客户项目名称"]');
     if (!nameInput) throw new Error('missing-project-form');
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
     setter.call(nameInput, 'Electron Smoke');
     nameInput.dispatchEvent(new Event('input', { bubbles: true }));
     await wait(40);
-    document.querySelector('form[aria-label="新建 Project"]')?.requestSubmit();
+    document.querySelector('form[aria-label="新建客户项目"]')?.requestSubmit();
     await wait(700);
     document.querySelector('.primary-nav button:nth-child(2)')?.click();
     await wait(500);
@@ -152,7 +152,7 @@ try {
     const selectedAfterKeyboard = document.querySelector('.config-tabs [aria-selected=true]')?.id ?? '';
     tabs[0]?.click();
     await wait(30);
-    const addConnection = [...document.querySelectorAll('button')].find((button) => button.textContent?.includes('添加连接'));
+    const addConnection = document.querySelector('.adt-connection-list .model-channel-actions button');
     addConnection?.click();
     await wait(30);
     const connectionCountAfterAdd = document.querySelectorAll('.adt-connection-list .model-channel-list > button').length;
@@ -161,11 +161,11 @@ try {
     const savedAfterAdd = await window.workbench.getState();
     const savedConnectionCountAfterAdd = savedAfterAdd.data.projects.find((item) => item.name === 'Electron Smoke')?.config?.adtConnections?.length ?? 0;
     window.confirm = () => false;
-    document.querySelector('[aria-label="移除当前 SAP 连接"]')?.click();
+    document.querySelector('#config-panel-sap .sap-connection-editor .danger-icon-button')?.click();
     await wait(30);
     const connectionCountAfterCancel = document.querySelectorAll('.adt-connection-list .model-channel-list > button').length;
     window.confirm = () => true;
-    document.querySelector('[aria-label="移除当前 SAP 连接"]')?.click();
+    document.querySelector('#config-panel-sap .sap-connection-editor .danger-icon-button')?.click();
     await wait(30);
     const connectionCountAfterRemove = document.querySelectorAll('.adt-connection-list .model-channel-list > button').length;
     document.querySelector('#config-panel-sap .config-actions button')?.click();
@@ -184,7 +184,7 @@ try {
       savedConnectionCountAfterRemove
     });
   })()`));
-  assert(uiResult.projectCreated && uiResult.tabs === 5, "真实首屏没有完成 Project 创建或五类配置页签渲染。");
+  assert(uiResult.projectCreated && uiResult.tabs === 6, "真实首屏没有完成 Project 创建或六类配置页签渲染。");
   assert(uiResult.states.every((visible) => visible.length === 1), "配置页签切换时没有保持唯一可见面板。");
   assert(uiResult.selectedAfterKeyboard === "config-tab-models", "配置页签方向键切换未生效。");
   assert(uiResult.connectionCountAfterAdd === 2 && uiResult.connectionCountAfterCancel === 2 && uiResult.connectionCountAfterRemove === 1, "多 SAP 连接添加、取消或确认移除交互未生效。");

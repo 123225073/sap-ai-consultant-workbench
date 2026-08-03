@@ -321,7 +321,7 @@ function KnowledgeCenter({ project, initialItemId, currentCaseId, currentCaseKno
     if (!project || busyItemId || item.status !== "published" || hasKnowledgeEffectivePeriodEnded(item)) return;
     setBusyItemId(item.id);
     try {
-      await onAttachToCurrentCase(project.id, { itemId: item.id, note: "将已发布知识加入当前工作文件夹上下文。" });
+      await onAttachToCurrentCase(project.id, { itemId: item.id, note: "将已发布知识加入当前运维项目上下文。" });
     } finally {
       setBusyItemId("");
     }
@@ -331,7 +331,7 @@ function KnowledgeCenter({ project, initialItemId, currentCaseId, currentCaseKno
     if (!project || !currentCaseId || busyItemId) return;
     setBusyItemId(item.id);
     try {
-      await onDetachFromCurrentCase(project.id, { itemId: item.id, note: "从当前工作文件夹上下文解除知识引用。" });
+      await onDetachFromCurrentCase(project.id, { itemId: item.id, note: "从当前运维项目上下文解除知识引用。" });
     } finally {
       setBusyItemId("");
     }
@@ -701,7 +701,7 @@ function KnowledgeCenter({ project, initialItemId, currentCaseId, currentCaseKno
 
             <section className="knowledge-detail-actions">
               {selectedAttachedToCurrentCase ? (
-                <button disabled={busyItemId === selectedItem.id || !currentCaseId} title="解除当前工作文件夹的引用，不删除正式知识" onClick={() => void runDetachFromCase(selectedItem)}><FileText size={16} />解除当前案件引用</button>
+                <button disabled={busyItemId === selectedItem.id || !currentCaseId} title="解除当前运维项目的引用，不删除正式知识" onClick={() => void runDetachFromCase(selectedItem)}><FileText size={16} />解除当前运维项目引用</button>
               ) : (
                 <button disabled={attachDisabled || !currentCaseId} title={selectedEffectivePeriodEnded ? "该知识适用期已经结束，不能加入案件" : "只有已发布且已人工审核的知识才能加入当前案件上下文"} onClick={() => void runAttachToCase(selectedItem)}><FileText size={16} />加入当前案件上下文</button>
               )}

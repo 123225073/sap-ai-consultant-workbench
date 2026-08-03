@@ -38,7 +38,7 @@ for (const [name, marker, source] of [
   ["focus action", "focusNewCaseInput", sources.app],
   ["flow marker", "phase28-new-case-flow", sources.app],
   ["renderer bridge call", "bridge.createWorkThread", sources.app],
-  ["task dialog", 'aria-label="新建任务"', sources.app],
+  ["work project dialog", 'aria-label="新建运维项目"', sources.app],
   ["folder binding modes", "task-folder-mode", sources.app],
   ["existing folder binding", 'setNewTaskFolderMode("existing")', sources.app],
   ["native local folder picker", "bridge.selectLocalTaskFolder", sources.app],

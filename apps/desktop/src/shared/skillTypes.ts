@@ -2,7 +2,8 @@ export type SkillPackageScope =
   | { kind: "global" }
   | { kind: "project"; projectId: string };
 
-export type SkillPackageSourceKind = "folder" | "zip";
+export type SkillPackageSourceKind = "folder" | "zip" | "builtin";
+export type SkillPackageImportSourceKind = Exclude<SkillPackageSourceKind, "builtin">;
 export type SkillValidationStatus = "valid" | "warning" | "invalid" | "unsupported";
 export type SkillValidationLevel = "warning" | "error";
 export type SkillResourceKind = "instructions" | "reference" | "asset" | "script" | "other";
@@ -133,7 +134,7 @@ export interface SkillTextResource {
 }
 
 export interface SkillPackagePreflightInput {
-  sourceKind: SkillPackageSourceKind;
+  sourceKind: SkillPackageImportSourceKind;
   sourcePath: string;
   scope: SkillPackageScope;
 }

@@ -19,10 +19,15 @@ assert.match(appSource, /requestAnimationFrame\(\(\) => \{\s+if \(!force && !fol
 assert.match(appSource, /pendingStreamRef[\s\S]+requestAnimationFrame/, "流式增量应按动画帧合并刷新");
 assert.match(appSource, /event\.nativeEvent\.isComposing/, "Enter 发送必须保留中文输入法组合态保护");
 assert.match(appSource, /const MessageContent = memo/, "历史消息正文应避免在每个流式增量中重复解析");
+assert.match(appSource, /import ReactMarkdown from ["']react-markdown["']/, "对话正文应使用成熟 Markdown 渲染器");
+assert.match(appSource, /import remarkGfm from ["']remark-gfm["']/, "Markdown 表格和任务清单应支持 GFM");
+assert.match(appSource, /<ReactMarkdown[\s\S]+remarkPlugins=\{\[remarkGfm\]\}/, "历史和流式回复都应渲染 Markdown，而不是显示原始标记");
+assert.doesNotMatch(appSource, /rehypeRaw|dangerouslySetInnerHTML/, "对话 Markdown 不得放开原始 HTML 注入");
 assert.match(appSource, /function readableHistoricalText[\s\S]+历史对话（编码异常）/, "明显损坏的旧聊天编码应以中文说明替代问号噪声");
 assert.match(appSource, /className="conversation-content"/, "对话正文应使用稳定的居中阅读列");
 assert.match(styles, /\.scroll-latest-button\s*\{/, "离开最新消息后应提供回到底部按钮");
 assert.match(styles, /\.message-body\s*\{/, "助手回复应使用结构化正文排版");
+assert.match(styles, /\.markdown-table-scroll\s*\{/, "Markdown 表格应提供受控横向滚动容器");
 assert.match(styles, /\.user-message[\s\S]+width:\s*fit-content/, "用户消息应使用轻量自适应气泡");
 
 console.log("phase46-conversation-experience-probe=ok");

@@ -62,6 +62,7 @@ export class SkillPackageError extends Error {
 
 interface StoredSkillPackageRecord extends SkillPackageRecord {
   rootRef: string;
+  enablementConfirmed?: boolean;
 }
 
 interface SkillRegistryFile {
@@ -205,7 +206,8 @@ export class SkillPackageService {
         stats: pending.preview.stats,
         installedAt: now,
         updatedAt: now,
-        rootRef: toPortableRelativePath(path.relative(this.storageRoot, targetPath))
+        rootRef: toPortableRelativePath(path.relative(this.storageRoot, targetPath)),
+        enablementConfirmed: false
       };
 
       let movedToTarget = false;
@@ -252,6 +254,102 @@ export class SkillPackageService {
     return [...this.pending.values()].map((item) => clonePreview(item.preview)).sort((a, b) => a.name.localeCompare(b.name));
   }
 
+  async syncBuiltinSkills(sourceRoot: string): Promise<SkillPackageRecord[]> {
+    await this.ensureInitialized();
+    if (typeof sourceRoot !== "string" || !sourceRoot.trim()) {
+      throw new SkillPackageError("invalid-request", "内置 Skills 目录无效。");
+    }
+    const requestedRoot = path.resolve(sourceRoot);
+    return this.withOperationLock(async () => {
+      const rootStats = await safeLstat(requestedRoot, "内置 Skills 目录无法访问。");
+      if (rootStats.isSymbolicLink() || !rootStats.isDirectory()) {
+        throw new SkillPackageError("unsafe-link", "内置 Skills 目录必须是应用随附的真实目录。");
+      }
+      const canonicalRoot = await fs.realpath(requestedRoot);
+      const entries = (await fs.readdir(canonicalRoot, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+        .sort((a, b) => a.name.localeCompare(b.name));
+      const synced: SkillPackageRecord[] = [];
+      for (const entry of entries) {
+        let stagingPath: string | null = null;
+        try {
+          stagingPath = await fs.mkdtemp(path.join(this.stagingRoot, "builtin-"));
+          const sourcePath = path.join(canonicalRoot, entry.name);
+          const scan = await scanSkillDirectory(sourcePath, this.limits, stagingPath);
+          const inspected = await inspectSkillPackage(stagingPath, scan, this.limits, entry.name);
+          if (inspected.validation.status !== "valid" && inspected.validation.status !== "warning") {
+            throw new SkillPackageError("invalid-skill", `内置 Skill “${entry.name}” 未通过校验。`);
+          }
+          const scope: SkillPackageScope = { kind: "global" };
+          const existingIndex = this.records.findIndex((record) => record.name === inspected.markdown.frontmatter.name
+            && record.scope.kind === "global");
+          const existing = existingIndex >= 0 ? this.records[existingIndex] : null;
+          if (existing && existing.source.kind !== "builtin") {
+            await fs.rm(stagingPath, { recursive: true, force: true });
+            stagingPath = null;
+            continue;
+          }
+
+          const targetPath = this.installedPackagePath(scope, inspected.markdown.frontmatter.name);
+          const now = new Date().toISOString();
+          const next: StoredSkillPackageRecord = {
+            id: existing?.id ?? builtinSkillId(inspected.markdown.frontmatter.name),
+            name: inspected.markdown.frontmatter.name,
+            description: inspected.markdown.frontmatter.description,
+            frontmatter: inspected.markdown.frontmatter,
+            source: { kind: "builtin", label: "应用内置" },
+            scope,
+            sha256: inspected.sha256,
+            enabled: existing?.enablementConfirmed === true ? existing.enabled : false,
+            validation: inspected.validation,
+            scriptStatus: inspected.scriptStatus,
+            resources: inspected.resources,
+            stats: inspected.stats,
+            installedAt: existing?.installedAt ?? now,
+            updatedAt: existing?.sha256 === inspected.sha256 ? existing.updatedAt : now,
+            rootRef: toPortableRelativePath(path.relative(this.storageRoot, targetPath)),
+            enablementConfirmed: existing?.enablementConfirmed === true
+          };
+
+          if (existing?.sha256 === inspected.sha256 && await pathExists(targetPath)) {
+            const installedInspection = await this.inspectInstalled(existing);
+            if (installedInspection.validation.status === "valid" || installedInspection.validation.status === "warning") {
+              await fs.rm(stagingPath, { recursive: true, force: true });
+              stagingPath = null;
+              this.records[existingIndex] = next;
+              synced.push(cloneRecord(next));
+              continue;
+            }
+          }
+
+          await fs.mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+          const quarantine = path.join(this.stagingRoot, `builtin-old-${randomUUID()}`);
+          const hadExistingDirectory = await pathExists(targetPath);
+          if (hadExistingDirectory) await fs.rename(targetPath, quarantine);
+          try {
+            await fs.rename(stagingPath, targetPath);
+            stagingPath = null;
+            if (existingIndex >= 0) this.records[existingIndex] = next;
+            else this.records.push(next);
+            await this.persistRegistry();
+            await fs.rm(quarantine, { recursive: true, force: true }).catch(() => undefined);
+            synced.push(cloneRecord(next));
+          } catch (error) {
+            if (existingIndex >= 0 && existing) this.records[existingIndex] = existing;
+            else this.records = this.records.filter((record) => record.id !== next.id);
+            await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
+            if (hadExistingDirectory) await fs.rename(quarantine, targetPath).catch(() => undefined);
+            throw error;
+          }
+        } catch (error) {
+          if (stagingPath) await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => undefined);
+          throw normalizeServiceError(error, `内置 Skill “${entry.name}” 安装失败。`);
+        }
+      }
+      return synced.sort(compareRecords);
+    });
+  }
+
   async setEnabled(skillId: string, enabled: boolean): Promise<SkillPackageRecord> {
     await this.ensureInitialized();
     const id = normalizeId(skillId, "Skill ID");
@@ -269,6 +367,7 @@ export class SkillPackageService {
         }
       }
       record.enabled = enabled;
+      record.enablementConfirmed = true;
       record.updatedAt = new Date().toISOString();
       await this.persistRegistry();
       return cloneRecord(record);
@@ -385,6 +484,9 @@ export class SkillPackageService {
       const index = this.records.findIndex((record) => record.id === id);
       if (index < 0) return false;
       const record = this.records[index];
+      if (record.source.kind === "builtin") {
+        throw new SkillPackageError("invalid-request", "内置 Skill 可以停用，但不能从应用中移除。");
+      }
       const root = await this.resolveStoredRoot(record);
       const quarantine = path.join(this.stagingRoot, `remove-${randomUUID()}`);
       let moved = false;
@@ -1008,6 +1110,10 @@ function validateRegistryFile(value: unknown): StoredSkillPackageRecord[] {
       || typeof record.sha256 !== "string" || typeof record.enabled !== "boolean" || !Array.isArray(record.resources)) {
       throw new SkillPackageError("storage-failure", "Skill 注册表记录字段损坏。");
     }
+    if (!record.source || !["folder", "zip", "builtin"].includes(record.source.kind)
+      || typeof record.source.label !== "string" || !record.source.label.trim()) {
+      throw new SkillPackageError("storage-failure", "Skill 注册表来源字段损坏。");
+    }
     validateFrontmatterName(record.name);
     parseSkillPackageScope(record.scope);
     return record;
@@ -1126,6 +1232,10 @@ function safeChineseMessage(error: unknown, fallback: string): string {
 
 function characterCount(value: string): number {
   return [...value].length;
+}
+
+function builtinSkillId(name: string): string {
+  return `skill-builtin-${createHash("sha256").update(name, "utf8").digest("hex").slice(0, 24)}`;
 }
 
 function characterSlice(value: string, maximum: number): string {

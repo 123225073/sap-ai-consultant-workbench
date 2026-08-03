@@ -72,6 +72,9 @@ assert(route.reason.includes("Client 210") && route.reason.includes("Client 220"
 route = routeSapConnections(connections, "接口返回 HTTP 220，请检查程序 Z_DEMO", "ps4-800");
 assert(route.connectionIds[0] === "ps4-800" && route.needsConfirmation === true, "ordinary numeric text must not be mistaken for a SAP Client");
 
+route = routeSapConnections(connections, "读取 800 系统的业务数据", "ds4-220");
+assert(route.connectionIds.length === 1 && route.connectionIds[0] === "ps4-800" && route.needsConfirmation === false, "Chinese client-system wording must route to the exact SAP connection");
+
 route = routeSapConnections(connections, "对比测试和生产的配置", "ds4-220");
 assert(route.crossSystem === true && route.needsConfirmation === true, "environment-name cross-system comparison must require confirmation");
 assert(route.connectionIds.includes("qs4-610") && route.connectionIds.includes("ps4-800"), "environment-name comparison omitted quality or production system");
@@ -145,7 +148,7 @@ try {
     readFile(path.join(repoRoot, "apps/desktop/src/renderer/styles.css"), "utf8")
   ]);
 
-  assert(app.includes('onClick={() => void switchProject(item.id, "config")}'), "SAP Project settings shortcut missing");
+  assert(app.includes('onConfig={() => void switchProject(item.id, "config")}'), "SAP Project settings shortcut missing");
   assert(app.includes('details[data-dismiss-on-outside="true"][open]'), "outside-click dismissal for thread menus missing");
   assert(app.includes("SapConnectionPicker") && app.includes("routeSapConnections"), "SAP route picker missing from Work");
   assert(configCenter.includes("从本机 SAP Logon 识别系统") && configCenter.includes("System ID（SID）"), "SAP Logon discovery or SID field missing");

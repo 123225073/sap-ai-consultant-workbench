@@ -26,6 +26,66 @@ try {
     validateSkillArchiveEntryPath
   } = createRequire(import.meta.url)(outputPath);
 
+  const builtinService = new SkillPackageService(path.join(workspace, "builtin-state"));
+  await builtinService.initialize();
+  const builtinRoot = path.join(root, "apps/desktop/resources/builtin-skills");
+  const builtinRecords = await builtinService.syncBuiltinSkills(builtinRoot);
+  assert.deepEqual(
+    builtinRecords.map((item) => item.name).sort(),
+    [
+      "sap-abap-safe-change",
+      "sap-data-reconciliation",
+      "sap-development-spec",
+      "sap-evidence-first-analysis",
+      "sap-incident-closure",
+      "sap-ops-demand-intake",
+      "sap-ops-intake-router",
+      "sap-ops-presentation",
+      "sap-ops-process-design",
+      "sap-ops-release-closure"
+    ]
+  );
+  assert.ok(builtinRecords.every((item) => !item.enabled && item.source.kind === "builtin"));
+  await assert.rejects(builtinService.activateSkill("sap-development-spec"));
+  const builtinToEnable = builtinRecords.find((item) => item.name === "sap-development-spec");
+  assert.ok(builtinToEnable);
+  await builtinService.setEnabled(builtinToEnable.id, true);
+  const builtinSpec = await builtinService.activateSkill("sap-development-spec");
+  assert.match(builtinSpec.instructions, /开发说明书/);
+  const disabledBuiltin = await builtinService.setEnabled(builtinRecords[0].id, false);
+  assert.equal(disabledBuiltin.enabled, false);
+  const resyncedBuiltins = await builtinService.syncBuiltinSkills(builtinRoot);
+  assert.equal(resyncedBuiltins.find((item) => item.id === disabledBuiltin.id)?.enabled, false);
+  await assert.rejects(builtinService.removeSkill(disabledBuiltin.id), /内置 Skill.*不能.*移除/);
+  const disabledBuiltinPath = path.join(workspace, "builtin-state", "packages", "global", disabledBuiltin.name, "SKILL.md");
+  await writeFile(disabledBuiltinPath, "tampered built-in content", "utf8");
+  const repairedBuiltins = await builtinService.syncBuiltinSkills(builtinRoot);
+  assert.equal(repairedBuiltins.find((item) => item.id === disabledBuiltin.id)?.enabled, false);
+  await builtinService.setEnabled(disabledBuiltin.id, true);
+  assert.match((await builtinService.activateSkill(disabledBuiltin.name)).instructions, /SAP|开发说明书|事故闭环|对账/);
+
+  const upgradeRoot = path.join(workspace, "builtin-upgrade-source");
+  const upgradeSkill = path.join(upgradeRoot, "upgrade-skill");
+  await writeSkill(upgradeSkill, {
+    name: "upgrade-skill",
+    description: "A built-in upgrade workflow used to verify safe package synchronization.",
+    body: "# Upgrade Skill\n\nBUILTIN_VERSION_ONE"
+  });
+  const upgradeService = new SkillPackageService(path.join(workspace, "builtin-upgrade-state"));
+  const [versionOne] = await upgradeService.syncBuiltinSkills(upgradeRoot);
+  await upgradeService.setEnabled(versionOne.id, false);
+  await writeFile(
+    path.join(upgradeSkill, "SKILL.md"),
+    skillMarkdown(versionOne.name, versionOne.description, "# Upgrade Skill\n\nBUILTIN_VERSION_TWO"),
+    "utf8"
+  );
+  const [versionTwo] = await upgradeService.syncBuiltinSkills(upgradeRoot);
+  assert.equal(versionTwo.id, versionOne.id);
+  assert.notEqual(versionTwo.sha256, versionOne.sha256);
+  assert.equal(versionTwo.enabled, false);
+  await upgradeService.setEnabled(versionTwo.id, true);
+  assert.match((await upgradeService.activateSkill(versionTwo.name)).instructions, /BUILTIN_VERSION_TWO/);
+
   const parsed = parseSkillMarkdown([
     "---",
     "name: sap-review",

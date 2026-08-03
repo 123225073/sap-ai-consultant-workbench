@@ -1418,7 +1418,8 @@ $phase35Markers = @(
   @{ Pattern = "appendDailyChatMessage"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "groupDailyChatThreads"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = 'activeView === "chat"'; Path = "apps/desktop/src/renderer/App.tsx" },
-  @{ Pattern = "project-case-label"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "work-project-group"; Path = "apps/desktop/src/renderer/App.tsx" },
+  @{ Pattern = "work-project-threads"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "task-folder-mode"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "conversation-sidebar-section"; Path = "apps/desktop/src/renderer/App.tsx" },
   @{ Pattern = "phase35-config-reveal-conversation-probe"; Path = "scripts/phase35-config-reveal-conversation-probe.mjs" }
@@ -1975,6 +1976,40 @@ if ($LASTEXITCODE -eq 0) {
   throw "SAP evidence forbidden endpoint scan failed."
 }
 
+Write-Section "SAP general ADT data-preview safety scan"
+$sapBusinessPreviewMarkers = @(
+  @{ Pattern = "ADT_DATA_PREVIEW_FIXED_READ_ENDPOINT"; Path = "apps/desktop/src/main/adtDataPreviewConnector.ts" },
+  @{ Pattern = "ADT_DATA_PREVIEW_SEMANTIC_READ_POST"; Path = "apps/desktop/src/main/adtDataPreviewConnector.ts" },
+  @{ Pattern = "SAP_DATA_PREVIEW_PROFILE"; Path = "apps/desktop/src/main/sapDataPreviewService.ts" },
+  @{ Pattern = "parseSapDataPreviewRequest"; Path = "apps/desktop/src/main/sapDataPreviewService.ts" },
+  @{ Pattern = "sapDataPreviewEnabled"; Path = "apps/desktop/src/main/agentToolService.ts" },
+  @{ Pattern = "appendSapDataPreview"; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = 'externalModelData: "bounded-analysis-rows-only"'; Path = "apps/desktop/src/main/workspaceStore.ts" },
+  @{ Pattern = "phase61-general-sap-readonly-task-probe"; Path = "scripts/phase61-general-sap-readonly-task-probe.mjs" }
+)
+foreach ($marker in $sapBusinessPreviewMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker.Pattern -Path $marker.Path
+  if ($markerHit) {
+    Write-Host "OK SAP business preview marker: $($marker.Pattern)"
+  } else {
+    throw "SAP business preview marker is missing: $($marker.Pattern)"
+  }
+}
+$sapBusinessMutationHits = rg -n -i -- "\b(INSERT|UPDATE|DELETE|MODIFY|MERGE|TRUNCATE|CALL\s+TRANSACTION|SUBMIT)\b|/sap/bc/adt/(activation|cts)|x-csrf-token" apps/desktop/src/main/adtDataPreviewConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $sapBusinessMutationHits | ForEach-Object { Write-Host $_ }
+  throw "SAP business-data preview connector contains mutation or privileged endpoint markers."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP business-data preview mutation scan failed."
+}
+$sapBusinessArbitraryInputHits = rg -n -- "sqlCommand|argumentsValue\.sql|properties:\s*\{[\s\S]*sql:" apps/desktop/src/main/agentToolService.ts
+if ($LASTEXITCODE -eq 0) {
+  $sapBusinessArbitraryInputHits | ForEach-Object { Write-Host $_ }
+  throw "SAP general data-preview model tool exposes raw SQL input."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP business-data arbitrary input scan failed."
+}
+
 Write-Section "Authorization boundary scan"
 $authHits = rg -n -- "Authorization|Bearer|apiKey" apps/desktop/src
 if ($LASTEXITCODE -eq 0) {
@@ -1987,7 +2022,7 @@ if ($LASTEXITCODE -eq 0) {
       Write-Host "OK agent event redaction marker: $line"
       continue
     }
-    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector|adtReadonlyConnector)\.ts") {
+    if ($line -notmatch "apps[/\\]desktop[/\\]src[/\\]main[/\\](main|modelProviderConnector|adtReadonlyConnector|adtDataPreviewConnector)\.ts") {
       $line | ForEach-Object { Write-Host $_ }
       throw "Authorization/API key material outside approved main-process files."
     }

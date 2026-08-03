@@ -6,7 +6,7 @@ import { discoverLocalSapGuiConnections, resolveAdtEndpointCandidates, type AdtE
 import { createFeishuCliConnector, createFeishuValidationFailureReport, discoverFeishuCli, installFeishuCli, saveFeishuCliProfile, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createCodexCliConnector, createCodexValidationFailureReport, type CodexCliConnectorInput } from "./codexCliConnector";
 import { createModelProviderConnector, createModelProviderValidationFailureReport, type ModelProviderConnectorInput, type ModelToolLoopEvent } from "./modelProviderConnector";
-import { SecureSecretStore } from "./secureSecretStore";
+import { SecureSecretStore, WORKSPACE_SHARED_SECRET_SCOPE } from "./secureSecretStore";
 import { isChatCapableModel, parseAppendDailyChatMessageInput, parseCreateWorkThreadInput, WorkspaceStore, type DailyChatAssistantReply } from "./workspaceStore";
 import { applyAgentContextToSafeModelDraft, safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { readControlledKnowledgeTextFile } from "./controlledTextFileImportService";
@@ -16,6 +16,8 @@ import {
   parseKnowledgeImportTextFileInput
 } from "./knowledgeService";
 import { parseSapObjectEvidenceRequest, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
+import { createAdtDataPreviewConnector } from "./adtDataPreviewConnector";
+import { parseSapDataPreviewRequest, type SapDataPreviewConnectorResult } from "./sapDataPreviewService";
 import { assertTrustedRendererEvent, isTrustedRendererUrl } from "./trustedRenderer";
 import { createAppLifecycleLogger } from "./appLifecycleLogger";
 import { installLocalAiCapability, parseLocalAiInstallInput, scanLocalAiCapabilities } from "./localAiCapabilityService";
@@ -35,7 +37,7 @@ import { assertNoSensitiveCaseContent } from "./caseWorkflowService";
 import { parseAgentThreadReplayInput, parseCancelAgentTurnInput, type AgentInterruptedTurnRecovery, type AgentRuntimeEvent } from "../shared/agentRuntimeTypes";
 import { ExclusiveWorkflowQueue } from "./exclusiveWorkflowQueue";
 import type { CreateCapabilityMemoryInput, DiscoverCapabilitySkillsInput, ImportCapabilityPluginInput, ImportCapabilitySkillInput, ImportDiscoveredCapabilitySkillsInput, RemoveCapabilityMcpInput, ReviewCapabilityMemoryInput, RevokeCapabilityMemoryInput, SaveCapabilityMcpInput, SaveCapabilityPromptInput, SetCapabilityMcpEnabledInput, SetCapabilityMcpToolEnabledInput, SetCapabilityPluginEnabledInput, SetCapabilityPromptEnabledInput, SetCapabilitySkillEnabledInput, TestCapabilityMcpInput, UpdateCapabilityMemoryInput } from "../shared/capabilityCenterTypes";
-import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, ExportCaseDiagramInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ImportCaseAttachmentsInput, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationErrorCode, AdtVerificationReport, AdtVerificationResult, AiConversationStreamEvent, AiConversationStreamScope, ApiProviderConfig, AppendDailyChatMessageInput, CodexCaseAssistRun, CodexConfig, CodexVerificationErrorCode, CodexVerificationResult, ExportCaseDiagramInput, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuConfig, FeishuHandoffResult, FeishuVerificationErrorCode, FeishuVerificationResult, ImportCaseAttachmentsInput, KnowledgeImportTextFileResult, LocalAiInstallResult, LocalTaskFolderSelectionResult, ModelProviderVerificationErrorCode, ModelProviderVerificationResult, ProjectConfig, ProjectSecretInput, SapDataPreviewRequest, SapDataPreviewResult, SapObjectEvidenceResult, WorkbenchResponse, WorkbenchState } from "../shared/workbenchTypes";
 import { routeSapConnections } from "../shared/sapConnectionRouting";
 import { prepareCaseAttachments } from "./caseAttachmentService";
 import { convertSanitizedSvg } from "./mermaidExportService";
@@ -558,7 +560,10 @@ async function saveProjectSecret(store: WorkspaceStore, secretStore: SecureSecre
     throw new Error("请输入需要保存到系统安全存储的密钥。");
   }
   const { target, existingRef } = await store.prepareProjectSecret(projectId, candidate.target);
-  const handle = await secretStore.save(projectId, target, candidate.value, existingRef);
+  const secretScope = target.kind === "adt-password" || target.kind === "mcp-header"
+    ? projectId
+    : WORKSPACE_SHARED_SECRET_SCOPE;
+  const handle = await secretStore.save(secretScope, target, candidate.value, existingRef);
   return store.attachProjectSecret(projectId, target, handle);
 }
 
@@ -595,7 +600,7 @@ async function saveProjectConfig(store: WorkspaceStore, secretStore: SecureSecre
     throw new Error("检测到多个模型渠道被同时移除，已停止自动清理密钥。");
   }
   if (removedProviders[0]) {
-    await secretStore.removeProjectTarget(projectId, { kind: "api-key", providerId: removedProviders[0].id });
+    await secretStore.removeProjectTarget(WORKSPACE_SHARED_SECRET_SCOPE, { kind: "api-key", providerId: removedProviders[0].id });
   }
   return state;
 }
@@ -726,7 +731,11 @@ async function setupFeishuCliProfile(store: WorkspaceStore, secretStore: SecureS
 
   let appSecret = "";
   try {
-    appSecret = await secretStore.resolveProjectSecret(projectId, { kind: "feishu-token" });
+    appSecret = await secretStore.resolveWorkspaceSharedSecret(
+      { kind: "feishu-token" },
+      config.feishu.credential.secretRef,
+      projectId
+    );
   } catch {
     return {
       checkedAt: new Date().toISOString(),
@@ -838,7 +847,11 @@ async function verifyModelProvider(store: WorkspaceStore, secretStore: SecureSec
 
   let apiKey = "";
   try {
-    apiKey = await secretStore.resolveProjectSecret(projectId, { kind: "api-key", providerId });
+    apiKey = await secretStore.resolveWorkspaceSharedSecret(
+      { kind: "api-key", providerId },
+      provider.credential.secretRef,
+      projectId
+    );
   } catch {
     const report = modelProviderFailure(
       provider,
@@ -904,8 +917,8 @@ async function appendCaseMessage(
     try {
       const conversationMessages = await store.getWorkAgentContextHistory(threadId);
       const projectConfig = await store.getProjectConfig(projectId);
-      const contextModel = projectConfig.apiProviders
-        .find((provider) => provider.id === prepared.providerId)?.models
+      const preparedProvider = projectConfig.apiProviders.find((provider) => provider.id === prepared.providerId);
+      const contextModel = preparedProvider?.models
         .find((model) => model.id === prepared.modelId);
       const assembledContext = await agentContextService.build({
         requestId,
@@ -921,10 +934,11 @@ async function appendCaseMessage(
       });
       effectiveContext = applyAgentContextToSafeModelDraft(prepared.context, assembledContext);
       await assertPublicModelEndpoint(prepared.baseUrl);
-      const apiKey = await secretStore.resolveProjectSecret(prepared.projectId, {
-        kind: "api-key",
-        providerId: prepared.providerId
-      });
+      const apiKey = await secretStore.resolveWorkspaceSharedSecret(
+        { kind: "api-key", providerId: prepared.providerId },
+        preparedProvider?.credential.secretRef ?? null,
+        prepared.projectId
+      );
       const connector = createModelProviderConnector(prepared.baseUrl, prepared.providerType);
       let toolSession;
       try {
@@ -1044,7 +1058,11 @@ async function prepareDailyChatAssistantReply(
     const selectedModel = provider.models.find((model) => model.id === modelId);
     if (!modelId || !isChatCapableModel(selectedModel)) return undefined;
     await assertPublicModelEndpoint(provider.baseUrl);
-    const apiKey = await secretStore.resolveProjectSecret(projectId, { kind: "api-key", providerId: provider.id });
+    const apiKey = await secretStore.resolveWorkspaceSharedSecret(
+      { kind: "api-key", providerId: provider.id },
+      provider.credential.secretRef,
+      projectId
+    );
     const connector = createModelProviderConnector(provider.baseUrl, provider.providerType);
     const conversationMessages = await store.getDailyChatAgentContextHistory(request.threadId, projectId, provider.id);
     const assembledContext = await agentContextService.build({
@@ -1260,15 +1278,25 @@ async function runTrackedDailyChatMessage(
   });
 }
 
-async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureSecretStore, input: unknown): Promise<SapObjectEvidenceResult> {
+async function readSapObjectEvidence(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  input: unknown,
+  target?: { projectId: string; caseId: string; threadId: string },
+  signal?: AbortSignal
+): Promise<SapObjectEvidenceResult> {
   const request = parseSapObjectEvidenceRequest(input);
-  const { projectId, caseId, threadId, config } = await store.getActiveProjectConfig();
+  const { projectId, caseId, threadId, config } = target
+    ? await store.getProjectWorkTargetConfig(target)
+    : await store.getActiveProjectConfig();
   const runKey = `${projectId}\u0000${caseId}\u0000${threadId}`;
   if (activeSapEvidenceRuns.has(runKey)) {
     throw new Error("当前任务正在执行 SAP 只读取证，请等待完成后再试。");
   }
   activeSapEvidenceRuns.add(runKey);
   const controller = new AbortController();
+  const cancelFromCaller = () => controller.abort();
+  signal?.addEventListener("abort", cancelFromCaller, { once: true });
   const timeout = setTimeout(() => controller.abort(), SAP_EVIDENCE_TOTAL_TIMEOUT_MS);
   try {
   const allConnections = config.adtConnections.length > 0 ? config.adtConnections : [config.adt];
@@ -1341,6 +1369,74 @@ async function readSapObjectEvidence(store: WorkspaceStore, secretStore: SecureS
   }
   return store.appendSapObjectEvidenceBatch(evidenceResults, { projectId, caseId, threadId });
   } finally {
+    signal?.removeEventListener("abort", cancelFromCaller);
+    clearTimeout(timeout);
+    activeSapEvidenceRuns.delete(runKey);
+  }
+}
+
+async function readSapDataPreview(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  input: SapDataPreviewRequest,
+  target: { projectId: string; caseId: string; threadId: string },
+  signal?: AbortSignal
+): Promise<SapDataPreviewResult> {
+  const request = parseSapDataPreviewRequest(input);
+  const { projectId, caseId, threadId, config } = await store.getProjectWorkTargetConfig(target);
+  if (config.agentTools.sapDataPreviewEnabled !== true) {
+    throw new Error("SAP 通用 ADT 数据预览尚未获得当前 Project 的显式授权。请到配置中心 → AI 工具启用并保存。");
+  }
+  const runKey = `data-preview\u0000${projectId}\u0000${caseId}\u0000${threadId}`;
+  if (activeSapEvidenceRuns.has(runKey)) throw new Error("当前任务正在读取 SAP 业务数据，请等待完成后再试。");
+  activeSapEvidenceRuns.add(runKey);
+  const controller = new AbortController();
+  const cancelFromCaller = () => controller.abort();
+  signal?.addEventListener("abort", cancelFromCaller, { once: true });
+  const timeout = setTimeout(() => controller.abort(), SAP_EVIDENCE_TOTAL_TIMEOUT_MS);
+  try {
+    const allConnections = config.adtConnections.length > 0 ? config.adtConnections : [config.adt];
+    const route = routeSapConnections(allConnections, request.queryContext ?? "", config.activeAdtConnectionId);
+    if (route.connectionIds.length === 0) throw new Error(route.reason);
+    if (route.needsConfirmation || route.connectionIds.length !== 1) {
+      throw new Error(`${route.reason} 为避免读取错误生产系统，请在问题中明确 SID 或 Client 后重试。`);
+    }
+    const connection = allConnections.find((item) => item.id === route.connectionIds[0]);
+    if (!connection) throw new Error("建议的 SAP 连接已不存在，请重新检查 Project 配置。");
+    const scopedConfig = projectConfigForAdtConnection(config, connection);
+    const configCheck = await validateAdtConfig(scopedConfig);
+    if (!configCheck.ok) throw new Error(`${connection.alias || connection.systemId || "SAP 连接"}：${configCheck.message} ${configCheck.suggestion}`);
+    if (connection.connectionStatus !== "verified" || connection.minimalReadStatus !== "verified" || connection.lastVerificationMode !== "adt") {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 尚未完成真实 ADT 与 T000 只读验证。`);
+    }
+    let password = "";
+    try {
+      password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password", connectionId: connection.id });
+    } catch {
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 在系统安全存储中没有可用密码，请重新保存并验证。`);
+    }
+    const connector = createAdtDataPreviewConnector();
+    let connectorResult: SapDataPreviewConnectorResult | null = null;
+    let lastError: unknown = null;
+    for (const candidate of configCheck.candidates) {
+      try {
+        connectorResult = await connector.readDataPreview(
+          { ...adtInputWithoutPassword(scopedConfig, candidate.url), password },
+          request,
+          controller.signal
+        );
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!connectorResult) {
+      const detail = lastError instanceof Error ? lastError.message : "所有已解析 ADT 地址均未返回结果。";
+      throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 无法执行受控 ADT 数据预览：${detail} T000 通过只代表连接和元数据读取可用，请让 Basis 同时检查 /sap/bc/adt/datapreview/*、目标对象与当前账号的数据权限。`);
+    }
+    return store.appendSapDataPreview(connectorResult, { projectId, caseId, threadId });
+  } finally {
+    signal?.removeEventListener("abort", cancelFromCaller);
     clearTimeout(timeout);
     activeSapEvidenceRuns.delete(runKey);
   }
@@ -2049,13 +2145,28 @@ if (!hasSingleInstanceLock) {
       pluginPackageService.initialize(),
       mcpConnectionManager.initialize()
     ]);
+    const builtinSkillsRoot = app.isPackaged
+      ? path.join(process.resourcesPath, "builtin-skills")
+      : path.join(appRoot, "resources", "builtin-skills");
+    try {
+      const builtinSkills = await skillPackageService.syncBuiltinSkills(builtinSkillsRoot);
+      lifecycleLogger.write("builtin-skills-ready", { count: builtinSkills.length });
+    } catch (error) {
+      lifecycleLogger.write("builtin-skills-failed", { message: safeErrorMessage(error) });
+    }
     const agentContextService = new AgentContextService(
       new ContextEngine(promptMemoryService),
       skillPackageService,
       pluginPackageService,
       promptMemoryService
     );
-    const agentToolService = new AgentToolService(store, mcpConnectionManager, skillPackageService);
+    const agentToolService = new AgentToolService(
+      store,
+      mcpConnectionManager,
+      skillPackageService,
+      (target, request, signal) => readSapObjectEvidence(store, secretStore, request, target, signal),
+      (target, request, signal) => readSapDataPreview(store, secretStore, request, target, signal)
+    );
     const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService, skillDiscoveryService);
     registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, capabilityCenter, appRoot);
     createMainWindow();

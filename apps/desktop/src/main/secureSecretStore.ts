@@ -25,6 +25,7 @@ interface StoredSecretBlob {
 const REF_PREFIX = "secure-store:";
 const REF_PATTERN = /^secure-store:sec_[a-f0-9]{32}$/;
 const MAX_SECRET_LENGTH = 8192;
+export const WORKSPACE_SHARED_SECRET_SCOPE = "workspace-shared";
 
 function nowIso(): string {
   return new Date().toISOString();
@@ -133,6 +134,26 @@ export class SecureSecretStore {
       throw new Error("安全引用与当前 Project 或目标不匹配，已阻止读取。");
     }
     return this.decryptBlob(blob);
+  }
+
+  async resolveWorkspaceSharedSecret(target: ProjectSecretTarget, preferredRef: string | null, legacyProjectId?: string): Promise<string> {
+    this.assertProviderReady();
+    if (target.kind === "adt-password" || target.kind === "mcp-header") {
+      throw new Error("该密钥属于项目或连接范围，不能作为工作台全局密钥读取。");
+    }
+    if (preferredRef && isManagedSecretRef(preferredRef)) {
+      const blob = await this.readBlob(preferredRef);
+      const expectedTargetIds = new Set(secretTargetIdCandidates(target));
+      if (blob.kind === target.kind && expectedTargetIds.has(blob.targetId)) {
+        return this.decryptBlob(blob);
+      }
+    }
+    try {
+      return await this.resolveProjectSecret(WORKSPACE_SHARED_SECRET_SCOPE, target);
+    } catch {
+      if (legacyProjectId) return this.resolveProjectSecret(legacyProjectId, target);
+      throw new Error("安全存储里没有找到当前工作台的共享密钥。");
+    }
   }
 
   async removeProjectTarget(projectId: string, target: ProjectSecretTarget): Promise<number> {

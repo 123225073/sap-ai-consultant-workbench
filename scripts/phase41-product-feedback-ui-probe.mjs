@@ -7,7 +7,7 @@ const mainSource = await readFile("apps/desktop/src/main/main.ts", "utf8");
 const styleSource = await readFile("apps/desktop/src/renderer/styles.css", "utf8");
 
 for (const marker of [
-  'type ConfigTabId = "sap" | "models" | "feishu" | "capabilities" | "storage"',
+  'type ConfigTabId = "sap" | "models" | "tools" | "feishu" | "capabilities" | "storage"',
   'className="config-tabs phase27-compact-status-summary"',
   'hidden={activeConfigTab !== "sap"}',
   'hidden={activeConfigTab !== "models"}',

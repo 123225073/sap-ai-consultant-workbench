@@ -24,7 +24,7 @@ assert.match(store, /async updateConversationThreadStatus[\s\S]+"archived"[\s\S]
 assert.match(store, /workThread\.messages = currentCase\.messages/, "案件工作流结果没有同步回原任务会话");
 assert.match(preload, /createWorkThread[\s\S]+switchWorkThread[\s\S]+updateConversationThreadStatus/, "任务会话 IPC 暴露不完整");
 assert.match(main, /workbench:create-work-thread[\s\S]+workbench:switch-work-thread[\s\S]+workbench:update-conversation-thread-status/, "任务会话主进程处理器不完整");
-assert.match(app, />新建任务<|新建任务<\/strong>/, "左上角仍未改为新建任务");
+assert.match(app, />新建运维项目<|新建运维项目<\/strong>/, "左上角没有提供新建运维项目入口");
 assert.match(app, /新建文件夹[\s\S]+已有文件夹/, "新任务弹窗没有提供两种文件夹绑定方式");
 assert.match(app, /ConversationThreadRow[\s\S]+复制会话 ID[\s\S]+归档[\s\S]+移除[\s\S]+恢复/, "会话列表缺少完整管理入口");
 assert.match(app, /composerTextareaRef[\s\S]+scrollHeight[\s\S]+rows=\{1\}/, "输入框没有按内容自适应高度");

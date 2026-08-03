@@ -259,31 +259,31 @@ try {
   assert(!initialSafety.hasSecretText, "首屏没有明文密钥特征");
 
   await pageSession.evaluate(`(async () => {
-    document.querySelector('[aria-label="新建 Project"]').click();
-    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建 Project"]')));
+    document.querySelector('[aria-label="新建客户项目"]').click();
+    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建客户项目"]')));
     document.querySelector('.create-dialog-backdrop').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    await __phase43.until(() => !document.querySelector('form[aria-label="新建 Project"]'));
-    document.querySelector('[aria-label="新建 Project"]').click();
-    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建 Project"]')));
-    __phase43.setValue(document.querySelector('[aria-label="项目名称"]'), 'Phase43 正式 UAT');
+    await __phase43.until(() => !document.querySelector('form[aria-label="新建客户项目"]'));
+    document.querySelector('[aria-label="新建客户项目"]').click();
+    await __phase43.until(() => Boolean(document.querySelector('form[aria-label="新建客户项目"]')));
+    __phase43.setValue(document.querySelector('[aria-label="客户项目名称"]'), 'Phase43 正式 UAT');
     __phase43.setValue(document.querySelector('[aria-label="项目类型"]'), 'S4');
     __phase43.setValue(document.querySelector('[aria-label="系统或本地标签"]'), 'UAT/100');
-    document.querySelector('form[aria-label="新建 Project"]').requestSubmit();
+    document.querySelector('form[aria-label="新建客户项目"]').requestSubmit();
     await __phase43.until(async () => (await window.workbench.getState()).data.projects.some((item) => item.name === 'Phase43 正式 UAT'));
-    __phase43.clickText('新建任务');
+    __phase43.clickText('新建运维项目');
     await new Promise((resolve) => setTimeout(resolve, 50));
     return true;
   })()`);
   const taskDialog = await evaluateJson(`(() => {
     const tabs = [...document.querySelectorAll('.task-folder-mode button')];
     return {
-      title: document.querySelector('[aria-label="新建任务"] .create-dialog-heading strong')?.textContent,
+      title: document.querySelector('[aria-label="新建运维项目"] .create-dialog-heading strong')?.textContent,
       labels: tabs.map((item) => item.textContent.trim()),
       backgrounds: tabs.map((item) => getComputedStyle(item).backgroundColor),
       activeCount: tabs.filter((item) => item.classList.contains('active')).length
     };
   })()`);
-  assert(taskDialog.title === "新建任务" && taskDialog.labels.join("|") === "新建文件夹|已有文件夹", "新建任务明确区分新建和已有工作文件夹");
+  assert(taskDialog.title === "新建运维项目" && taskDialog.labels.join("|") === "新建文件夹|已有文件夹", "新建运维项目明确区分新建和已有工作文件夹");
   assert(taskDialog.activeCount === 1 && taskDialog.backgrounds.every((color) => color !== "rgb(37, 99, 235)"), "文件夹页签未被主按钮蓝色样式污染");
   await capture("task-dialog-folder-binding");
 
@@ -304,15 +304,16 @@ try {
 
   await pageSession.evaluate(`(async () => {
     document.querySelector('.create-dialog-backdrop').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    await __phase43.until(() => !document.querySelector('.create-dialog[aria-label="新建任务"]'));
-    __phase43.clickText('新建任务');
-    await __phase43.until(() => Boolean(document.querySelector('.create-dialog[aria-label="新建任务"]')));
-    __phase43.setValue(document.querySelector('[aria-label="任务名称"]'), 'UAT 核心旅程');
+    await __phase43.until(() => !document.querySelector('.create-dialog[aria-label="新建运维项目"]'));
+    __phase43.clickText('新建运维项目');
+    await __phase43.until(() => Boolean(document.querySelector('.create-dialog[aria-label="新建运维项目"]')));
+    __phase43.setValue(document.querySelector('[aria-label="运维项目名称"]'), 'UAT 核心旅程');
     document.querySelector('.case-create').requestSubmit();
     await __phase43.until(async () => {
       const response = await window.workbench.getState();
       const project = response.data.projects.find((item) => item.name === 'Phase43 正式 UAT');
-      return project?.cases.some((item) => item.title === 'UAT 核心旅程') && response.data.workThreads.some((item) => item.title === 'UAT 核心旅程');
+      const workProject = project?.cases.find((item) => item.title === 'UAT 核心旅程');
+      return Boolean(workProject && response.data.workThreads.some((item) => item.caseId === workProject.id && item.title === '新对话'));
     });
     return true;
   })()`);
@@ -332,7 +333,8 @@ try {
     await __phase43.until(async () => {
       const state = (await window.workbench.getState()).data;
       const project = state.projects.find((item) => item.name === 'Phase43 正式 UAT');
-      const workThread = state.workThreads.find((item) => item.title === 'UAT 核心旅程');
+      const workProject = project?.cases.find((item) => item.title === 'UAT 核心旅程');
+      const workThread = state.workThreads.find((item) => item.caseId === workProject?.id && item.title.includes('请记录本次 UAT'));
       return (workThread?.messages.length ?? 0) >= 2;
     });
     await __phase43.until(() => {
@@ -399,6 +401,7 @@ try {
   uatProject.config.adt = uatConnection;
   uatProject.config.adtConnections = [uatConnection];
   uatProject.config.activeAdtConnectionId = uatConnection.id;
+  uatProject.config.agentTools.sapReadonlyEnabled = true;
   await writeFile(uatStatePath, `${JSON.stringify(uatState, null, 2)}\n`, "utf8");
   await pageSession.evaluate("location.reload()");
   await waitFor(() => pageSession.evaluate("document.readyState === 'complete' && Boolean(document.querySelector('.conversation-panel'))"), 12_000, "UAT SAP 连接状态重载");
@@ -581,11 +584,11 @@ try {
 
   await pageSession.evaluate(`(async () => {
     __phase43.clickText('配置中心');
-    await __phase43.until(() => document.querySelectorAll('.config-tabs [role="tab"]').length === 5);
+    await __phase43.until(() => document.querySelectorAll('.config-tabs [role="tab"]').length === 6);
     return true;
   })()`);
   const configTabs = await evaluateJson(`[...document.querySelectorAll('.config-tabs [role="tab"]')].map((tab) => ({ id: tab.id, text: __phase43.normalize(tab.textContent) }))`);
-  assert(configTabs.length === 5, "配置中心显示五个专业页签");
+  assert(configTabs.length === 6, "配置中心显示六个分层配置页签");
   for (const tab of configTabs) {
     await pageSession.evaluate(`(async () => {
       document.getElementById(${JSON.stringify(tab.id)}).click();
@@ -770,7 +773,8 @@ try {
     let state = (await call('get-state', window.workbench.getState())).data;
     const project = state.projects.find((item) => item.name === 'Phase43 正式 UAT');
     const caseItem = project?.cases.find((item) => item.title === 'UAT 核心旅程');
-    const original = state.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id && item.title === 'UAT 核心旅程');
+    const original = state.workThreads.find((item) => item.id === state.activeWorkThreadId && item.projectId === project?.id && item.caseId === caseItem?.id)
+      ?? state.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id);
     state = (await call('create-work', window.workbench.createWorkThread({ projectId: project.id, title: 'UAT 生命周期任务', folderMode: 'existing', caseId: caseItem.id }))).data;
     const work = state.workThreads.find((item) => item.title === 'UAT 生命周期任务');
     const archivedWork = (await call('archive-work', window.workbench.updateConversationThreadStatus({ scope: 'work', threadId: work.id, status: 'archived' }))).data.workThreads.find((item) => item.id === work.id)?.status;
@@ -809,7 +813,8 @@ try {
     const response = await window.workbench.getState();
     const project = response.data.projects.find((item) => item.name === 'Phase43 正式 UAT');
     const caseItem = project?.cases.find((item) => item.title === 'UAT 核心旅程');
-    const workThread = response.data.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id && item.title === 'UAT 核心旅程');
+    const workThread = response.data.workThreads.find((item) => item.id === response.data.activeWorkThreadId && item.projectId === project?.id && item.caseId === caseItem?.id)
+      ?? response.data.workThreads.find((item) => item.projectId === project?.id && item.caseId === caseItem?.id && item.messages.length > 0);
     const flattenPaths = (nodes) => nodes.flatMap((item) => [item.relativePath, ...flattenPaths(item.children ?? [])]);
     return {
       ok: response.ok,

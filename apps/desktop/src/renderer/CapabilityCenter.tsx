@@ -35,8 +35,11 @@ export interface CapabilityFlags {
 export interface CapabilitySkillItem {
   id: string;
   name: string;
+  technicalName?: string;
   description: string;
   source: string;
+  categoryLabel?: string;
+  workflowStage?: string;
   scope: CapabilityScope;
   scopeLabel?: string;
   enabled: boolean;
@@ -471,14 +474,24 @@ function CapabilityCenter({
     return enabledFilter === "all" || (enabledFilter === "enabled" ? enabled : !enabled);
   }
 
-  const filteredSkills = skills.filter((item) => enabledMatches(item.enabled) && textMatches([
+  const skillCategoryOrder: Record<string, number> = { "SAP 运维": 0, "SAP 实施": 1, "兼容入口": 2, "通用与用户 Skills": 3 };
+  const filteredSkills = [...skills].filter((item) => enabledMatches(item.enabled) && textMatches([
     item.name,
+    item.technicalName,
     item.description,
     item.source,
+    item.categoryLabel,
+    item.workflowStage,
     item.scopeLabel,
     item.validationMessage,
     ...item.resources ?? []
-  ]));
+  ])).sort((left, right) => {
+    const leftCategory = left.categoryLabel ?? "通用与用户 Skills";
+    const rightCategory = right.categoryLabel ?? "通用与用户 Skills";
+    return (skillCategoryOrder[leftCategory] ?? 99) - (skillCategoryOrder[rightCategory] ?? 99)
+      || (left.workflowStage ?? "99").localeCompare(right.workflowStage ?? "99", "zh-CN", { numeric: true })
+      || left.name.localeCompare(right.name, "zh-CN");
+  });
   const filteredPrompts = prompts.filter((item) => enabledMatches(item.enabled) && textMatches([
     item.name,
     item.summary,
@@ -516,6 +529,13 @@ function CapabilityCenter({
   ]));
 
   const selectedSkill = filteredSkills.find((item) => item.id === selectedIds.skills) ?? filteredSkills[0];
+  const groupedSkills = filteredSkills.reduce<Array<{ label: string; items: CapabilitySkillItem[] }>>((groups, item) => {
+    const label = item.categoryLabel ?? "通用与用户 Skills";
+    const existing = groups.find((group) => group.label === label);
+    if (existing) existing.items.push(item);
+    else groups.push({ label, items: [item] });
+    return groups;
+  }, []);
   const selectedPrompt = filteredPrompts.find((item) => item.id === selectedIds.prompts) ?? filteredPrompts[0];
   const selectedMemory = filteredMemories.find((item) => item.id === selectedIds.memories) ?? filteredMemories[0];
   const selectedPlugin = filteredPlugins.find((item) => item.id === selectedIds.plugins) ?? filteredPlugins[0];
@@ -686,26 +706,34 @@ function CapabilityCenter({
           <span>名称</span><span>范围</span><span className="capability-hide-900">脚本</span><span>校验</span><span>状态</span>
         </div>
         <div className="capability-list-body" role="rowgroup">
-          {filteredSkills.length === 0 ? <EmptyList>没有符合当前筛选的 Skill</EmptyList> : filteredSkills.map((item) => {
-            const busy = isPending(`skill:${item.id}`);
-            return (
-              <div key={item.id} className={`capability-list-row capability-list-grid capability-list-grid-skill${selectedSkill?.id === item.id ? " active" : ""}`} role="row">
-                <button type="button" className="capability-row-select" onClick={() => setSelected("skills", item.id)} title={`查看 ${item.name}`}>
-                  <span className="capability-name-cell"><strong>{item.name}</strong><small>{item.description}</small></span>
-                  <span>{itemScopeLabel(item.scope, item.scopeLabel)}</span>
-                  <span className="capability-hide-900">{item.scriptsStatus === "present-disabled" ? "有，未执行" : "无"}</span>
-                  <span><ValidationPill status={item.validationStatus} /></span>
-                </button>
-                <ToggleControl
-                  checked={item.enabled}
-                  busy={busy}
-                  disabled={!item.enabled && item.validationStatus === "invalid"}
-                  label={item.name}
-                  onChange={() => void runOperation(`skill:${item.id}`, () => onToggleSkill(item.id, !item.enabled))}
-                />
-              </div>
-            );
-          })}
+          {filteredSkills.length === 0 ? <EmptyList>没有符合当前筛选的 Skill</EmptyList> : groupedSkills.map((group) => (
+            <section className="capability-skill-group" aria-label={group.label} key={group.label}>
+              <header className="capability-skill-group-heading">
+                <span>{group.label}</span>
+                <small>{group.items.length} 个</small>
+              </header>
+              {group.items.map((item) => {
+                const busy = isPending(`skill:${item.id}`);
+                return (
+                  <div key={item.id} className={`capability-list-row capability-list-grid capability-list-grid-skill${selectedSkill?.id === item.id ? " active" : ""}`} role="row">
+                    <button type="button" className="capability-row-select" onClick={() => setSelected("skills", item.id)} title={`查看 ${item.name}`}>
+                      <span className="capability-name-cell"><strong>{item.name}</strong><small>{item.workflowStage ? `${item.workflowStage} · ` : ""}{item.description}</small></span>
+                      <span>{itemScopeLabel(item.scope, item.scopeLabel)}</span>
+                      <span className="capability-hide-900">{item.scriptsStatus === "present-disabled" ? "有，未执行" : "无"}</span>
+                      <span><ValidationPill status={item.validationStatus} /></span>
+                    </button>
+                    <ToggleControl
+                      checked={item.enabled}
+                      busy={busy}
+                      disabled={!item.enabled && item.validationStatus === "invalid"}
+                      label={item.name}
+                      onChange={() => void runOperation(`skill:${item.id}`, () => onToggleSkill(item.id, !item.enabled))}
+                    />
+                  </div>
+                );
+              })}
+            </section>
+          ))}
         </div>
       </>
     );
@@ -842,6 +870,8 @@ function CapabilityCenter({
           <ValidationPill status={selectedSkill.validationStatus} />
         </div>
         <dl className="capability-detail-meta">
+          {selectedSkill.technicalName && selectedSkill.technicalName !== selectedSkill.name ? <div><dt>Skill ID</dt><dd>{selectedSkill.technicalName}</dd></div> : null}
+          {selectedSkill.categoryLabel ? <div><dt>工作域</dt><dd>{selectedSkill.categoryLabel}{selectedSkill.workflowStage ? ` · ${selectedSkill.workflowStage}` : ""}</dd></div> : null}
           <div><dt>来源</dt><dd>{selectedSkill.source}</dd></div>
           <div><dt>范围</dt><dd>{itemScopeLabel(selectedSkill.scope, selectedSkill.scopeLabel)}</dd></div>
           <div><dt>脚本</dt><dd>{selectedSkill.scriptsStatus === "present-disabled" ? "已发现，执行未启用" : "未包含"}</dd></div>

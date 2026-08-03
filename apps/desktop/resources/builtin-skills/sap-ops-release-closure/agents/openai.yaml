@@ -1,0 +1,4 @@
+interface:
+  display_name: "运维｜08 测试、发布与关闭"
+  short_description: "执行追溯、Go/No-Go、生产验证、回退和知识候选门禁"
+  default_prompt: "Use $sap-ops-release-closure to prepare, validate, and close this SAP operations release safely."

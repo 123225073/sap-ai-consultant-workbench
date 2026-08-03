@@ -15,18 +15,19 @@ function cloneConfig(config: ProjectConfig): ProjectConfig {
   return JSON.parse(JSON.stringify(config)) as ProjectConfig;
 }
 
-export type ProjectConfigSection = "adt" | "models" | "feishu" | "codex";
+export type ProjectConfigSection = "adt" | "models" | "tools" | "feishu" | "codex";
 
 interface PendingProjectConfigSectionSave {
   section: ProjectConfigSection;
   submittedConfig: ProjectConfig;
 }
 
-const PROJECT_CONFIG_SECTIONS: ProjectConfigSection[] = ["adt", "models", "feishu", "codex"];
+const PROJECT_CONFIG_SECTIONS: ProjectConfigSection[] = ["adt", "models", "tools", "feishu", "codex"];
 
 function sectionValue(config: ProjectConfig, section: ProjectConfigSection): unknown {
   if (section === "adt") return { adt: config.adt, adtConnections: config.adtConnections, activeAdtConnectionId: config.activeAdtConnectionId };
   if (section === "models") return config.apiProviders;
+  if (section === "tools") return config.agentTools;
   if (section === "feishu") return config.feishu;
   return config.codex;
 }
@@ -44,6 +45,7 @@ export function mergeProjectConfigSection(savedConfig: ProjectConfig, draftConfi
     merged.activeAdtConnectionId = cloned.activeAdtConnectionId;
   }
   if (section === "models") merged.apiProviders = cloneConfig(draftConfig).apiProviders;
+  if (section === "tools") merged.agentTools = cloneConfig(draftConfig).agentTools;
   if (section === "feishu") merged.feishu = cloneConfig(draftConfig).feishu;
   if (section === "codex") merged.codex = cloneConfig(draftConfig).codex;
   return merged;
@@ -789,7 +791,7 @@ interface ConfigCenterProps {
   onInstallLocalAi: () => Promise<LocalAiInstallResult | null>;
 }
 
-type ConfigTabId = "sap" | "models" | "feishu" | "capabilities" | "storage";
+type ConfigTabId = "sap" | "models" | "tools" | "feishu" | "capabilities" | "storage";
 
 function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspaceBackup, onImportWorkspace, onSave, onSaveSecret, onVerifyAdt, onDiscoverSapGui, onVerifyFeishu, onDiscoverFeishu, onInstallFeishu, onSetupFeishuProfile, onOpenFeishuDeveloperConsole, onVerifyModelProvider, onVerifyCodex, onScanLocalAi, onInstallLocalAi }: ConfigCenterProps) {
   const [draft, setDraft] = useState<ProjectConfig | null>(project ? cloneConfig(project.config) : null);
@@ -822,6 +824,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const [discoveringFeishu, setDiscoveringFeishu] = useState(false);
   const [openingFeishuConsole, setOpeningFeishuConsole] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
+  const [savingTools, setSavingTools] = useState(false);
   const [savingCodex, setSavingCodex] = useState(false);
   const [verifyingAdt, setVerifyingAdt] = useState(false);
   const [discoveringSapGui, setDiscoveringSapGui] = useState(false);
@@ -983,9 +986,10 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const modelReport = modelReports[provider.id] ?? null;
   const hasUnsavedAdtConfig = sectionChanged(project.config, draft, "adt");
   const hasUnsavedModelConfig = sectionChanged(project.config, draft, "models");
+  const hasUnsavedToolsConfig = sectionChanged(project.config, draft, "tools");
   const hasUnsavedFeishuConfig = sectionChanged(project.config, draft, "feishu");
   const hasUnsavedCodexConfig = sectionChanged(project.config, draft, "codex");
-  const hasUnsavedConfig = hasUnsavedAdtConfig || hasUnsavedModelConfig || hasUnsavedFeishuConfig || hasUnsavedCodexConfig;
+  const hasUnsavedConfig = hasUnsavedAdtConfig || hasUnsavedModelConfig || hasUnsavedToolsConfig || hasUnsavedFeishuConfig || hasUnsavedCodexConfig;
   const visibleAdtConfig: ProjectConfig = hasUnsavedAdtConfig
     ? {
         ...draft,
@@ -1324,6 +1328,18 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
     }
   }
 
+  async function saveToolSettings() {
+    if (!project || !draft || savingTools) return;
+    setSectionSaveNotice("");
+    setSavingTools(true);
+    try {
+      const saved = await saveCurrentSection("tools");
+      if (saved) setSectionSaveNotice("AI 功能授权已保存；连接配置和其他区域草稿没有提交。");
+    } finally {
+      setSavingTools(false);
+    }
+  }
+
   async function saveFeishuSettings(): Promise<boolean> {
     if (!project || !draft || savingFeishu) return false;
     const secretValue = feishuSecretEntry;
@@ -1518,6 +1534,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const adtFailed = !hasUnsavedAdtConfig && (draft.adt.connectionStatus === "failed" || draft.adt.minimalReadStatus === "failed" || draft.adt.configStatus === "failed");
   const adtSummaryTone = adtReady ? "green" : adtFailed ? "orange" : hasUnsavedAdtConfig || adtCredentialSaved ? "blue" : "neutral";
   const adtSummaryText = adtReady ? "T000 只读读取通过" : adtFailed ? "需要检查 SAP 配置" : hasUnsavedAdtConfig ? "已修改，待保存" : adtCredentialSaved ? "已保存，待测试" : "未完成";
+  const verifiedAdtConnectionCount = adtConnections.filter((item) => item.connectionStatus === "verified" && item.minimalReadStatus === "verified" && item.lastVerificationMode === "adt").length;
 
   const modelCredentialSaved = provider.credential.state === "set-in-secure-store";
   const hasPendingApiSecret = apiSecretDirty;
@@ -1544,10 +1561,10 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
   const codexReady = !hasUnsavedCodexConfig && draft.codex.cliStatus === "verified" && draft.codex.loginStatus === "verified";
   const codexFailed = !hasUnsavedCodexConfig && (draft.codex.cliStatus === "failed" || draft.codex.loginStatus === "failed");
   const codexDiscovery = localAiScan?.capabilities.find((item) => item.capabilityId === "codex-cli") ?? null;
-  const savingAnyConfig = savingAdt || savingModel || savingFeishu || savingCodex;
+  const savingAnyConfig = savingAdt || savingModel || savingTools || savingFeishu || savingCodex;
   const configTabOrder: ConfigTabId[] = sapProject
-    ? ["sap", "models", "feishu", "capabilities", "storage"]
-    : ["models", "feishu", "capabilities", "storage"];
+    ? ["sap", "models", "tools", "feishu", "capabilities", "storage"]
+    : ["models", "tools", "feishu", "capabilities", "storage"];
 
   function handleConfigTabKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
@@ -1570,7 +1587,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
           <button className="icon-button" onClick={onBack} aria-label="返回案件"><ArrowLeft size={18} /></button>
           <div>
             <h1>配置中心</h1>
-            <p>{project.name} · 按需配置模型、SAP、Feishu/Lark 和本机增强能力，各项互不作为前置条件。</p>
+            <p>{project.name} · SAP 按客户项目隔离；AI 模型、Feishu/Lark 和本机增强能力由整个工作台共用。</p>
           </div>
         </div>
 
@@ -1582,39 +1599,54 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
         {hasUnsavedConfig ? <p className="inline-warning">屏幕上有未保存内容。各区独立保存和测试，不会提交其他区域的草稿。</p> : null}
         {hasPendingSecretEntry ? <p className="inline-warning">密码、API Key 或飞书 App Secret 有新输入；只会随所属区域保存。</p> : null}
 
-        <nav className="config-tabs phase27-compact-status-summary" role="tablist" aria-label="配置类型" onKeyDown={handleConfigTabKeyDown}>
-          {sapProject ? <button id="config-tab-sap" data-config-tab="sap" type="button" role="tab" aria-controls="config-panel-sap" tabIndex={activeConfigTab === "sap" ? 0 : -1} aria-selected={activeConfigTab === "sap"} className={activeConfigTab === "sap" ? "active" : ""} onClick={() => setActiveConfigTab("sap")}>
-            <PlugZap size={16} /><span>SAP</span><small>{adtSummaryText}</small>
-          </button> : null}
-          <button id="config-tab-models" data-config-tab="models" type="button" role="tab" aria-controls="config-panel-models" tabIndex={activeConfigTab === "models" ? 0 : -1} aria-selected={activeConfigTab === "models"} className={activeConfigTab === "models" ? "active" : ""} onClick={() => setActiveConfigTab("models")}>
-            <KeyRound size={16} /><span>AI 模型</span><small>{readyProviderCount > 0 ? `${readyProviderCount} 个可用` : modelSummaryText}</small>
-          </button>
-          <button id="config-tab-feishu" data-config-tab="feishu" type="button" role="tab" aria-controls="config-panel-feishu" tabIndex={activeConfigTab === "feishu" ? 0 : -1} aria-selected={activeConfigTab === "feishu"} className={activeConfigTab === "feishu" ? "active" : ""} onClick={() => setActiveConfigTab("feishu")}>
-            <Terminal size={16} /><span>Feishu/Lark</span><small>{feishuSummaryText}</small>
-          </button>
-          <button id="config-tab-capabilities" data-config-tab="capabilities" type="button" role="tab" aria-controls="config-panel-capabilities" tabIndex={activeConfigTab === "capabilities" ? 0 : -1} aria-selected={activeConfigTab === "capabilities"} className={activeConfigTab === "capabilities" ? "active" : ""} onClick={() => setActiveConfigTab("capabilities")}>
-            <Workflow size={16} /><span>本机能力</span><small>{codexReady ? "可用增强" : "可选"}</small>
-          </button>
-          <button id="config-tab-storage" data-config-tab="storage" type="button" role="tab" aria-controls="config-panel-storage" tabIndex={activeConfigTab === "storage" ? 0 : -1} aria-selected={activeConfigTab === "storage"} className={activeConfigTab === "storage" ? "active" : ""} onClick={() => setActiveConfigTab("storage")}>
-            <Database size={16} /><span>本地存储</span><small>工作台维护</small>
-          </button>
-        </nav>
+        <div className="config-domain-navigation">
+          <div className="config-domain-navigation-label">
+            <span>配置与授权</span>
+            <small>连接、AI 授权和可选集成分层管理；每个区域独立保存。</small>
+          </div>
+          <nav className="config-tabs phase27-compact-status-summary" role="tablist" aria-label="配置类型" onKeyDown={handleConfigTabKeyDown}>
+            <span className="config-tab-group-label" role="presentation">客户项目配置</span>
+            {sapProject ? <button id="config-tab-sap" data-config-tab="sap" type="button" role="tab" aria-controls="config-panel-sap" tabIndex={activeConfigTab === "sap" ? 0 : -1} aria-selected={activeConfigTab === "sap"} className={activeConfigTab === "sap" ? "active" : ""} onClick={() => setActiveConfigTab("sap")}>
+              <PlugZap size={16} /><span>SAP 系统</span><small>{adtSummaryText}</small>
+            </button> : null}
+            <span className="config-tab-group-label" role="presentation">工作台全局</span>
+            <button id="config-tab-models" data-config-tab="models" type="button" role="tab" aria-controls="config-panel-models" tabIndex={activeConfigTab === "models" ? 0 : -1} aria-selected={activeConfigTab === "models"} className={activeConfigTab === "models" ? "active" : ""} onClick={() => setActiveConfigTab("models")}>
+              <KeyRound size={16} /><span>AI 模型</span><small>{readyProviderCount > 0 ? `${readyProviderCount} 个可用` : modelSummaryText}</small>
+            </button>
+            <span className="config-tab-group-label" role="presentation">功能授权</span>
+            <button id="config-tab-tools" data-config-tab="tools" type="button" role="tab" aria-controls="config-panel-tools" tabIndex={activeConfigTab === "tools" ? 0 : -1} aria-selected={activeConfigTab === "tools"} className={activeConfigTab === "tools" ? "active" : ""} onClick={() => setActiveConfigTab("tools")}>
+              <ShieldCheck size={16} /><span>AI 工具</span><small>{Object.values(draft.agentTools).filter(Boolean).length} 项已启用</small>
+            </button>
+            <span className="config-tab-group-label" role="presentation">可选集成</span>
+            <button id="config-tab-feishu" data-config-tab="feishu" type="button" role="tab" aria-controls="config-panel-feishu" tabIndex={activeConfigTab === "feishu" ? 0 : -1} aria-selected={activeConfigTab === "feishu"} className={activeConfigTab === "feishu" ? "active" : ""} onClick={() => setActiveConfigTab("feishu")}>
+              <Terminal size={16} /><span>Feishu/Lark</span><small>{feishuSummaryText}</small>
+            </button>
+            <button id="config-tab-capabilities" data-config-tab="capabilities" type="button" role="tab" aria-controls="config-panel-capabilities" tabIndex={activeConfigTab === "capabilities" ? 0 : -1} aria-selected={activeConfigTab === "capabilities"} className={activeConfigTab === "capabilities" ? "active" : ""} onClick={() => setActiveConfigTab("capabilities")}>
+              <Workflow size={16} /><span>本机能力</span><small>{codexReady ? "可用增强" : "可选"}</small>
+            </button>
+            <button id="config-tab-storage" data-config-tab="storage" type="button" role="tab" aria-controls="config-panel-storage" tabIndex={activeConfigTab === "storage" ? 0 : -1} aria-selected={activeConfigTab === "storage"} className={activeConfigTab === "storage" ? "active" : ""} onClick={() => setActiveConfigTab("storage")}>
+              <Database size={16} /><span>本地存储</span><small>工作台维护</small>
+            </button>
+          </nav>
+        </div>
 
         <section className="core-setup-grid single config-tab-stack">
-          {sapProject ? <article id="config-panel-sap" role="tabpanel" aria-labelledby="config-tab-sap" className="setup-card core-config-card" hidden={activeConfigTab !== "sap"}>
-            <div className="setup-card-title">
+          {sapProject ? <article id="config-panel-sap" role="tabpanel" aria-labelledby="config-tab-sap" className="setup-card core-config-card sap-config-card" hidden={activeConfigTab !== "sap"}>
+            <div className="setup-card-title config-domain-title">
               <PlugZap size={18} />
               <div>
-                <h2>SAP 只读连接</h2>
+                <span className="config-eyebrow">Project 级 · 外部系统</span>
+                <h2>SAP 系统与只读连接</h2>
                 <p>同一 Project 可管理多个 SID 和 Client；Work 会按问题自动建议连接，有歧义时先让你确认。</p>
               </div>
               <span className={`setup-state setup-${adtSummaryTone}`}>{adtSummaryText}</span>
             </div>
 
-            <div className="sap-gui-discovery">
+            <section className="sap-gui-discovery" aria-labelledby="sap-import-heading">
               <div className="sap-gui-discovery-heading">
                 <div>
-                  <strong>从本机 SAP Logon 识别系统</strong>
+                  <span className="config-section-kicker">导入辅助</span>
+                  <strong id="sap-import-heading">从本机 SAP Logon 识别系统</strong>
                   <span>{discoveringSapGui ? "正在扫描" : sapGuiDiscovery ? `发现 ${sapGuiDiscovery.entries.length} 个连接定义 · ${sapGuiDiscovery.filesFound} 个配置文件` : "尚未扫描"}</span>
                 </div>
                 <button type="button" onClick={() => void discoverSapGui()} disabled={discoveringSapGui || savingAnyConfig} title="重新读取本机 SAP GUI Landscape 和 SAP Logon 配置">
@@ -1634,37 +1666,48 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
               </div> : <p>未发现可导入的 SAP Logon 连接。仍可在下方手工填写 SID、实例号和主机。</p>}
               {sapGuiDiscovery?.warnings.map((warning) => <p className="inline-warning" key={warning}>{warning}</p>)}
               <small>只读取系统名称、SID、实例号和主机；不会读取 SAP 密码，也不会自动登录。旧版 SAP Logon 配置可能不保存 SID，导入后需补填再验证。</small>
-            </div>
+            </section>
 
-            <div className="model-channel-manager adt-connection-list">
-              <div className="model-channel-toolbar">
-                <div>
-                  <strong>SAP 连接</strong>
-                  <span>{adtConnections.length} 个登录连接</span>
-                </div>
-                <div className="model-channel-actions">
-                  <button type="button" onClick={addAdtConnection} disabled={savingAnyConfig} title="为当前 Project 添加一套 SAP 只读登录连接"><Plus size={16} />添加连接</button>
-                  <button className="icon-button danger-icon-button" type="button" onClick={removeAdtConnection} disabled={adtConnections.length <= 1 || savingAnyConfig} title="移除当前 SAP 连接" aria-label="移除当前 SAP 连接"><Trash2 size={16} /></button>
-                </div>
-              </div>
-              <div className="adt-system-groups" role="group" aria-label="SAP 连接">
-                {adtConnectionGroups.map(([systemId, connections]) => <section className="adt-system-group" key={systemId}>
-                  <header><strong>{systemId === "未分组" ? "未填写 SID" : systemId}</strong><span>{connections.length} 个 Client</span></header>
-                  <div className="model-channel-list">
-                    {connections.map((connection) => {
-                      const verified = connection.connectionStatus === "verified" && connection.minimalReadStatus === "verified" && connection.lastVerificationMode === "adt";
-                      const failed = connection.connectionStatus === "failed" || connection.minimalReadStatus === "failed" || connection.configStatus === "failed";
-                      return <button type="button" aria-pressed={connection.id === adtConnection.id} className={connection.id === adtConnection.id ? "active" : ""} onClick={() => selectAdtConnection(connection.id)} key={connection.id}>
-                        <span>{connection.alias.trim() || `${systemId} / Client ${connection.client || "未填"}`}</span>
-                        <small>{connection.client ? `Client ${connection.client} · ` : ""}{environmentLabel(connection.environment)} · {verified ? "只读验证通过" : failed ? "验证失败" : connection.credential.state === "set-in-secure-store" ? "已保存，待验证" : "待配置"}</small>
-                      </button>;
-                    })}
+            <div className="sap-connection-workbench">
+              <aside className="model-channel-manager adt-connection-list" aria-labelledby="sap-connection-list-heading">
+                <div className="model-channel-toolbar">
+                  <div>
+                    <span className="config-section-kicker">连接对象</span>
+                    <strong id="sap-connection-list-heading">已登记连接</strong>
+                    <span>{adtConnections.length} 个</span>
                   </div>
-                </section>)}
-              </div>
-            </div>
+                  <div className="model-channel-actions">
+                    <button type="button" onClick={addAdtConnection} disabled={savingAnyConfig} title="为当前 Project 添加一套 SAP 只读登录连接"><Plus size={16} />新建</button>
+                  </div>
+                </div>
+                <div className="adt-system-groups" role="group" aria-label="SAP 连接">
+                  {adtConnectionGroups.map(([systemId, connections]) => <section className="adt-system-group" key={systemId}>
+                    <header><strong>{systemId === "未分组" ? "未填写 SID" : systemId}</strong><span>{connections.length} 个 Client</span></header>
+                    <div className="model-channel-list">
+                      {connections.map((connection) => {
+                        const verified = connection.connectionStatus === "verified" && connection.minimalReadStatus === "verified" && connection.lastVerificationMode === "adt";
+                        const failed = connection.connectionStatus === "failed" || connection.minimalReadStatus === "failed" || connection.configStatus === "failed";
+                        return <button type="button" aria-pressed={connection.id === adtConnection.id} className={connection.id === adtConnection.id ? "active" : ""} onClick={() => selectAdtConnection(connection.id)} key={connection.id}>
+                          <span>{connection.alias.trim() || `${systemId} / Client ${connection.client || "未填"}`}</span>
+                          <small>{connection.client ? `Client ${connection.client} · ` : ""}{environmentLabel(connection.environment)} · {verified ? "只读验证通过" : failed ? "验证失败" : connection.credential.state === "set-in-secure-store" ? "已保存，待验证" : "待配置"}</small>
+                        </button>;
+                      })}
+                    </div>
+                  </section>)}
+                </div>
+              </aside>
 
-            <div className="config-fields">
+              <section className="sap-connection-editor" aria-labelledby="sap-connection-editor-heading">
+                <header className="sap-connection-editor-heading">
+                  <div>
+                    <span className="config-section-kicker">对象详情</span>
+                    <strong id="sap-connection-editor-heading">{adtConnection.alias.trim() || "未命名 SAP 连接"}</strong>
+                    <small>{adtConnection.systemId || "SID 未填写"} · Client {adtConnection.client || "未填写"} · {environmentLabel(adtConnection.environment)}</small>
+                  </div>
+                  <button className="icon-button danger-icon-button" type="button" onClick={removeAdtConnection} disabled={adtConnections.length <= 1 || savingAnyConfig} title="移除当前 SAP 连接" aria-label="移除当前 SAP 连接"><Trash2 size={16} /></button>
+                </header>
+
+                <div className="config-fields">
               <label>
                 <span>系统显示名</span>
                 <input value={draft.adt.alias} onChange={(event) => updateAdt("alias", event.target.value)} placeholder="例如：DS4 开发系统 220" />
@@ -1734,9 +1777,9 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
                 <span>密码状态</span>
                 <SecretStatusPill handle={draft.adt.credential} />
               </div>
-            </div>
+                </div>
 
-            <details className="setup-advanced-details phase27-advanced-details">
+                <details className="setup-advanced-details phase27-advanced-details">
               <summary>高级设置</summary>
               <div className="config-fields">
                 <label>
@@ -1760,23 +1803,26 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
                   <input value={formatSavedAt(draft.adt.credential.updatedAt)} readOnly />
                 </label>
               </div>
-            </details>
+                </details>
 
-            <div className="config-actions">
-              <button onClick={() => void saveAdtSettings()} disabled={savingAnyConfig} title="只保存 SAP 区配置和本次输入的 SAP 密码"><Save size={16} />{savingAdt ? "保存中" : "保存 SAP 配置"}</button>
-              <button onClick={() => void verifyAdt()} disabled={verifyingAdt || savingAnyConfig || hasUnsavedAdtConfig || hasPendingAdtSecret} title={hasUnsavedAdtConfig || hasPendingAdtSecret ? "请先保存 SAP 区配置；测试只读取已保存的 SAP 配置" : "执行固定 ADT T000 元数据只读检查"}><PlugZap size={16} />{verifyingAdt ? "测试中" : "测试 T000 只读连接"}</button>
+                <div className="config-actions sap-connection-actions">
+                  <button onClick={() => void saveAdtSettings()} disabled={savingAnyConfig} title="只保存 SAP 区配置和本次输入的 SAP 密码"><Save size={16} />{savingAdt ? "保存中" : "保存当前连接"}</button>
+                  <button onClick={() => void verifyAdt()} disabled={verifyingAdt || savingAnyConfig || hasUnsavedAdtConfig || hasPendingAdtSecret} title={hasUnsavedAdtConfig || hasPendingAdtSecret ? "请先保存 SAP 区配置；测试只读取已保存的 SAP 配置" : "执行固定 ADT T000 元数据只读检查"}><PlugZap size={16} />{verifyingAdt ? "测试中" : "测试 T000 只读连接"}</button>
+                </div>
+
+                <details className="setup-advanced-details verification-details-fold phase27-folded-verification" open={Boolean(adtReport || adtFailed)}>
+                  <summary>验证详情</summary>
+                  <AdtVerificationReportView config={visibleAdtConfig} report={adtReport} />
+                </details>
+              </section>
             </div>
-
-            <details className="setup-advanced-details verification-details-fold phase27-folded-verification" open={Boolean(adtReport || adtFailed)}>
-              <summary>验证详情</summary>
-              <AdtVerificationReportView config={visibleAdtConfig} report={adtReport} />
-            </details>
           </article> : null}
 
           <article id="config-panel-models" role="tabpanel" aria-labelledby="config-tab-models" className="setup-card core-config-card" hidden={activeConfigTab !== "models"}>
             <div className="setup-card-title">
               <KeyRound size={18} />
               <div>
+                <span className="config-eyebrow">工作台全局 · 所有客户项目共用</span>
                 <h2>AI 模型连接</h2>
                 <p>添加多个 OpenAI 或 Anthropic Compatible 渠道，验证后可在 Work 和 Chat 中按渠道选择模型。</p>
               </div>
@@ -1902,8 +1948,9 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
           <div className="setup-card-title">
             <Terminal size={18} />
             <div>
+              <span className="config-eyebrow">工作台全局 · 所有客户项目共用</span>
               <h2>Feishu/Lark 连接</h2>
-              <p>支持多个本机 Profile；当前 Project 明确选择一个使用。</p>
+              <p>支持本机 Profile；保存后所有客户项目共用当前工作台配置。</p>
             </div>
             <span className={`setup-state setup-${feishuSummaryTone}`}>{feishuSummaryText}</span>
           </div>
@@ -2005,10 +2052,56 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
           </details>
         </section>
 
+        <section id="config-panel-tools" role="tabpanel" aria-labelledby="config-tab-tools" className="setup-card config-tab-panel tool-authorization-panel" hidden={activeConfigTab !== "tools"}>
+          <div className="setup-card-title">
+            <ShieldCheck size={18} />
+            <div>
+              <span className="config-eyebrow">Project 级 · 显式授权</span>
+              <h2>AI 功能授权</h2>
+              <p>所有功能默认关闭。只有你在这里启用并保存后，模型才会在当前 Project 中看到对应工具。</p>
+            </div>
+            <span className={`setup-state setup-${Object.values(draft.agentTools).some(Boolean) ? "blue" : "neutral"}`}>{Object.values(draft.agentTools).filter(Boolean).length} / 5 已启用</span>
+          </div>
+
+          <div className="authorization-boundary">
+            <strong>连接验证不等于允许 AI 调用</strong>
+            <span>SAP 配置保存、T000 只读验证、AI 调用授权是三个独立状态；关闭授权不会删除连接和密码。</span>
+          </div>
+
+          <div className="tool-authorization-list">
+            <label>
+              <span><strong>当前运维项目安全上下文</strong><small>允许读取当前运维项目摘要、正式知识引用，并按需列出和读取兄弟线程的有限上下文。</small></span>
+              <input type="checkbox" checked={draft.agentTools.caseContextEnabled} onChange={(event) => updateDraft((current) => ({ ...current, agentTools: { ...current.agentTools, caseContextEnabled: event.target.checked } }))} />
+            </label>
+            <label>
+              <span><strong>已导入资料的安全摘录</strong><small>允许检索当前运维项目文件夹内已导入并净化的附件文本。</small></span>
+              <input type="checkbox" checked={draft.agentTools.importedEvidenceEnabled} onChange={(event) => updateDraft((current) => ({ ...current, agentTools: { ...current.agentTools, importedEvidenceEnabled: event.target.checked } }))} />
+            </label>
+            <label>
+              <span><strong>已发布知识</strong><small>只检索当前 Project 中经过人工审核并发布的知识。</small></span>
+              <input type="checkbox" checked={draft.agentTools.publishedKnowledgeEnabled} onChange={(event) => updateDraft((current) => ({ ...current, agentTools: { ...current.agentTools, publishedKnowledgeEnabled: event.target.checked } }))} />
+            </label>
+            {sapProject ? <label>
+              <span><strong>SAP ADT 只读对象证据</strong><small>{verifiedAdtConnectionCount > 0 ? `${verifiedAdtConnectionCount} 个真实 ADT 连接已验证；支持命名 ABAP/DDIC 对象。` : "尚无真实 ADT 连接通过验证；启用后仍会在执行前阻止读取。"}</small></span>
+              <input type="checkbox" checked={draft.agentTools.sapReadonlyEnabled} onChange={(event) => updateDraft((current) => ({ ...current, agentTools: { ...current.agentTools, sapReadonlyEnabled: event.target.checked } }))} />
+            </label> : null}
+            {sapProject ? <label>
+              <span><strong>SAP ADT 通用数据读取</strong><small>{verifiedAdtConnectionCount > 0 ? "允许 AI 根据当前问题选择 DDIC table/view/CDS，先发现字段，再以结构化筛选有界读取；结果写入当前运维项目文件夹。" : "尚无真实 ADT 连接通过验证；启用后仍不会绕过连接和 SAP 后端权限检查。"}</small></span>
+              <input type="checkbox" checked={draft.agentTools.sapDataPreviewEnabled} onChange={(event) => updateDraft((current) => ({ ...current, agentTools: { ...current.agentTools, sapDataPreviewEnabled: event.target.checked } }))} />
+            </label> : null}
+          </div>
+          <p className="feishu-boundary-note">对象取证用于读取明确命名的 ABAP/DDIC 定义；通用数据读取用于完成业务任务。AI 只能提交结构化对象、字段和筛选，SQL 由本机受控生成；全程只读、有行数上限。完整明细保存在当前运维项目文件夹，本轮模型会接收有上限的分析数据以继续完成任务。T000 验证通过不代表目标数据源一定有权限。</p>
+          {hasUnsavedToolsConfig ? <p className="inline-warning">授权开关尚未保存，当前对话仍使用上次保存的状态。</p> : null}
+          <div className="config-actions">
+            <button type="button" onClick={() => void saveToolSettings()} disabled={savingAnyConfig}><Save size={16} />{savingTools ? "保存中" : "保存功能授权"}</button>
+          </div>
+        </section>
+
         <section id="config-panel-capabilities" role="tabpanel" aria-labelledby="config-tab-capabilities" className="setup-card config-tab-panel" hidden={activeConfigTab !== "capabilities"}>
           <div className="setup-card-title">
             <Workflow size={18} />
             <div>
+              <span className="config-eyebrow">工作台全局 · 所有客户项目共用</span>
               <h2>本机 AI 增强能力</h2>
               <p>核心对话使用已配置的 AI 模型；Codex 仅用于可选的工程执行增强。</p>
             </div>

@@ -66,7 +66,9 @@ try {
         items: [{ id: "knowledge-1", title: "BOM 规则", summary: "API_KEY=phase50-probe-sensitive-value", details: "已发布摘要".repeat(4_000) }]
       };
     },
-    searchCaseImportedEvidence: ({ projectId, caseId, query, topK }) => ({ projectId, caseId, query, topK, items: [] })
+    searchCaseImportedEvidence: ({ projectId, caseId, query, topK }) => ({ projectId, caseId, query, topK, items: [] }),
+    listCaseThreads: ({ projectId, caseId }) => ({ projectId, caseId, items: [{ id: "thread-1", title: "需求分析", status: "active" }] }),
+    readCaseThreadContext: ({ projectId, caseId, threadId }) => ({ projectId, caseId, threadId, messages: [] })
   });
   const executor = new ToolExecutor(registry, new PolicyEngine());
   const workScope = { threadId: "thread-1", projectId: "project-1", caseId: "case-1" };

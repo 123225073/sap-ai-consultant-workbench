@@ -6,7 +6,7 @@
 
 当前应用已经具备桌面壳、Work/Chat、项目与多 SAP 连接、模型渠道、规范、知识、案件文件、本地任务目录和产品自有 Agent Runtime。Phase 50-57 已把事件账本、Work 本地只读工具循环、上下文预算、checkpoint、分层提示词/记忆、Skills、本机 Skills 白名单发现、声明式 Plugin 与 MCP 连接/发现接入真实运行链路；Codex CLI 不再是核心中转。外部 MCP 工具执行、受限子 Agent 和任意脚本执行继续后置。
 
-> 图例约定：下面“当前架构”只画 0.1.0 已接通链路；带“目标”的模块属于第二阶段设计。当前 Agent Tool Runtime 只自动执行产品内置的案件安全上下文和已发布知识搜索，SAP 读取仍由用户在 Work 中明确触发，Feishu 只生成本地交接草稿。
+> 图例约定：下面“当前架构”只画已接通链路；带“目标”的模块属于后续设计。当前 Agent Tool Runtime 的案件安全上下文、附件摘录、已发布知识、SAP ADT 对象证据和 SAP ADT 通用数据读取均默认关闭，只有用户在当前 Project 明确授权后才注册；Feishu 只生成本地交接草稿。
 
 ## 1. 技术目标
 
@@ -97,7 +97,7 @@ flowchart TD
   E --> Q["Case Folder"]
 ```
 
-SAP ADT Connector 与 Feishu CLI Connector 当前由受控页面动作调用，不在模型自动工具循环内。第二阶段才评估带逐次授权的 SAP 只读工具、外部 MCP 工具和 Bounded Agent Coordinator。
+SAP ADT Connector 既可由受控页面动作调用，也可在用户启用 Project 级授权后进入模型工具循环，并固定到当前 Project、Case 和 Thread。对象证据能力读取明确命名的 ABAP/DDIC 定义；通用数据能力根据用户意图选择 Project 内对应 SID/Client 和 DDIC table、view 或 CDS，先发现字段，再由 main process 根据结构化字段、筛选和行数上限生成只读查询。模型不能提交原始 SQL，完整明细落入 Case folder，本轮模型只收到有上限的分析行并继续完成用户任务。Feishu CLI 仍不在模型自动工具循环内。外部 MCP 工具和 Bounded Agent Coordinator 仍属于后续评估范围。
 
 ## 4. 模块边界
 
@@ -115,7 +115,7 @@ SAP ADT Connector 与 Feishu CLI Connector 当前由受控页面动作调用，�
 | Skill Registry | 发现、校验和按需加载 `SKILL.md` | 第一阶段不自动执行导入 Skill 的脚本 |
 | MCP Client Manager | 管理 MCP Server 配置、连接测试和能力发现 | 当前不执行外部工具，不内置 MCP Server，不信任远程声明 |
 | Agent Coordinator（第二阶段） | 目标是管理有限并发的子任务和结构化结果合并 | 0.1.0 尚未实现；未来也不允许无限递归、自主扩权或共享密钥 |
-| SAP ADT Connector | 只读读取 SAP、状态验证、T000 验证 | MVP 不写 SAP |
+| SAP ADT Connector | 只读状态/T000 验证、ABAP/DDIC 对象读取、结构化有界 Data Preview、系统路由与本地结果落盘 | 不运行 SAP GUI 事务，不接受模型原始 SQL，不写 SAP |
 | Feishu Connector | 当前验证 CLI、Profile、登录和 scope，并生成本地交接草稿 | 当前不在应用内创建/更新云端文档或白板，不保存飞书密码 |
 | Knowledge Service | 文档解析、候选知识、冲突检测、入库 | 不把未确认内容当正式知识 |
 | Search Service | 全文索引、文件索引、知识检索 | 不决定业务结论 |

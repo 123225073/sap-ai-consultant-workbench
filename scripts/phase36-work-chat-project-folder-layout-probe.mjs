@@ -32,8 +32,8 @@ const [appSource, styles, sharedTypes, workspaceStore, productSpec, technicalSpe
 for (const [name, marker, source] of [
   ["work chat switch", "workspace-switch", appSource],
   ["files only right panel", "phase40-files-only-context", appSource],
-  ["sap project label", "SAP 项目", appSource],
-  ["work folder label", "工作文件夹", appSource],
+  ["customer project label", "客户项目", appSource],
+  ["operations project label", "运维项目", appSource],
   ["other work label", "其他工作", appSource],
   ["single folder creation action", "focusNewCaseInput", appSource],
   ["direct config center", 'navigateView("config")', appSource],

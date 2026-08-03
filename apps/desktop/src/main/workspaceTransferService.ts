@@ -10,7 +10,7 @@ const MAX_STATE_BYTES = 64 * 1024 * 1024;
 const MAX_THREADS_PER_SCOPE = 10_000;
 const MAX_TOTAL_MESSAGES = 200_000;
 const MAX_MESSAGE_CONTENT_CHARS = 200_000;
-const SUPPORTED_SCHEMA_VERSION = 3;
+const SUPPORTED_SCHEMA_VERSION = 4;
 
 interface ManifestFile {
   relativePath: string;

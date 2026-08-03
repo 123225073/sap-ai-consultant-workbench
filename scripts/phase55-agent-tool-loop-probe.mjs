@@ -236,7 +236,19 @@ if (anthropicEvents.map((event) => event.type).join(",") !== "tool-call,tool-dec
 if (!anthropicBodies[0].tools?.[0]?.input_schema) throw new Error("Anthropic 工具目录没有进入请求");
 if (!anthropicBodies[1].messages.some((message) => message.role === "user" && Array.isArray(message.content) && message.content.some((item) => item.type === "tool_result" && item.tool_use_id === "call-anthropic-1"))) throw new Error("Anthropic 工具结果没有回填模型上下文");
 
+let toolPreferences = {
+  caseContextEnabled: true,
+  importedEvidenceEnabled: true,
+  publishedKnowledgeEnabled: true,
+  sapReadonlyEnabled: false
+};
 const fakeStore = {
+  async getProjectConfig(projectId) {
+    if (projectId !== "project-1") throw new Error("Project 范围错误");
+    return {
+      agentTools: { ...toolPreferences }
+    };
+  },
   async getState() {
     return {
       projects: [{
@@ -330,6 +342,32 @@ const skillSearchResult = await serviceSession.execute({ callId: "skill-search",
 if (skillSearchResult.isError || !skillSearchResult.content.includes("sap-inventory-analysis")) throw new Error("模型不能按需发现当前 Project 的 Skill");
 const skillLoadResult = await serviceSession.execute({ callId: "skill-load", name: skillLoadTool.name, arguments: { name: "sap-inventory-analysis" } });
 if (skillLoadResult.isError || !skillLoadResult.content.includes("先确认 SAP 系统") || !skillLoadResult.content.includes('"scriptsExecution":"disabled"')) throw new Error("Skill 指令没有按只读策略加载");
+
+toolPreferences = {
+  caseContextEnabled: false,
+  importedEvidenceEnabled: false,
+  publishedKnowledgeEnabled: false,
+  sapReadonlyEnabled: false
+};
+const disabledSession = await new AgentToolService(fakeStore, fakeMcp, null).createSession({ threadId: "thread-1", projectId: "project-1", caseId: "case-1" });
+if (disabledSession.tools.length !== 0) throw new Error("未获用户授权的内置功能仍进入了模型工具目录");
+
+toolPreferences.sapReadonlyEnabled = true;
+let sapReadCall = null;
+const sapReader = async (target, request) => {
+  sapReadCall = { target, request };
+  return {
+    state: {},
+    summary: { objectType: request.objectType, objectName: request.objectName, systemAlias: "DEV", systemId: "S4D" },
+    summaries: [{ objectType: request.objectType, objectName: request.objectName, systemAlias: "DEV", systemId: "S4D" }],
+    generatedFiles: ["evidence/sap/ZREPORT.md"]
+  };
+};
+const sapSession = await new AgentToolService(fakeStore, fakeMcp, null, sapReader).createSession({ threadId: "thread-1", projectId: "project-1", caseId: "case-1" });
+const sapTool = sapSession.tools.find((tool) => tool.description.includes("ADT") && tool.description.includes("MB52"));
+if (!sapTool) throw new Error("用户启用后，ADT 只读对象证据没有进入模型工具目录");
+const sapResult = await sapSession.execute({ callId: "sap-call", name: sapTool.name, arguments: { objectType: "program", objectName: "ZREPORT" } });
+if (sapResult.isError || !sapReadCall || sapReadCall.target.threadId !== "thread-1" || sapReadCall.request.connectionMode !== "auto") throw new Error("ADT 模型工具没有固定到当前任务或没有执行只读自动路由");
 
 process.stdout.write("phase55-agent-tool-loop-probe=ok\n");
 `;

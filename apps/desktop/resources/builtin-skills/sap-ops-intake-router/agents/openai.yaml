@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "运维｜01 受理分类与路由"
+  short_description: "识别服务请求、事件、问题或变更，并给出优先级和下一步"
+  default_prompt: "Use $sap-ops-intake-router to classify this SAP operations request and route it to the right workflow."

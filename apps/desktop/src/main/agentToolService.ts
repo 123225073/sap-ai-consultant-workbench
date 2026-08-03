@@ -9,6 +9,7 @@ import {
   validateToolArguments
 } from "./toolRuntime";
 import type { ActivatedSkill, SkillCatalogEntry } from "../shared/skillTypes";
+import type { SapDataPreviewRequest, SapDataPreviewResult, SapObjectEvidenceRequest, SapObjectEvidenceResult } from "../shared/workbenchTypes";
 import { WorkspaceStore } from "./workspaceStore";
 
 export interface AgentToolTarget {
@@ -57,22 +58,47 @@ interface AgentSkillService {
   activateSkill(name: string, projectId?: string | null): Promise<ActivatedSkill>;
 }
 
+type AgentSapEvidenceReader = (
+  target: { projectId: string; caseId: string; threadId: string },
+  request: SapObjectEvidenceRequest,
+  signal?: AbortSignal
+) => Promise<SapObjectEvidenceResult>;
+
+type AgentSapDataPreviewReader = (
+  target: { projectId: string; caseId: string; threadId: string },
+  request: SapDataPreviewRequest,
+  signal?: AbortSignal
+) => Promise<SapDataPreviewResult>;
+
 export class AgentToolService {
   constructor(
     private readonly store: WorkspaceStore,
     _mcp: unknown,
-    private readonly skills: AgentSkillService | null = null
+    private readonly skills: AgentSkillService | null = null,
+    private readonly readSapEvidence: AgentSapEvidenceReader | null = null,
+    private readonly readSapDataPreview: AgentSapDataPreviewReader | null = null
   ) {
     void _mcp;
   }
 
   async createSession(target: AgentToolTarget): Promise<AgentToolSession> {
-    const registry = new ToolRegistry(createBuiltinReadonlyTools({
+    const config = await this.store.getProjectConfig(target.projectId);
+    const agentTools = config.agentTools;
+    const builtinTools = createBuiltinReadonlyTools({
       readCaseSafeContext: (input) => this.readCaseSafeContext(input.threadId, input.projectId, input.caseId),
       searchPublishedKnowledge: (input) => this.searchPublishedKnowledge(input.projectId, input.query, input.topK),
-      searchCaseImportedEvidence: (input) => this.store.searchCaseImportedEvidence(input.projectId, input.caseId, input.query, input.topK)
-    }));
-    if (this.skills) {
+      searchCaseImportedEvidence: (input) => this.store.searchCaseImportedEvidence(input.projectId, input.caseId, input.query, input.topK),
+      listCaseThreads: (input) => this.listCaseThreads(input.projectId, input.caseId),
+      readCaseThreadContext: (input) => this.readCaseThreadContext(input.projectId, input.caseId, input.threadId ?? "")
+    }).filter((tool) => (
+      (tool.name === "case.read_safe_context" && agentTools.caseContextEnabled) ||
+      ((tool.name === "case.list_threads" || tool.name === "case.read_thread_context") && agentTools.caseContextEnabled) ||
+      (tool.name === "case.search_imported_evidence" && agentTools.importedEvidenceEnabled) ||
+      (tool.name === "knowledge.search_published" && agentTools.publishedKnowledgeEnabled)
+    ));
+    const registry = new ToolRegistry(builtinTools);
+    const enabledSkillCatalog = this.skills ? await this.skills.getCatalog(target.projectId) : [];
+    if (this.skills && enabledSkillCatalog.length > 0) {
       registry.register({
         name: "skills.search_available",
         description: "在当前 Project 可用且已启用的 Skills 中按名称和说明检索，不读取脚本或任意文件。",
@@ -118,6 +144,120 @@ export class AgentToolService {
           context.projectId,
           argumentsValue.name as string
         )
+      });
+    }
+    if (agentTools.sapReadonlyEnabled && this.readSapEvidence && target.caseId) {
+      registry.register({
+        name: "sap.read_object_evidence",
+        description: "通过已验证的 ADT 只读连接读取一个明确命名的 ABAP 或 DDIC 对象证据，并保存到当前工作文件夹。仅支持 program、class、function、include、table、structure 的源码或元数据；不能运行事务、导出 MB52，也不能读取库存、订单或财务业务数据行。",
+        risk: "read-only",
+        scope: "case",
+        inputSchema: {
+          type: "object",
+          properties: {
+            objectType: { type: "string", enum: ["program", "class", "function", "include", "table", "structure"] },
+            objectName: { type: "string", minLength: 1, maxLength: 80 },
+            functionGroup: { type: "string", minLength: 1, maxLength: 80 },
+            queryContext: { type: "string", minLength: 1, maxLength: 500 }
+          },
+          required: ["objectType", "objectName"],
+          additionalProperties: false,
+          minProperties: 2,
+          maxProperties: 4
+        },
+        timeoutMs: 60_000,
+        maxResultChars: 8_000,
+        execute: async (argumentsValue, context) => {
+          const result = await this.readSapEvidence!({
+            projectId: context.projectId,
+            caseId: context.caseId!,
+            threadId: context.threadId
+          }, {
+            objectType: argumentsValue.objectType as SapObjectEvidenceRequest["objectType"],
+            objectName: argumentsValue.objectName as string,
+            ...(typeof argumentsValue.functionGroup === "string" ? { functionGroup: argumentsValue.functionGroup } : {}),
+            connectionMode: "auto",
+            queryContext: typeof argumentsValue.queryContext === "string" ? argumentsValue.queryContext : argumentsValue.objectName as string
+          }, context.signal);
+          return {
+            object: result.summary,
+            connectionCount: result.summaries.length,
+            generatedFiles: result.generatedFiles,
+            trust: "sap-adt-readonly-evidence"
+          };
+        }
+      });
+    }
+    if (agentTools.sapDataPreviewEnabled && this.readSapDataPreview && target.caseId) {
+      registry.register({
+        name: "sap.read_data_preview",
+        description: "面向任意 SAP 业务问题的通用 ADT Data Preview 只读工具。先理解用户目标并判断合适的 DDIC table、view 或 CDS；不确定字段时先用 operation=discover、空 columns/filters、maxRows=1 发现字段，再用 operation=read、明确字段和至少一个业务筛选完成有界读取。用户明确 SID 或 Client 时，将其规范为 systemHint（例如 Client 800）以连接对应系统。模型不能提交 SQL，工具不会运行事务或执行写入；读取后必须继续分析并完成用户要求的答复或本地成果，不能停在“已读取数据”。MB52、订单、凭证、配置核对等都只是这条通用链路的使用场景，不是独立功能。",
+        risk: "read-only",
+        scope: "case",
+        inputSchema: {
+          type: "object",
+          properties: {
+            operation: { type: "string", enum: ["discover", "read"] },
+            objectName: { type: "string", minLength: 1, maxLength: 80 },
+            objectType: { type: "string", enum: ["table", "view", "cds"] },
+            columns: { type: "array", items: { type: "string", minLength: 1, maxLength: 80 }, minItems: 0, maxItems: 30 },
+            filters: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  field: { type: "string", minLength: 1, maxLength: 80 },
+                  operator: { type: "string", enum: ["eq", "ne", "gt", "ge", "lt", "le", "like"] },
+                  value: { type: "string", minLength: 1, maxLength: 200 }
+                },
+                required: ["field", "operator", "value"],
+                additionalProperties: false,
+                minProperties: 3,
+                maxProperties: 3
+              },
+              minItems: 0,
+              maxItems: 12
+            },
+            maxRows: { type: "integer", minimum: 1, maximum: 2000 },
+            systemHint: { type: "string", minLength: 1, maxLength: 80 }
+          },
+          required: ["objectName", "objectType", "columns", "filters", "maxRows"],
+          additionalProperties: false,
+          minProperties: 5,
+          maxProperties: 7
+        },
+        timeoutMs: 60_000,
+        maxResultChars: 48_000,
+        execute: async (argumentsValue, context) => {
+          const result = await this.readSapDataPreview!({
+            projectId: context.projectId,
+            caseId: context.caseId!,
+            threadId: context.threadId
+          }, {
+            intent: "sap-readonly-data",
+            operation: argumentsValue.operation === "discover" ? "discover" : "read",
+            objectName: argumentsValue.objectName as string,
+            objectType: argumentsValue.objectType as SapDataPreviewRequest["objectType"],
+            columns: argumentsValue.columns as string[],
+            filters: argumentsValue.filters as unknown as SapDataPreviewRequest["filters"],
+            maxRows: argumentsValue.maxRows as number,
+            readOnly: true,
+            ...(typeof argumentsValue.systemHint === "string" ? { queryContext: argumentsValue.systemHint } : {})
+          }, context.signal);
+          return {
+            intent: result.intent,
+            operation: result.operation,
+            source: result.source,
+            rowCount: result.rowCount,
+            truncated: result.truncated,
+            columns: result.columns,
+            analysisRows: result.analysisRows,
+            analysisRowsTruncated: result.analysisRowsTruncated,
+            summary: result.safeSummary ?? { note: "详细业务数据仅保存在本地生成文件中。" },
+            generatedFiles: result.generatedFiles,
+            modelDataBoundary: "完整 SAP 明细保存在本地工作文件夹；当前模型收到有上限的分析行。若不足以完成任务，应缩小筛选或分次读取，不得把部分数据冒充完整结果。"
+          };
+        }
       });
     }
     const mappings: RegisteredModelTool[] = registry.list().map((tool) => modelMapping(tool, target));
@@ -209,6 +349,44 @@ export class AgentToolService {
         recentMessages: thread.messages.slice(-8).map((message) => ({ role: message.role, content: message.content.slice(0, 2_000) }))
       },
       trust: "local-case-safe-context"
+    };
+  }
+
+  private async listCaseThreads(projectId: string, caseId: string): Promise<unknown> {
+    const state = await this.store.getState();
+    const project = state.projects.find((item) => item.id === projectId);
+    const caseItem = project?.cases.find((item) => item.id === caseId);
+    if (!project || !caseItem) throw new Error("当前客户项目或运维项目已不存在。");
+    const items = state.workThreads
+      .filter((thread) => thread.projectId === projectId && thread.caseId === caseId && thread.status !== "removed")
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, 100)
+      .map((thread) => ({
+        threadId: thread.id,
+        title: thread.title,
+        status: thread.status,
+        messageCount: thread.messages.length,
+        updatedAt: thread.updatedAt
+      }));
+    return { projectId, workProjectId: caseId, count: items.length, items, trust: "local-work-project-thread-index" };
+  }
+
+  private async readCaseThreadContext(projectId: string, caseId: string, threadId: string): Promise<unknown> {
+    const state = await this.store.getState();
+    const thread = state.workThreads.find((item) => item.id === threadId && item.projectId === projectId && item.caseId === caseId && item.status !== "removed");
+    if (!thread) throw new Error("指定线程不属于当前运维项目、已移除或不存在。");
+    const messages = thread.messages.slice(-16).map((message) => ({
+      role: message.role,
+      content: message.content.slice(0, 2_000),
+      createdAt: message.createdAt
+    }));
+    return {
+      threadId: thread.id,
+      title: thread.title,
+      status: thread.status,
+      messages,
+      truncated: thread.messages.length > messages.length,
+      trust: "local-work-project-sibling-thread-context"
     };
   }
 

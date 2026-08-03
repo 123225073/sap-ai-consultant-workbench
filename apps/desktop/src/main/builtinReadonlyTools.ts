@@ -24,10 +24,19 @@ export interface SearchCaseImportedEvidenceInput {
   signal: AbortSignal;
 }
 
+export interface CaseThreadContextInput {
+  projectId: string;
+  caseId: string;
+  threadId?: string;
+  signal: AbortSignal;
+}
+
 export interface BuiltinReadonlyToolDependencies {
   readCaseSafeContext: (input: ReadSafeCaseContextInput) => Promise<unknown> | unknown;
   searchPublishedKnowledge: (input: SearchPublishedKnowledgeInput) => Promise<unknown> | unknown;
   searchCaseImportedEvidence: (input: SearchCaseImportedEvidenceInput) => Promise<unknown> | unknown;
+  listCaseThreads: (input: CaseThreadContextInput) => Promise<unknown> | unknown;
+  readCaseThreadContext: (input: CaseThreadContextInput) => Promise<unknown> | unknown;
 }
 
 const CASE_SAFE_CONTEXT_SCHEMA: ToolJsonObjectSchema = {
@@ -84,6 +93,31 @@ const CASE_IMPORTED_EVIDENCE_SEARCH_SCHEMA: ToolJsonObjectSchema = {
   maxProperties: 2
 };
 
+const EMPTY_CASE_SCOPE_SCHEMA: ToolJsonObjectSchema = {
+  type: "object",
+  properties: {},
+  required: [],
+  additionalProperties: false,
+  minProperties: 0,
+  maxProperties: 0
+};
+
+const CASE_THREAD_CONTEXT_SCHEMA: ToolJsonObjectSchema = {
+  type: "object",
+  properties: {
+    threadId: {
+      type: "string",
+      minLength: 1,
+      maxLength: 128,
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    }
+  },
+  required: ["threadId"],
+  additionalProperties: false,
+  minProperties: 1,
+  maxProperties: 1
+};
+
 export function createBuiltinReadonlyTools(dependencies: BuiltinReadonlyToolDependencies): ToolDefinition[] {
   assertDependencies(dependencies);
   return [
@@ -135,6 +169,35 @@ export function createBuiltinReadonlyTools(dependencies: BuiltinReadonlyToolDepe
         topK: argumentsValue.topK as number,
         signal: context.signal
       })
+    },
+    {
+      name: "case.list_threads",
+      description: "列出当前运维项目下的对话线程 ID、标题和状态，用于按需定位兄弟线程；不会跨运维项目读取。",
+      risk: "read-only",
+      scope: "case",
+      inputSchema: EMPTY_CASE_SCOPE_SCHEMA,
+      timeoutMs: 10_000,
+      maxResultChars: 8_000,
+      execute: async (_argumentsValue, context) => dependencies.listCaseThreads({
+        projectId: context.projectId,
+        caseId: requireCaseId(context),
+        signal: context.signal
+      })
+    },
+    {
+      name: "case.read_thread_context",
+      description: "读取当前运维项目内指定兄弟线程的有限对话上下文。只返回经过长度限制的消息，不允许跨客户项目或跨运维项目读取。",
+      risk: "read-only",
+      scope: "case",
+      inputSchema: CASE_THREAD_CONTEXT_SCHEMA,
+      timeoutMs: 10_000,
+      maxResultChars: 24_000,
+      execute: async (argumentsValue, context) => dependencies.readCaseThreadContext({
+        projectId: context.projectId,
+        caseId: requireCaseId(context),
+        threadId: argumentsValue.threadId as string,
+        signal: context.signal
+      })
     }
   ];
 }
@@ -149,7 +212,7 @@ function requireCaseId(context: ToolHandlerContext): string {
 }
 
 function assertDependencies(dependencies: BuiltinReadonlyToolDependencies): void {
-  if (!dependencies || typeof dependencies.readCaseSafeContext !== "function" || typeof dependencies.searchPublishedKnowledge !== "function" || typeof dependencies.searchCaseImportedEvidence !== "function") {
+  if (!dependencies || typeof dependencies.readCaseSafeContext !== "function" || typeof dependencies.searchPublishedKnowledge !== "function" || typeof dependencies.searchCaseImportedEvidence !== "function" || typeof dependencies.listCaseThreads !== "function" || typeof dependencies.readCaseThreadContext !== "function") {
     throw new Error("内置只读工具必须由 main process 注入 Case 安全上下文、附件摘录和已发布知识适配器。");
   }
 }

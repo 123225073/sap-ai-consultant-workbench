@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "运维｜09 汇报与 PPT"
+  short_description: "把可追溯运维证据转为面向业务、管理层或技术团队的汇报"
+  default_prompt: "Use $sap-ops-presentation to turn this SAP operations evidence into a stakeholder-ready presentation."

@@ -1,6 +1,6 @@
 # SAP AI 顾问工作台项目上下文
 
-最后更新：2026-07-16
+最后更新：2026-08-03
 
 ## 用途
 
@@ -22,6 +22,7 @@
 - Work/Chat 核心回复直接调用用户配置的模型渠道，不经过 Codex CLI。
 - Phase 50-56 已实现独立 Agent Runtime 首个基线：Work/Chat 回合进入本地 Thread/Turn/Item 事件账本，Work 支持受控工具循环，长会话使用可追溯 checkpoint，明确提出的长期要求只生成待确认记忆。
 - 能力中心已提供 `插件 | Skills | MCP | 提示词 | 记忆` 五个页签；Skill、声明式 Plugin、分层提示词和已确认记忆按 Project/Case 范围进入新回合。
+- 应用随附 9 个正式 SAP 运维 Skills 和 1 个旧 ID 兼容入口，依据 SAP Activate Run、SAP Cloud ALM、SAP ITSM/ChaRM、Signavio、ATC/ABAP Unit 和 CTS 组织；首次启动自动安装但默认停用，只有用户明确启用后才进入模型上下文；升级时同步内容并保留用户明确选择，内置 Skill 不能被移除。
 - MCP 稳定版只开放 HTTPS Streamable HTTP 的连接配置、测试和 tools/resources/prompts 发现。任何外部工具都不会进入 Work 自动执行目录；Server 的 `readOnlyHint` 只作展示，不能提权。外部 MCP 执行、STDIO、任意脚本和受限子 Agent 尚未正式开放。
 - Codex 只作为公开源码参考和可选兼容工具，不是 Work/Chat、能力中心或 Agent Runtime 的运行依赖。
 - 工作区可能存在前序任务留下的未提交改动。每次开始前必须检查并保留，不得为了文档或 Runtime 工作回滚无关文件。
@@ -72,16 +73,16 @@ npm run check
 
 | 词汇 | 含义 |
 |---|---|
-| Project | 客户或业务项目边界，用来隔离 SAP landscape（系统版图）、连接配置、项目规范、案件和知识；一个 SAP Project 可以包含多套 SID 和 Client 登录连接。 |
-| Case | 案件，一个 SAP 问题、ABAP 任务、文档、流程图、调查或交付事项对应一个 Case。 |
-| Case folder | 真实本地文件夹，保存输出、证据、快照、技术文件、时间线和上下文包。 |
+| 客户项目 / Customer Project | 公司或客户级边界，底层沿用 `Project`。例如 A 公司、B 公司。它拥有该客户的 SAP landscape、项目规范和知识；一套客户项目可以包含 DS4/DEV、QS4/QAS、PS4/PRD 等多套 SID 和 Client 登录连接。 |
+| 运维项目 / Work Project | 客户项目下的一项持续工作，底层沿用 `Case`。例如“库龄分析报表开发”“销售报表开发”。每个运维项目对应一个共享本地文件夹，保存资料、成果、证据和多个对话线程的共同上下文。 |
+| 运维项目文件夹 | 运维项目对应的真实本地文件夹，保存输出、证据、快照、技术文件、时间线和上下文包；可以由工作台创建，也可以绑定电脑已有文件夹。 |
+| 对话线程 / Conversation Thread | 运维项目下的一次独立对话，底层沿用 `WorkThread`。需求分析、代码开发、测试验证可以拆成不同线程以控制上下文长度；同一运维项目的线程共享项目文件，并可通过受控只读工具读取兄弟线程的有限上下文。 |
 | Daily chat | 普通日常 AI 对话，不绑定 Project 或 Case，必须和案件工作分开。 |
-| Work | 需要沉淀成果的正式工作入口。当前实现使用 `Project + WorkThread + Case`：任务会话独立，成果写入绑定的工作文件夹。 |
+| Work | 需要沉淀成果的正式工作入口。当前实现使用 `Customer Project + Work Project + Conversation Thread`：线程对话独立，成果写入运维项目共享文件夹。 |
 | Chat | 纯日常对话入口，不出现项目选择、文件夹选择和案件文件面板，也不读取 SAP。 |
-| SAP 项目 | 已配置或准备配置 SAP 连接、规范、知识和模型能力的 Project，例如 `SAP 演示 S4HANA`、`SAP 演示 ECC`。 |
-| SAP 登录连接 | Project 内的一套独立只读登录上下文，由 SID、实例号、环境、Client、用户、密码引用和验证状态组成。DS4、QS4、PS4 及其多个 Client 应归属于同一个业务 Project，而不是被拆成多个 Project。 |
-| 工作文件夹 | 用户在 Work 下看到的成果容器，当前实现对应底层 Case。它必须归属到某个 SAP 项目或“其他工作”项目；可以由工作台新建，也可以通过 Windows 原生目录选择器绑定电脑已有文件夹。 |
-| Task / WorkThread | Work 下的任务和独立会话。每个任务有稳定会话 ID，可绑定新建或电脑已有文件夹；重复选择同一 Project 下的同一电脑文件夹时复用同一个 Case，但会话历史必须隔离。 |
+| SAP 登录连接 | 客户项目内的一套独立只读登录上下文，由 SID、实例号、环境、Client、用户、密码引用和验证状态组成。DS4、QS4、PS4 及其多个 Client 应归属于同一个客户项目，而不是被拆成多个客户项目。 |
+| 全局集成配置 | AI 模型渠道、API Key、Feishu/Lark CLI 与 Codex CLI 等个人工作台能力。它们由整个工作台共用，不随客户项目重复配置；SAP ADT 连接明确不属于全局配置。 |
+| 内部占位工作区 | 为兼容旧数据结构保留的不可见内部 Case，不是用户业务对象。新的客户项目没有可见“收件箱”；旧收件箱若已有真实内容则迁移显示为“未归类工作”，不能静默删除。 |
 | 其他工作 | 非 SAP 工作，或暂时不绑定已配置 SAP 项目的工作。它可以有本地工作文件夹，但不读取 SAP 配置。 |
 | Task mode | 早期实现中的历史兼容字段。新 UI 不再要求用户发消息前选择任务模式。 |
 | Case action | 案件动作，固定按钮，用来把当前对话和工作文件夹内容沉淀成笔记、开发说明书、流程图、候选知识或交付物。 |
@@ -115,10 +116,12 @@ npm run check
 - AI 结论必须能追溯到 Case、文件、SAP 读取记录或 Published knowledge。
 - 配置失败必须给出用户能理解的原因和下一步。
 - UI 应该像真正的桌面工作台，不是装饰性 Dashboard。
-- 主界面必须区分 `Work` 和 `Chat`：`Chat` 不显示文件夹选择；`Work` 下新建任务必须选择或创建工作文件夹。
-- 任务会话与工作文件夹是两个概念：任务负责独立对话和生命周期，工作文件夹负责共享成果、证据与文件；归档、移除或后台写回不得串到其他会话。
+- 主界面必须区分 `Work` 和 `Chat`：`Chat` 不显示客户项目、运维项目和文件夹；`Work` 使用“客户项目 → 运维项目 → 对话线程”三级结构。
+- 新建运维项目时选择或创建一次文件夹；在已有运维项目下新增对话线程时不得再次要求选择文件夹。
+- 对话线程与运维项目文件夹是两个概念：线程负责独立对话和生命周期，运维项目文件夹负责共享成果、证据与文件；归档、移除或后台写回不得串到其他运维项目。
 - “已有文件夹”必须调用系统原生目录选择器，不能伪装成内部 Case 下拉框。绝对路径只保存在 Electron main process 的机器本地绑定表中，不进入 renderer state、日志、模型上下文或可迁移备份；绑定本身不批量读取或改写原目录。
-- `SAP 项目` 是工作文件夹的父级。用户必须能看清某个工作文件夹属于哪个 SAP 项目。
+- 客户项目是运维项目的父级。用户必须能看清某个运维项目、对话线程属于哪个客户项目。
+- SAP ADT landscape 按客户项目隔离；AI 模型、API Key、Feishu/Lark CLI 和 Codex CLI 按工作台全局共用。
 - 右侧默认展示当前工作文件夹文件；只有用户明确切换或点击项目配置时，才展示项目配置摘要或进入配置中心。
 - 新 UI 不要求用户在发消息前选择任务模式；默认自由对话，固定案件动作负责沉淀成果。
 - 案件动作可以绑定内置或导入 Skill，但执行权限按项目 / 案件权限模式管理。
@@ -149,7 +152,7 @@ npm run check
 - 多 SAP 连接必须先在 Project 范围内路由；未唯一匹配时先由用户确认，禁止静默猜测实例号 `00` 或读取错误系统。
 - Feishu CLI command 必须固定，并显式指定 profile。
 - Model execution 必须使用已验证 provider 和 safe context。
-- Provider 流式输出、AgentRuntime、Tool Runtime 和 EventStore 已接入 Work/Chat；OpenAI Responses API、受限子 Agent 和更完整的中断续跑仍属于后续增强，不能宣称已达到 Codex App 的全部编排能力。
+- Provider 流式输出、AgentRuntime、Tool Runtime 和 EventStore 已接入 Work/Chat；所有模型工具按 Project 默认关闭，只有用户明确授权后才注册。SAP 对象证据与 SAP ADT 通用数据读取是两个独立开关：对象工具只读命名 ABAP/DDIC 对象定义；通用数据工具根据用户意图路由到 Project 内对应 SID/Client，可先发现 DDIC table、view 或 CDS 字段，再用结构化筛选和有界行数读取数据、把完整明细写入当前工作文件夹，并向本轮模型返回有上限的分析行以继续完成任务。模型不能提交原始 SQL，工具不运行事务或任何 SAP 写入。MB52、订单、凭证、主数据和配置核对都只是通用链路的场景。OpenAI Responses API、受限子 Agent 和更完整的中断续跑仍属于后续增强，不能宣称已达到 Codex App 的全部编排能力。
 - 文件访问必须限制在当前 Case/Project 边界内。
 
 ## Agent 开发流程

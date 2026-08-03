@@ -1,4 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Archive,
   ArrowDown,
@@ -82,7 +84,11 @@ function workFolderLabel(caseItem: CaseSummary | undefined): string {
   if (!caseItem) return "未知";
   return caseItem.folderSource === "linked-local"
     ? `电脑文件夹 · ${caseItem.linkedFolderName || caseItem.title}`
-    : `工作文件夹 · ${caseItem.title}`;
+    : `运维项目 · ${caseItem.title}`;
+}
+
+function isVisibleWorkProject(caseItem: CaseSummary): boolean {
+  return caseItem.isPlaceholder !== true;
 }
 
 function verificationModeLabel(mode: "fake" | "cli" | "http" | "adt" | null | undefined): string {
@@ -149,8 +155,8 @@ function fileAnchorId(relativePath: string): string {
 }
 
 function filePreviewSubtitle(filePreview: CaseFilePreview | null, selectedPreviewNode: CaseFileNode | null): string {
-  if (selectedPreviewNode) return `当前工作文件夹文件 · ${caseFilePurposeLabel(selectedPreviewNode)}`;
-  if (filePreview) return "当前工作文件夹文件 · 安全文本预览";
+  if (selectedPreviewNode) return `当前运维项目文件 · ${caseFilePurposeLabel(selectedPreviewNode)}`;
+  if (filePreview) return "当前运维项目文件 · 安全文本预览";
   return "点击上方文件查看安全文本预览";
 }
 
@@ -293,6 +299,86 @@ function ConversationThreadRow({
       </details>
     </div>
   );
+}
+
+function CustomerProjectTree({
+  item,
+  workThreads,
+  active,
+  activeView,
+  activeThreadId,
+  busy,
+  visibleProjectCount,
+  legacy = false,
+  onSwitch,
+  onConfig,
+  onHide,
+  onCreateWorkProject,
+  onCreateThread,
+  onOpenThread,
+  onCopyThreadId,
+  onThreadStatus
+}: {
+  item: ProjectSummary;
+  workThreads: WorkThread[];
+  active: boolean;
+  activeView: string;
+  activeThreadId?: string;
+  busy: boolean;
+  visibleProjectCount: number;
+  legacy?: boolean;
+  onSwitch: () => void;
+  onConfig?: () => void;
+  onHide?: () => void;
+  onCreateWorkProject: () => void;
+  onCreateThread: (caseId: string) => void;
+  onOpenThread: (threadId: string) => void;
+  onCopyThreadId: (threadId: string) => void;
+  onThreadStatus: (threadId: string, status: ConversationThreadStatus) => void;
+}) {
+  const workProjects = item.cases.filter(isVisibleWorkProject);
+  return <section className={`project-card customer-project-card${active ? " active" : ""}${legacy ? " legacy-demo-project-card" : ""}`}>
+    <div className="project-card-title">
+      <button type="button" className="project-switch" onClick={onSwitch} title={`切换到客户项目：${item.name}`}>
+        <strong>{item.name}</strong>
+        <div className="project-tags">
+          <StatusPill label={projectKindLabel(item)} tone={legacy ? "neutral" : "blue"} />
+          {item.sapVersion === "UNKNOWN" ? <StatusPill label={item.systemLabel} tone="neutral" /> : <StatusPill {...sapSidebarStatus(item)} />}
+        </div>
+      </button>
+      <div className="project-actions">
+        <button type="button" className="icon-button project-add-work-button" onClick={onCreateWorkProject} aria-label={`在 ${item.name} 下新建运维项目`} title="新建运维项目"><FolderPlus size={15} /><span>项目</span></button>
+        {onConfig ? <button type="button" className="icon-button project-settings-button" onClick={onConfig} aria-label={`配置 ${item.name}`} title="配置该客户项目的 SAP landscape"><Settings size={16} /></button> : null}
+        {onHide ? <button type="button" className="icon-button project-hide-button" disabled={visibleProjectCount <= 1} onClick={onHide} aria-label={`从侧边栏隐藏 ${item.name}`} title="只从侧边栏隐藏，不删除项目文件"><EyeOff size={16} /></button> : null}
+      </div>
+    </div>
+    {active ? <div className="work-project-tree">
+      {workProjects.length === 0 ? <div className="work-project-empty"><span>暂无运维项目</span><button type="button" onClick={onCreateWorkProject}><Plus size={14} />新建</button></div> : workProjects.map((workProject) => {
+        const threads = workThreads.filter((thread) => thread.projectId === item.id && thread.caseId === workProject.id && thread.status === "active");
+        return <section className="work-project-group" key={workProject.id}>
+          <header>
+            <button type="button" className="work-project-open" onClick={() => threads[0] && onOpenThread(threads[0].id)} title={workFolderLabel(workProject)}>
+              <Folder size={14} /><span><strong>{workProject.title}</strong><small>{workProject.folderSource === "linked-local" ? workProject.linkedFolderName || "电脑文件夹" : "共享项目文件夹"}</small></span>
+            </button>
+            <button type="button" className="icon-button work-project-add-thread" onClick={() => onCreateThread(workProject.id)} aria-label={`在 ${workProject.title} 下新建对话`} title="新建对话线程"><Plus size={14} /><span>对话</span></button>
+          </header>
+          <div className="work-project-threads">
+            {threads.map((thread) => <ConversationThreadRow
+              key={thread.id}
+              title={thread.title}
+              subtitle="对话线程"
+              active={activeView === "case" && thread.id === activeThreadId}
+              status={thread.status}
+              busy={busy}
+              onOpen={() => onOpenThread(thread.id)}
+              onCopyId={() => onCopyThreadId(thread.id)}
+              onStatus={(status) => onThreadStatus(thread.id, status)}
+            />)}
+          </div>
+        </section>;
+      })}
+    </div> : null}
+  </section>;
 }
 
 type ComposerModelOption = {
@@ -631,7 +717,7 @@ function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFi
                 className={`file-row file-row-button file-${node.kind}${isSelected ? " selected" : ""}`}
                 style={{ paddingLeft: `${level * 16}px` }}
                 onClick={() => onPreview(node)}
-                title="只读预览当前工作文件夹文本文件"
+                title="只读预览当前运维项目文本文件"
               >
                 {rowContent}
               </button>
@@ -648,87 +734,17 @@ function FileRows({ nodes, level = 0, selectedPath, onPreview }: { nodes: CaseFi
   );
 }
 
-function inlineMessageContent(value: string): ReactNode[] {
-  return value.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/g).filter(Boolean).map((part, index) => {
-    if (part.startsWith("`") && part.endsWith("`")) return <code key={index}>{part.slice(1, -1)}</code>;
-    if (part.startsWith("**") && part.endsWith("**")) return <strong key={index}>{part.slice(2, -2)}</strong>;
-    return part;
-  });
-}
-
 const MessageContent = memo(function MessageContent({ content }: { content: string }) {
-  const lines = content.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: ReactNode[] = [];
-  let index = 0;
-
-  while (index < lines.length) {
-    const line = lines[index];
-    if (!line.trim()) {
-      index += 1;
-      continue;
-    }
-    if (line.trim().startsWith("```")) {
-      const language = line.trim().slice(3).trim();
-      const codeLines: string[] = [];
-      index += 1;
-      while (index < lines.length && !lines[index].trim().startsWith("```")) {
-        codeLines.push(lines[index]);
-        index += 1;
-      }
-      if (index < lines.length) index += 1;
-      blocks.push(<pre key={`code-${index}`} data-language={language || undefined}><code>{codeLines.join("\n")}</code></pre>);
-      continue;
-    }
-    const heading = line.match(/^(#{1,3})\s+(.+)$/);
-    if (heading) {
-      const level = heading[1].length;
-      const children = inlineMessageContent(heading[2]);
-      blocks.push(level === 1 ? <h2 key={`heading-${index}`}>{children}</h2> : <h3 key={`heading-${index}`}>{children}</h3>);
-      index += 1;
-      continue;
-    }
-    if (/^\s*[-*]\s+/.test(line)) {
-      const items: ReactNode[] = [];
-      while (index < lines.length && /^\s*[-*]\s+/.test(lines[index])) {
-        items.push(<li key={index}>{inlineMessageContent(lines[index].replace(/^\s*[-*]\s+/, ""))}</li>);
-        index += 1;
-      }
-      blocks.push(<ul key={`list-${index}`}>{items}</ul>);
-      continue;
-    }
-    if (/^\s*\d+[.)]\s+/.test(line)) {
-      const items: ReactNode[] = [];
-      while (index < lines.length && /^\s*\d+[.)]\s+/.test(lines[index])) {
-        items.push(<li key={index}>{inlineMessageContent(lines[index].replace(/^\s*\d+[.)]\s+/, ""))}</li>);
-        index += 1;
-      }
-      blocks.push(<ol key={`ordered-${index}`}>{items}</ol>);
-      continue;
-    }
-    if (/^>\s?/.test(line)) {
-      const quoteLines: string[] = [];
-      while (index < lines.length && /^>\s?/.test(lines[index])) {
-        quoteLines.push(lines[index].replace(/^>\s?/, ""));
-        index += 1;
-      }
-      blocks.push(<blockquote key={`quote-${index}`}>{inlineMessageContent(quoteLines.join("\n"))}</blockquote>);
-      continue;
-    }
-
-    const paragraph: string[] = [line.trim()];
-    index += 1;
-    while (
-      index < lines.length &&
-      lines[index].trim() &&
-      !/^(#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^>\s?|^```/.test(lines[index])
-    ) {
-      paragraph.push(lines[index].trim());
-      index += 1;
-    }
-    blocks.push(<p key={`paragraph-${index}`}>{inlineMessageContent(paragraph.join("\n"))}</p>);
-  }
-
-  return <div className="message-body">{blocks}</div>;
+  return <div className="message-body">
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        table: ({ children }) => <div className="markdown-table-scroll"><table>{children}</table></div>
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  </div>;
 });
 
 function MessageBubble({ message, files, onPreview }: { message: CaseMessage; files: CaseFileNode[]; onPreview: (node: CaseFileNode) => void }) {
@@ -800,7 +816,10 @@ function StreamingTurnBubble({ turn }: { turn: StreamingTurn }) {
       </div>
       <article className="assistant-message streaming-assistant-message" data-streaming-chars={turn.assistantContent.length} aria-live="polite" aria-busy="true">
         <div className="run-time">{turn.providerName} · {turn.modelId} · {turn.activityLabel ?? "正在回复"}</div>
-        <div className="message-body streaming-message-body"><p>{turn.assistantContent || turn.activityLabel || "正在连接模型"}<span className="streaming-cursor" aria-hidden="true" /></p></div>
+        <div className="streaming-message-body">
+          <MessageContent content={turn.assistantContent || turn.activityLabel || "正在连接模型"} />
+          <span className="streaming-cursor" aria-hidden="true" />
+        </div>
       </article>
     </>
   );
@@ -1079,9 +1098,18 @@ function App() {
   const modelProviderErrors = useMemo(() => providerErrorStates(project), [project]);
   const capabilitySkills = useMemo<CapabilitySkillItem[]>(() => (capabilitySnapshot?.skills ?? []).map((item) => ({
     id: item.id,
-    name: item.name,
+    name: item.frontmatter.metadata.title || item.name,
+    technicalName: item.name,
     description: item.description,
     source: item.source.label,
+    categoryLabel: item.frontmatter.metadata.workstream === "sap-operations"
+      ? "SAP 运维"
+      : item.frontmatter.metadata.workstream === "sap-operations-compat"
+        ? "兼容入口"
+        : item.frontmatter.metadata.workstream === "sap-implementation"
+          ? "SAP 实施"
+          : undefined,
+    workflowStage: item.frontmatter.metadata.stage || undefined,
     scope: item.scope.kind === "global" ? "global" : "project",
     scopeLabel: item.scope.kind === "global" ? "全局" : project?.name ?? "当前 Project",
     enabled: item.enabled,
@@ -1222,13 +1250,14 @@ function App() {
     project?.config.activeAdtConnectionId ?? ""
   ), [project, sapRoutingContext]);
   const adtReady = verifiedAdtConnections.length > 0;
+  const sapReadonlyEnabled = project?.config.agentTools.sapReadonlyEnabled === true;
   const adtEvidenceStatus = project && !isSapBoundProject(project)
     ? "其他工作 · 不读取 SAP"
     : project?.config.adt
     ? adtReady
       ? sapRouteDecision.reason
       : "当前 Project 还没有通过真实 T000 只读验证的 SAP 连接"
-    : "未选择 SAP 项目";
+    : "未选择客户项目";
   const codexAssistAvailable = Boolean(
     project?.config.codex.integrationType === "cli" &&
     project.config.codex.cliStatus === "verified" &&
@@ -1353,11 +1382,11 @@ function App() {
         : null;
       if (targetStillActive) {
         setNotice(fallbackModel
-          ? `所选模型暂时不可用，已自动改用同渠道已验证模型 ${fallbackModel}；当前工作文件夹已更新。`
-          : "当前工作文件夹及本地输出文件已更新。");
+          ? `所选模型暂时不可用，已自动改用同渠道已验证模型 ${fallbackModel}；当前运维项目文件已更新。`
+          : "当前运维项目文件及本地输出已更新。");
         return "active";
       }
-      setNotice(`请求已完成，结果只写入发送时的任务会话及工作文件夹「${target.caseTitle}」。`);
+      setNotice(`请求已完成，结果只写入发送时的对话线程及运维项目「${target.caseTitle}」。`);
       return "background";
     } else {
       setNotice(response.error);
@@ -1508,14 +1537,14 @@ function App() {
     const response = await bridge.createLocalProject({ name, sapVersion: newProjectSapVersion, systemLabel });
     if (response.ok) {
       setState(response.data);
-      setActiveView("case");
+      setActiveView(newProjectSapVersion === "UNKNOWN" ? "case" : "config");
       setNewCaseProjectId(response.data.activeProjectId);
       setNewProjectName("");
       setNewProjectSystemLabel("Local");
       setCreatePanel(null);
       setNotice(newProjectSapVersion === "UNKNOWN"
-        ? "其他工作项目已创建，可在它下面新建本地工作文件夹；这里不会读取 SAP。"
-        : "SAP 项目已创建，可在它下面新建工作文件夹，并独立配置连接、规范和知识。");
+        ? "客户项目已创建，可继续新建运维项目；这里不会读取 SAP。"
+        : "客户项目已创建。请先登记该客户的 DEV、QAS、PRD 等 SAP 只读连接，再新建运维项目。");
     } else {
       setNotice(response.error);
     }
@@ -1528,12 +1557,12 @@ function App() {
       return;
     }
     if (visibleProjects.length === 0) {
-      setCreateTaskError("请先创建或选择一个本地项目，再新建任务。");
+      setCreateTaskError("请先创建或选择一个客户项目，再新建运维项目。");
       return;
     }
     const targetProject = visibleProjects.find((item) => item.id === newCaseProjectId);
     if (!targetProject) {
-      setCreateTaskError("请先为新任务选择一个 SAP 项目或其他工作项目。");
+      setCreateTaskError("请先选择新运维项目所属的客户项目。");
       return;
     }
     const title = newCaseTitle.trim();
@@ -1551,9 +1580,9 @@ function App() {
       }
       const response = await bridge.createWorkThread({
         projectId: targetProject.id,
-        title,
+        title: "新对话",
         folderMode: newTaskFolderMode,
-        folderName: newTaskFolderMode === "new" ? (newTaskFolderName.trim() || title) : undefined,
+        folderName: newTaskFolderMode === "new" ? (newTaskFolderName.trim() || title) : title,
         folderSelectionToken: newTaskFolderMode === "existing" ? newTaskFolderSelectionToken : undefined
       });
       if (response.ok) {
@@ -1566,14 +1595,32 @@ function App() {
         setNewTaskSelectedFolderName("");
         setCreatePanel(null);
         setNotice(newTaskFolderMode === "new"
-          ? "任务已创建，并绑定到新工作文件夹。"
-          : "任务已创建并绑定电脑文件夹；原目录不会被自动读取或改写，任务成果由工作台安全保存。");
+          ? "运维项目已创建，并已打开第一个新对话。"
+          : "运维项目已绑定电脑文件夹，并已打开第一个新对话；原目录不会被自动批量读取或改写。");
       } else {
         setCreateTaskError(response.error);
         setNotice(response.error);
       }
     } finally {
       setCreatingCase(false);
+    }
+  }
+
+  async function createConversationThread(projectId: string, caseId: string) {
+    if (!bridge || sendingMessage) return;
+    const response = await bridge.createWorkThread({
+      projectId,
+      caseId,
+      title: "新对话",
+      folderMode: "existing"
+    });
+    if (response.ok) {
+      setState(response.data);
+      setActiveView("case");
+      setNotice("新对话已创建。发送第一条消息后会自动生成标题。");
+      window.setTimeout(() => composerTextareaRef.current?.focus(), 0);
+    } else {
+      setNotice(response.error);
     }
   }
 
@@ -1778,12 +1825,13 @@ function App() {
     setNotice(result.type === "project" ? `已切换到项目：${result.title}` : `已打开：${result.title}`);
   }
 
-  function focusNewCaseInput() {
+  function focusNewCaseInput(projectId = project?.id) {
     setActiveView("case");
     setCreatePanel("case");
     setCreateTaskError("");
-    if (!project) {
-      setNotice("请先创建或选择一个 SAP 项目或其他工作项目，再新建任务。");
+    if (projectId) setNewCaseProjectId(projectId);
+    if (!projectId) {
+      setNotice("请先创建或选择一个客户项目，再新建运维项目。");
       return;
     }
     window.setTimeout(() => newCaseInputRef.current?.focus(), 0);
@@ -1821,7 +1869,7 @@ function App() {
       setSelectedPreviewPath(null);
       setFilePreview(null);
       setFilePreviewError(null);
-      setNotice("项目仅从侧边栏隐藏；工作文件夹、文件、配置、规范和知识仍保存在本机。");
+      setNotice("客户项目仅从侧边栏隐藏；其运维项目、文件、配置、规范和知识仍保存在本机。");
     } else {
       setNotice(response.error);
     }
@@ -1845,7 +1893,7 @@ function App() {
   async function switchCase(projectId: string, caseId: string) {
     if (!canLeaveCurrentCenter()) return;
     if (!bridge) {
-      setNotice("请在桌面应用中切换工作文件夹。");
+      setNotice("请在桌面应用中切换运维项目。");
       return;
     }
     const response = await bridge.switchCase({ projectId, caseId });
@@ -1855,7 +1903,7 @@ function App() {
       setSelectedPreviewPath(null);
       setFilePreview(null);
       setFilePreviewError(null);
-      setNotice("工作文件夹已切换，右侧文件页签正在读取该文件夹。");
+      setNotice("运维项目已切换，右侧文件面板正在读取其共享文件夹。");
     } else {
       setNotice(response.error);
     }
@@ -1993,7 +2041,7 @@ function App() {
       return;
     }
     if (activeView !== "chat" && (!project || !currentCase || !currentWorkThread)) {
-      setNotice("请先选择一个任务会话及其工作文件夹。");
+      setNotice("请先选择一个对话线程及其运维项目。");
       return;
     }
     const submittedMessage = message;
@@ -2100,7 +2148,7 @@ function App() {
       return;
     }
     if (!project || !currentCase || !currentWorkThread) {
-      setNotice("请先选择一个任务会话及其工作文件夹。");
+      setNotice("请先选择一个对话线程及其运维项目。");
       return;
     }
     const target = { projectId: project.id, caseId: currentCase.id, threadId: currentWorkThread.id, caseTitle: currentCase.title };
@@ -2150,7 +2198,7 @@ function App() {
         setMessage("");
         setCaseActionConfirmationVisible(false);
         setCodexAssistEnabled(false);
-        setNotice(`已执行「${selectedCaseAction.label}」，结果已保存到当前工作文件夹。`);
+        setNotice(`已执行「${selectedCaseAction.label}」，结果已保存到当前运维项目文件夹。`);
       }
     } catch {
       setNotice(`「${selectedCaseAction.label}」执行失败，输入内容仍保留，请稍后重试。`);
@@ -2167,7 +2215,11 @@ function App() {
     }
     const objectName = sapEvidenceName.trim();
     if (!isSapBoundProject(project)) {
-      setNotice("其他工作或未绑定 SAP 的项目不提供 SAP 只读取证；请先切换到具体 SAP 项目。");
+      setNotice("未绑定 SAP 的客户项目不提供 SAP 只读取证；请先切换到已配置 SAP landscape 的客户项目。");
+      return;
+    }
+    if (!sapReadonlyEnabled) {
+      setNotice("SAP 只读功能尚未启用。请到配置中心 → AI 工具，启用并保存“SAP ADT 只读对象证据”。");
       return;
     }
     if (!objectName) {
@@ -2210,7 +2262,7 @@ function App() {
         setState(response.data.state);
         setSapEvidenceName("");
         setSapEvidenceFunctionGroup("");
-        setNotice(`已从 ${response.data.summaries.length} 个 SAP 登录连接补充只读证据：${response.data.summary.objectType} ${response.data.summary.objectName}；新文件可在右侧工作文件夹查看。`);
+        setNotice(`已从 ${response.data.summaries.length} 个 SAP 登录连接补充只读证据：${response.data.summary.objectType} ${response.data.summary.objectName}；新文件可在右侧运维项目文件面板查看。`);
       } else {
         setNotice(response.error);
       }
@@ -2240,7 +2292,7 @@ function App() {
 
   async function importCaseAttachments() {
     if (!bridge || !project || !currentCase || !currentWorkThread) {
-      setNotice("请先选择一个有效的 Work 任务和工作文件夹。");
+      setNotice("请先选择一个有效的运维项目及其对话线程。");
       return;
     }
     setAttachmentImportBusy(true);
@@ -2655,7 +2707,7 @@ function App() {
     const response = await bridge.detachKnowledgeFromCurrentCase(projectId, input);
     if (response.ok) {
       setState(response.data);
-      setNotice("已从当前工作文件夹解除知识引用；正式知识本身仍完整保留。");
+      setNotice("已从当前运维项目解除知识引用；正式知识本身仍完整保留。");
     } else {
       setNotice(response.error);
     }
@@ -2695,7 +2747,7 @@ function App() {
         <div className="topbar-context">
           <span>{activeView === "chat" ? "Chat" : "Work"}</span>
           <strong>{activeView === "chat" ? readableHistoricalText(activeChat?.title ?? "日常对话", "历史对话（编码异常）") : project?.name ?? "未选择项目"}</strong>
-          {activeView !== "chat" ? <><span>/</span><em>{activeView === "case" ? currentCase?.title ?? "当前工作文件夹" : activeView === "config" ? "配置中心" : activeView === "standards" ? "规范中心" : activeView === "knowledge" ? "知识库" : "能力中心"}</em></> : null}
+          {activeView !== "chat" ? <><span>/</span><em>{activeView === "case" ? currentCase?.isPlaceholder ? "尚无运维项目" : currentCase?.title ?? "当前运维项目" : activeView === "config" ? "配置中心" : activeView === "standards" ? "规范中心" : activeView === "knowledge" ? "知识库" : "能力中心"}</em></> : null}
         </div>
         <div className="topbar-status">
           <ShieldCheck size={15} />
@@ -2703,14 +2755,14 @@ function App() {
         </div>
       </header>
 
-      <section className={`workspace ${filesPanelVisible && activeView !== "chat" ? "" : "files-collapsed"}`}>
+      <section className={`workspace ${filesPanelVisible && activeView !== "chat" && !currentCase?.isPlaceholder ? "" : "files-collapsed"}`}>
         <aside className="sidebar">
           <div className="workspace-switch" role="tablist" aria-label="主工作模式">
             <button
               type="button"
               className={activeView === "chat" ? "" : "active"}
               onClick={() => navigateView("case")}
-              title="正式工作必须绑定工作文件夹"
+              title="正式工作必须绑定运维项目文件夹"
               role="tab"
               aria-selected={activeView !== "chat"}
             >
@@ -2733,11 +2785,11 @@ function App() {
           <div className="primary-nav">
             {activeView === "chat" ? (
               <>
-                <button className="active" onClick={() => void createDailyChat()} title="创建一个不关联项目、工作文件夹或 SAP 的日常 AI 对话"><MessageSquare size={18} />新对话</button>
+                <button className="active" onClick={() => void createDailyChat()} title="创建一个不关联客户项目、运维项目或 SAP 的日常 AI 对话"><MessageSquare size={18} />新对话</button>
               </>
             ) : (
               <>
-                <button ref={newTaskButtonRef} onClick={focusNewCaseInput} title={project ? "创建任务并绑定新建或已有工作文件夹" : "请先创建或选择一个项目"}><Plus size={18} />新建任务</button>
+                <button ref={newTaskButtonRef} className="new-work-project-nav" onClick={() => focusNewCaseInput()} title={project ? "在当前客户项目下新建运维项目" : "请先创建或选择客户项目"}><FolderPlus size={18} />新建运维项目</button>
                 <button className={activeView === "config" ? "active" : ""} onClick={() => navigateView("config")} title="打开当前项目配置中心"><Settings size={18} />配置中心</button>
                 <button className={activeView === "standards" ? "active" : ""} onClick={() => navigateView("standards")} title="编辑当前项目的独立规范副本"><BookOpen size={18} />规范中心</button>
                 <button className={activeView === "knowledge" ? "active" : ""} onClick={() => navigateView("knowledge")} title="候选知识人工确认后入库"><Archive size={18} />知识库</button>
@@ -2808,17 +2860,17 @@ function App() {
           ) : (
             <>
               <div className="project-header">
-                <span>SAP 项目</span>
+                <span>客户项目</span>
                 <button
                   type="button"
-                  className={createPanel === "project" ? "active" : ""}
+                  className={`new-customer-project-button${createPanel === "project" ? " active" : ""}`}
                   onClick={() => {
                     setCreatePanel((current) => current === "project" ? null : "project");
                     window.setTimeout(() => newProjectInputRef.current?.focus(), 0);
                   }}
-                  aria-label="新建 Project"
-                  title="创建 SAP 项目或其他工作项目"
-                ><Plus size={16} /></button>
+                  aria-label="新建客户项目"
+                  title="新建公司或客户项目"
+                ><Plus size={14} /><span>客户</span></button>
                 {hiddenProjects.length > 0 ? (
                   <button type="button" className={hiddenProjectsVisible ? "active" : ""} onClick={() => setHiddenProjectsVisible((visible) => !visible)} title="查看并恢复已隐藏项目">
                     <Eye size={15} />{hiddenProjects.length}
@@ -2838,9 +2890,9 @@ function App() {
               ) : null}
 
               {createPanel === "project" ? <div className="create-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) setCreatePanel(null); }}>
-                <form className="quick-create create-dialog" role="dialog" aria-modal="true" aria-label="新建 Project" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
-                <div className="create-dialog-heading"><div><strong>新建 Project</strong><span>Project 隔离客户、SAP 版本、规范和知识</span></div><button type="button" className="icon-button" onClick={() => setCreatePanel(null)} aria-label="关闭"><X size={17} /></button></div>
-                <input ref={newProjectInputRef} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="项目名称，例如 SAP 演示 ECC" aria-label="项目名称" />
+                <form className="quick-create create-dialog" role="dialog" aria-modal="true" aria-label="新建客户项目" onSubmit={(event) => { event.preventDefault(); void createProject(); }}>
+                <div className="create-dialog-heading"><div><strong>新建客户项目</strong><span>例如 A 公司；SAP landscape 按客户项目独立管理</span></div><button type="button" className="icon-button" onClick={() => setCreatePanel(null)} aria-label="关闭"><X size={17} /></button></div>
+                <input ref={newProjectInputRef} value={newProjectName} onChange={(event) => setNewProjectName(event.target.value)} placeholder="客户或公司名称，例如 A 公司" aria-label="客户项目名称" />
                 <div className="quick-create-row">
                   <select value={newProjectSapVersion} onChange={(event) => setNewProjectSapVersion(event.target.value as NewProjectSapVersion)} aria-label="项目类型">
                     <option value="S4">S4HANA</option>
@@ -2849,14 +2901,14 @@ function App() {
                   </select>
                   <input value={newProjectSystemLabel} onChange={(event) => setNewProjectSystemLabel(event.target.value)} placeholder="DEV/100 或 LOCAL" aria-label="系统或本地标签" />
                 </div>
-                <button type="submit" disabled={!newProjectName.trim() || !newProjectSystemLabel.trim()}><Plus size={15} />创建项目</button>
+                <button type="submit" disabled={!newProjectName.trim() || !newProjectSystemLabel.trim()}><Plus size={15} />创建客户项目</button>
               </form></div> : null}
 
-              {createPanel === "case" ? <div className="create-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); } }}><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建任务">
-              <div className="create-dialog-heading"><div><strong>新建任务</strong><span>每个任务有独立会话，并绑定一个工作文件夹</span></div><button type="button" className="icon-button" onClick={() => { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); }} aria-label="关闭"><X size={17} /></button></div>
+              {createPanel === "case" ? <div className="create-dialog-backdrop" onPointerDown={(event) => { if (event.target === event.currentTarget) { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); } }}><div className="create-case-panel create-dialog" role="dialog" aria-modal="true" aria-label="新建运维项目">
+              <div className="create-dialog-heading"><div><strong>新建运维项目</strong><span>运维项目拥有一个共享文件夹，创建后可随时增加对话线程</span></div><button type="button" className="icon-button" onClick={() => { setCreatePanel(null); setCreateTaskError(""); window.setTimeout(() => newTaskButtonRef.current?.focus(), 0); }} aria-label="关闭"><X size={17} /></button></div>
               <form className="quick-create case-create phase28-new-case-flow phase36-work-chat-project-folder-layout" onSubmit={(event) => { event.preventDefault(); void createCase(); }}>
-                <label><span>任务名称</span><input ref={newCaseInputRef} value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="例如：分析采购订单审批异常" aria-label="任务名称" disabled={!project || creatingCase} /></label>
-                <label><span>归属 Project</span><select value={newCaseProjectId} onChange={(event) => { setNewCaseProjectId(event.target.value); setNewTaskFolderSelectionToken(""); setNewTaskSelectedFolderName(""); }} disabled={visibleProjects.length === 0 || creatingCase} aria-label="任务所属 Project">
+                <label><span>运维项目名称</span><input ref={newCaseInputRef} value={newCaseTitle} onChange={(event) => setNewCaseTitle(event.target.value)} placeholder="例如：库龄分析报表开发" aria-label="运维项目名称" disabled={!project || creatingCase} /></label>
+                <label><span>归属客户项目</span><select value={newCaseProjectId} onChange={(event) => { setNewCaseProjectId(event.target.value); setNewTaskFolderSelectionToken(""); setNewTaskSelectedFolderName(""); }} disabled={visibleProjects.length === 0 || creatingCase} aria-label="运维项目所属客户项目">
                   {visibleProjects.map((item) => (
                     <option key={item.id} value={item.id}>{projectKindLabel(item)} · {item.name} / {item.systemLabel}</option>
                   ))}
@@ -2877,65 +2929,15 @@ function App() {
                   </div>
                 )}
                 {createTaskError ? <p className="create-task-error" role="alert">{createTaskError}</p> : null}
-                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim() || (newTaskFolderMode === "existing" && !newTaskFolderSelectionToken)} title="创建任务会话">
+                <button type="submit" disabled={!project || creatingCase || !newCaseTitle.trim() || (newTaskFolderMode === "existing" && !newTaskFolderSelectionToken)} title="创建运维项目并打开第一个对话">
                   <Plus size={15} />
-                  {creatingCase ? "创建中" : "创建任务"}
+                  {creatingCase ? "创建中" : "创建运维项目"}
                 </button>
               </form>
               </div></div> : null}
 
               <div className="project-list work-project-list">
-                {sapProjects.map((item) => (
-                  <section className={`project-card sap-project-card${item.id === state?.activeProjectId ? " active" : ""}`} key={item.id}>
-                    <div className="project-card-title">
-                      <button type="button" className="project-switch" onClick={() => void switchProject(item.id)} title="切换到这个 SAP 项目">
-                        <strong>{item.name}</strong>
-                        <div className="project-tags">
-                          <StatusPill label={projectKindLabel(item)} tone="blue" />
-                          <StatusPill {...sapSidebarStatus(item)} />
-                        </div>
-                      </button>
-                      <div className="project-actions">
-                        <button
-                          aria-label={`配置 ${item.name}`}
-                          className="icon-button project-settings-button"
-                          onClick={() => void switchProject(item.id, "config")}
-                          title="打开此 Project 的 SAP、模型和本机能力配置"
-                          type="button"
-                        >
-                          <Settings size={16} />
-                        </button>
-                        <button
-                          aria-label={`从侧边栏隐藏 ${item.name}`}
-                          className="icon-button project-hide-button"
-                          disabled={visibleProjects.length <= 1}
-                          onClick={() => void hideProjectFromSidebar(item.id)}
-                          title="只从侧边栏隐藏，不删除项目文件"
-                          type="button"
-                        >
-                          <EyeOff size={16} />
-                        </button>
-                      </div>
-                    </div>
-                    {item.id === state?.activeProjectId ? <div className="case-list">
-                      <span className="project-case-label">任务</span>
-                      {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
-                        const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
-                        return <ConversationThreadRow
-                          key={thread.id}
-                          title={thread.title}
-                          subtitle={workFolderLabel(folder)}
-                          active={activeView === "case" && thread.id === state?.activeWorkThreadId}
-                          status={thread.status}
-                          busy={sendingMessage}
-                          onOpen={() => void switchWorkTask(thread.id)}
-                          onCopyId={() => void copyThreadId(thread.id)}
-                          onStatus={(status) => void updateThreadStatus("work", thread.id, status)}
-                        />;
-                      })}
-                    </div> : null}
-                  </section>
-                ))}
+                {sapProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} onSwitch={() => void switchProject(item.id)} onConfig={() => void switchProject(item.id, "config")} onHide={() => void hideProjectFromSidebar(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
               </div>
 
               {otherWorkProjects.length ? <section className="other-work-section">
@@ -2943,26 +2945,7 @@ function App() {
                   <span>其他工作</span>
                 </div>
                 <div className="project-list other-project-list">
-                  {otherWorkProjects.map((item) => (
-                    <section className={`project-card other-project-card${item.id === state?.activeProjectId ? " active" : ""}`} key={item.id}>
-                      <div className="project-card-title">
-                        <button type="button" className="project-switch" onClick={() => void switchProject(item.id)} title="切换到这个本地工作项目">
-                          <strong>{item.name}</strong>
-                          <div className="project-tags">
-                            <StatusPill label="其他工作" tone="neutral" />
-                            <StatusPill label={item.systemLabel} tone="neutral" />
-                          </div>
-                        </button>
-                      </div>
-                      {item.id === state?.activeProjectId ? <div className="case-list">
-                        <span className="project-case-label">任务</span>
-                        {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
-                          const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
-                          return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={workFolderLabel(folder)} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
-                        })}
-                      </div> : null}
-                    </section>
-                  ))}
+                  {otherWorkProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} onSwitch={() => void switchProject(item.id)} onHide={() => void hideProjectFromSidebar(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
                 </div>
               </section> : null}
 
@@ -2973,26 +2956,7 @@ function App() {
                   </div>
                   <p className="sidebar-section-note">历史演示，仅为兼容保留。</p>
                   <div className="project-list legacy-demo-project-list">
-                    {legacyDemoProjects.map((item) => (
-                      <section className={`project-card legacy-demo-project-card${item.id === state?.activeProjectId ? " active" : ""}`} key={item.id}>
-                        <div className="project-card-title">
-                          <button type="button" className="project-switch" onClick={() => void switchProject(item.id)} title="打开保留的旧示例项目">
-                            <strong>{item.name}</strong>
-                            <div className="project-tags">
-                              <StatusPill label="旧示例" tone="neutral" />
-                              <StatusPill label={item.systemLabel} tone="neutral" />
-                            </div>
-                          </button>
-                        </div>
-                        {item.id === state?.activeProjectId ? <div className="case-list">
-                          <span className="project-case-label">示例任务</span>
-                          {(state?.workThreads ?? []).filter((thread) => thread.projectId === item.id && thread.status === "active").map((thread) => {
-                            const folder = item.cases.find((caseItem) => caseItem.id === thread.caseId);
-                            return <ConversationThreadRow key={thread.id} title={thread.title} subtitle={workFolderLabel(folder)} active={activeView === "case" && thread.id === state?.activeWorkThreadId} status={thread.status} busy={sendingMessage} onOpen={() => void switchWorkTask(thread.id)} onCopyId={() => void copyThreadId(thread.id)} onStatus={(status) => void updateThreadStatus("work", thread.id, status)} />;
-                          })}
-                        </div> : null}
-                      </section>
-                    ))}
+                    {legacyDemoProjects.map((item) => <CustomerProjectTree key={item.id} item={item} workThreads={state?.workThreads ?? []} active={item.id === state?.activeProjectId} activeView={activeView} activeThreadId={state?.activeWorkThreadId} busy={sendingMessage} visibleProjectCount={visibleProjects.length} legacy onSwitch={() => void switchProject(item.id)} onCreateWorkProject={() => focusNewCaseInput(item.id)} onCreateThread={(caseId) => void createConversationThread(item.id, caseId)} onOpenThread={(threadId) => void switchWorkTask(threadId)} onCopyThreadId={(threadId) => void copyThreadId(threadId)} onThreadStatus={(threadId, status) => void updateThreadStatus("work", threadId, status)} />)}
                   </div>
                 </section>
               ) : null}
@@ -3224,17 +3188,29 @@ function App() {
               </div>
             </form>
           </section>
+        ) : currentCase?.isPlaceholder ? (
+          <section className="conversation-panel customer-project-empty-state">
+            <div>
+              <FolderPlus size={30} />
+              <h1>{project?.name ?? "客户项目"}</h1>
+              <p>这个客户项目还没有运维项目。先登记 SAP landscape，或直接新建第一个运维项目。</p>
+              <div>
+                {isSapBoundProject(project) ? <button type="button" onClick={() => navigateView("config")}><Settings size={16} />配置 SAP 系统</button> : null}
+                <button type="button" className="primary" onClick={() => focusNewCaseInput(project?.id)}><Plus size={16} />新建运维项目</button>
+              </div>
+            </div>
+          </section>
         ) : (
         <>
         <section className="conversation-panel">
           <div className="case-heading">
             <div>
-              <h1>{currentWorkThread?.title ?? "当前任务"}</h1>
-              <p>{project ? `${projectKindLabel(project)} · ${project.name} · ${workFolderLabel(currentCase)}` : "请创建 SAP 项目或其他工作项目"}</p>
+              <h1>{currentWorkThread?.title ?? "当前对话"}</h1>
+              <p>{project ? `${project.name} · ${currentCase?.title ?? "当前运维项目"} · 对话线程` : "请先创建客户项目"}</p>
             </div>
             <div className="case-heading-actions">
-              {adtReady ? <button type="button" className="context-panel-trigger" onClick={() => setSapEvidencePanelOpen((open) => !open)} aria-expanded={sapEvidencePanelOpen} title="从已验证 SAP 连接读取单个对象证据，不执行写入"><Database size={16} />{sapEvidencePanelOpen ? "收起取证" : "SAP 取证"}</button> : null}
-              {!filesPanelVisible ? <button type="button" className="context-panel-trigger" onClick={() => setFilesPanelVisible(true)} title="显示当前工作文件夹文件"><FileText size={16} />文件 {fileCount}</button> : null}
+              {adtReady && sapReadonlyEnabled ? <button type="button" className="context-panel-trigger" onClick={() => setSapEvidencePanelOpen((open) => !open)} aria-expanded={sapEvidencePanelOpen} title="从已验证 SAP 连接读取单个对象证据，不执行写入"><Database size={16} />{sapEvidencePanelOpen ? "收起取证" : "SAP 取证"}</button> : null}
+              {!filesPanelVisible ? <button type="button" className="context-panel-trigger" onClick={() => setFilesPanelVisible(true)} title="显示当前运维项目文件"><FileText size={16} />文件 {fileCount}</button> : null}
             </div>
           </div>
 
@@ -3256,7 +3232,7 @@ function App() {
           </div>
 
           <form className={`composer compact-composer${caseActionConfirmationVisible || sapEvidencePanelOpen ? " expanded" : ""}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
-            {isSapBoundProject(project) && adtReady && sapEvidencePanelOpen ? (
+            {isSapBoundProject(project) && adtReady && sapReadonlyEnabled && sapEvidencePanelOpen ? (
               <div className="sap-evidence-bar">
                 <div className="sap-evidence-status" title="当前 SAP 只读取证上下文；本功能不写入 SAP">
                   <Database size={15} />
@@ -3277,7 +3253,7 @@ function App() {
                 {sapEvidenceType === "function" ? (
                   <input value={sapEvidenceFunctionGroup} onChange={(event) => setSapEvidenceFunctionGroup(event.target.value)} placeholder="函数组，例如 ZFG_MM001" aria-label="SAP 函数组" />
                 ) : null}
-                <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim() || (sapConnectionMode === "manual" && manualSapConnectionIds.length === 0)} title="把单个 SAP 只读对象证据写入当前工作文件夹">
+                <button type="button" onClick={() => void readSapEvidence()} disabled={sapEvidenceBusy || !sapEvidenceName.trim() || (sapConnectionMode === "manual" && manualSapConnectionIds.length === 0)} title="把单个 SAP 只读对象证据写入当前运维项目文件夹">
                   <Database size={15} />
                   {sapEvidenceBusy ? "取证中" : "补充 SAP 只读证据"}
                 </button>
@@ -3339,17 +3315,17 @@ function App() {
           </form>
         </section>
 
-        {filesPanelVisible ? <aside className="files-panel" aria-label="当前工作文件夹文件" data-phase="phase40-files-only-context">
+        {filesPanelVisible ? <aside className="files-panel" aria-label="当前运维项目文件" data-phase="phase40-files-only-context">
           <div className="files-heading">
             <div>
-              <h2>当前工作文件夹</h2>
-              <span>{currentCase?.title ?? "未选择工作文件夹"}</span>
+              <h2>当前运维项目</h2>
+              <span>{currentCase?.title ?? "未选择运维项目"}</span>
             </div>
             <button aria-label="隐藏右侧面板" title="只隐藏显示，不影响文件保存" className="icon-button" onClick={() => setFilesPanelVisible(false)}><PanelLeft size={17} /></button>
           </div>
           <label className="file-search">
             <Search size={16} />
-            <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索文件" aria-label="搜索当前工作文件夹文件" />
+            <input value={fileSearchQuery} onChange={(event) => setFileSearchQuery(event.target.value)} placeholder="搜索文件" aria-label="搜索当前运维项目文件" />
           </label>
           <div className="file-panel-actions">
             <button type="button" onClick={() => void importCaseAttachments()} disabled={attachmentImportBusy || !currentCase || !currentWorkThread} title="导入 PDF、Word、Excel、CSV 或文本；原件仅本地保存，另生成脱敏摘录。">
@@ -3369,7 +3345,7 @@ function App() {
           <div className="file-tree">
             {state?.activeCaseFiles.length ? (
               filteredCaseFiles.length ? <FileRows nodes={filteredCaseFiles} selectedPath={selectedPreviewPath} onPreview={previewCaseFile} /> : <div className="empty-state">没有匹配文件。</div>
-            ) : <div className="empty-state">当前工作文件夹还没有文件。</div>}
+            ) : <div className="empty-state">当前运维项目还没有文件。</div>}
           </div>
           <section className={`file-preview${filePreviewError ? " file-preview-blocked" : ""}`}>
             <div className="file-preview-heading">

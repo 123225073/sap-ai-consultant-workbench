@@ -1,0 +1,4 @@
+interface:
+  display_name: "运维｜06 Incident 与 Problem 分析"
+  short_description: "基于复现与只读证据恢复服务、验证假设并定位根因"
+  default_prompt: "Use $sap-evidence-first-analysis to investigate this SAP incident or problem from reproducible evidence."

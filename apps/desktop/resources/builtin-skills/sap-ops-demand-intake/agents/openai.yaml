@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "运维｜02 新需求澄清"
+  short_description: "将零散诉求整理成可评估、可审批、可验收的需求基线"
+  default_prompt: "Use $sap-ops-demand-intake to turn this SAP operations request into a confirmed demand baseline."

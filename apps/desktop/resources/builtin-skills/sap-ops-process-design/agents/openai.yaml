@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "运维｜04 流程与系统链路"
+  short_description: "用 BPMN 语义整理业务流程、角色责任、系统交互和异常分支"
+  default_prompt: "Use $sap-ops-process-design to model this SAP operations process and its system interactions."

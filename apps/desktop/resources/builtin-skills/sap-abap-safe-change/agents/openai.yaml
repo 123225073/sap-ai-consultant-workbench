@@ -1,0 +1,4 @@
+interface:
+  display_name: "运维｜05 ABAP 变更交付"
+  short_description: "完成最小安全实现、ATC、Unit、评审、Transport 与回退准备"
+  default_prompt: "Use $sap-abap-safe-change to deliver this approved ABAP change with evidence and quality gates."

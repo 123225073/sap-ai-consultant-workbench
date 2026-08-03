@@ -1,6 +1,6 @@
 {
   "name": "@sap-ai-workbench/desktop",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "private": true,
   "productName": "SAP AI 顾问工作台",
   "description": "本地优先的 SAP AI 顾问个人工作台",
@@ -26,6 +26,8 @@
     "@sqlite.org/sqlite-wasm": "^3.53.0-build1",
     "exceljs": "^4.4.0",
     "mammoth": "^1.12.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "unpdf": "^1.4.0",
     "yaml": "^2.8.1"
   },
@@ -52,12 +54,21 @@
       "node_modules/@sqlite.org/sqlite-wasm/**/*"
     ],
     "directories": {
-      "output": "../../release/0.1.1",
+      "output": "../../release/0.1.5",
       "buildResources": "build-resources"
     },
     "files": [
       "dist/**/*",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/builtin-skills",
+        "to": "builtin-skills",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
       "icon": "icon.ico",

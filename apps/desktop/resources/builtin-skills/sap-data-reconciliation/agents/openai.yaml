@@ -1,0 +1,4 @@
+interface:
+  display_name: "运维｜07 数据与接口对账"
+  short_description: "冻结业务口径、分层核对数据并形成可追溯差异清单"
+  default_prompt: "Use $sap-data-reconciliation to reconcile these SAP data sources and produce a traceable exception report."

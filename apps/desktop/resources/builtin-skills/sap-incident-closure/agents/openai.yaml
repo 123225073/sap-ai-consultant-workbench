@@ -1,0 +1,4 @@
+interface:
+  display_name: "兼容入口｜旧事故闭环"
+  short_description: "把旧 sap-incident-closure 引用安全转交正式发布关闭流程"
+  default_prompt: "Use $sap-incident-closure to route this legacy closure request to $sap-ops-release-closure."

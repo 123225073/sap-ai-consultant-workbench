@@ -10,17 +10,20 @@ SAP AI 顾问工作台是一个面向 SAP 顾问的个人本地桌面工作台�
 
 - Work：按 Project 隔离 Case、对话、案件文件、规范、知识和连接配置。
 - Chat：独立保存日常对话，可从已验证渠道的完整模型目录中选择模型并实时流式回复，但不会写入 Case。
-- 配置中心：用独立页签纵向管理 Project 下按 SID 分组的多套 SAP ADT 只读连接、多个 OpenAI/Anthropic Compatible 模型渠道、Feishu/Lark CLI、本机 AI 增强和本地存储；可只读扫描本机 SAP Logon 的主机、SID 与实例号。
+- 配置中心：按“配置与连接 / 功能授权 / 可选集成”分层管理 Project 下按 SID 分组的多套 SAP ADT 只读连接、模型渠道、AI 工具授权、Feishu/Lark CLI、本机 AI 增强和本地存储；连接验证不等于 AI 授权，所有模型工具默认关闭并由用户逐项启用。
 - 规范中心：Project 级规范模板、编辑、版本保存和任务调用。
 - 知识库：本地文件导入、候选知识、人工审核、发布、过期、搜索以及 Case 关联/解除关联。
 - 任务与文件夹：每个 Work 任务有独立会话 ID，可新建工作文件夹，或通过 Windows 原生目录选择器绑定电脑已有文件夹；本地绝对路径不会进入页面、模型上下文或可迁移备份。
 - 本地可靠性：状态备份、损坏状态恢复、安全存储引用、Case 输出目标绑定和阶段探针。
 - 独立 Agent Runtime：Work/Chat 使用本产品自己的 Thread/Turn/Item 事件账本、流式模型调用、上下文预算、自动 checkpoint 和分层记忆；Codex 不是核心中转。
 - 能力中心：用 `插件 | Skills | MCP | 提示词 | 记忆` 五个页签管理声明式扩展；Skills 可从固定的 Codex、Claude Code、Skills Manager 和工作台收件目录统一发现后批量导入，也可手动选择单个文件夹。启用的 Skill/Plugin/提示词/已确认记忆会按范围进入新回合。MCP 当前只做 HTTPS 连接、测试和能力发现，外部工具不进入自动执行链。
+- 开箱即用 Skills：随应用自动安装 9 个 SAP 运维工作流，覆盖受理分类、需求澄清、解决方案与开发说明书、流程建模、ABAP 变更、Incident/Problem、数据对账、测试发布关闭和 PPT 汇报；另保留 1 个旧事故闭环兼容入口。所有 Skill 默认停用，只有用户明确启用后才进入模型上下文；内置 Skill 可停用但不能误删，升级时保留用户明确选择。
 
 Phase 40/41 已完成生产可用性收敛；Phase 42/43 补齐案件专用开发说明书与流程图、成果版本历史、完整备份、受控数据迁移、知识后端冲突门禁和桌面 UAT；Phase 44 完成完整模型目录选择、OpenAI/Anthropic 流式回复和真实已配置渠道回测。代码签名保留为可选发布能力，不是个人分发前提。
 
 Phase 50-58 已完成独立 Agent Runtime 的首个可运行基线：事件账本、同 Thread 单回合编排、OpenAI/Anthropic Compatible 工具循环、本地内置只读 Tool Runtime、模型窗口感知预算、自动 checkpoint、分层提示词与记忆、Skills、本机 Skills 发现、声明式 Plugin、HTTPS Streamable HTTP MCP 连接/发现和能力中心均已有真实代码与专项探针。商业化加固进一步补上安全崩溃续接、Skills 按需搜索/加载、记忆相关性 Top-K、无中段遗漏的会话检查点、MCP 密钥 Project/用途隔离、Case 附件安全解析、受限 Mermaid 静态预览与 SVG/PNG/PDF 导出。外部 MCP 工具执行、受限子 Agent、任意 Skill 脚本和 STDIO MCP 尚未作为正式功能开放。
+
+Work 回复使用安全的 GFM Markdown 渲染（含标题、列表、代码块和表格，不开放原始 HTML）。用户可以分别启用 SAP ADT 对象证据与 SAP ADT 通用数据读取：前者读取明确命名的 ABAP/DDIC 对象定义；后者让 Agent 根据用户的 SAP 业务目标选择 Project 内对应 SID/Client 和 DDIC table、view 或 CDS，先发现字段，再通过结构化筛选和有界行数完成只读读取、分析与本地成果生成。模型不能提交原始 SQL，完整明细保存在当前工作文件夹，本轮模型只接收有上限的分析数据。MB52、订单、凭证、主数据和配置核对都只是这条通用链路的场景，不是独立内置模块。
 
 项目名称中的 SAP 仅用于说明产品服务的业务领域。这是个人独立产品，不代表 SAP SE 官方产品或官方背书，也不使用 SAP Logo。
 
