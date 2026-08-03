@@ -1587,7 +1587,7 @@ function ConfigCenter({ project, notice, onBack, onDirtyChange, onCreateWorkspac
           <button className="icon-button" onClick={onBack} aria-label="返回案件"><ArrowLeft size={18} /></button>
           <div>
             <h1>配置中心</h1>
-            <p>{project.name} · SAP 按客户项目隔离；AI 模型、Feishu/Lark 和本机增强能力由整个工作台共用。</p>
+            <p>当前客户项目：{project.name}。SAP 连接仅属于当前客户项目；AI 模型、Feishu/Lark 和本机能力由整个工作台共用。</p>
           </div>
         </div>
 

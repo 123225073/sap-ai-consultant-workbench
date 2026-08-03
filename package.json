@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-consultant-workbench",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "private": true,
   "description": "Local-first SAP AI consultant workbench.",
   "workspaces": [

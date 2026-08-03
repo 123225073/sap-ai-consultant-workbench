@@ -4000,20 +4000,13 @@ export class WorkspaceStore {
       );
       return [normalizeWorkThread(thread, fallback)];
     });
-    const existingWorkIds = new Set(normalizedWorkThreads.map((thread) => thread.id));
     for (const project of normalizedProjects) {
       for (const caseItem of project.cases) {
-        if (normalizedWorkThreads.some((thread) => thread.projectId === project.id && thread.caseId === caseItem.id)) continue;
-        const preferredId = `work-${caseItem.id}`;
-        const migrated = createWorkThreadRecord(project.id, caseItem, caseItem.title, existingWorkIds, preferredId);
-        existingWorkIds.add(migrated.id);
-        normalizedWorkThreads.push(migrated);
-      }
-    }
-    for (const project of normalizedProjects) {
-      for (const caseItem of project.cases) {
-        if (caseItem.id !== STARTER_CASE_ID) continue;
-        const hasThreadContent = normalizedWorkThreads.some((thread) => (
+        const legacyInboxLabel = caseItem.title.trim().toLocaleLowerCase("zh-CN");
+        const isLegacyInbox = caseItem.id === STARTER_CASE_ID || legacyInboxLabel === "收件箱" || legacyInboxLabel === "inbox";
+        if (!isLegacyInbox) continue;
+        const caseThreads = normalizedWorkThreads.filter((thread) => thread.projectId === project.id && thread.caseId === caseItem.id);
+        const hasThreadContent = caseThreads.some((thread) => (
           thread.projectId === project.id
           && thread.caseId === caseItem.id
           && thread.messages.some((message) => message.content.trim().length > 0)
@@ -4026,11 +4019,38 @@ export class WorkspaceStore {
         const hasRealContent = hasThreadContent || hasCaseContent;
         caseItem.isPlaceholder = !hasRealContent;
         caseItem.title = hasRealContent ? "未归类工作" : "项目工作区";
+        if (hasRealContent) {
+          for (const thread of caseThreads) {
+            const threadLabel = thread.title.trim().toLocaleLowerCase("zh-CN");
+            if (threadLabel === "收件箱" || threadLabel === "inbox") thread.title = "历史对话";
+          }
+        } else if (caseItem.id === STARTER_CASE_ID) {
+          for (const thread of caseThreads) {
+            const threadLabel = thread.title.trim().toLocaleLowerCase("zh-CN");
+            if (threadLabel === "收件箱" || threadLabel === "inbox") thread.title = "新对话";
+          }
+        } else {
+          for (let index = normalizedWorkThreads.length - 1; index >= 0; index -= 1) {
+            const thread = normalizedWorkThreads[index];
+            if (thread.projectId === project.id && thread.caseId === caseItem.id) normalizedWorkThreads.splice(index, 1);
+          }
+        }
+      }
+    }
+    const existingWorkIds = new Set(normalizedWorkThreads.map((thread) => thread.id));
+    for (const project of normalizedProjects) {
+      for (const caseItem of project.cases) {
+        if (caseItem.isPlaceholder === true) continue;
+        if (normalizedWorkThreads.some((thread) => thread.projectId === project.id && thread.caseId === caseItem.id)) continue;
+        const preferredId = `work-${caseItem.id}`;
+        const migrated = createWorkThreadRecord(project.id, caseItem, caseItem.title, existingWorkIds, preferredId);
+        existingWorkIds.add(migrated.id);
+        normalizedWorkThreads.push(migrated);
       }
     }
     if (!normalizedWorkThreads.some((thread) => thread.status === "active")) {
-      const project = normalizedProjects[0];
-      const caseItem = project?.cases[0];
+      const project = normalizedProjects.find((item) => item.cases.some((caseItem) => caseItem.isPlaceholder !== true));
+      const caseItem = project?.cases.find((item) => item.isPlaceholder !== true);
       if (project && caseItem) {
         const fallback = createWorkThreadRecord(project.id, caseItem, "新任务", existingWorkIds);
         fallback.messages = [];

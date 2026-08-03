@@ -5389,15 +5389,13 @@ select:focus-visible,
 }
 
 .customer-project-card {
-  border: 1px solid #dbeafe;
-  border-left: 3px solid #3b82f6;
-  background: linear-gradient(135deg, #f8fbff 0%, #f3f7ff 100%);
+  border: 0;
+  background: transparent;
 }
 
 .customer-project-card.active {
-  border-color: #93c5fd;
-  border-left-color: #2563eb;
-  box-shadow: 0 4px 12px rgb(37 99 235 / 8%);
+  background: #f1f5f9;
+  box-shadow: inset 2px 0 0 #64748b;
 }
 
 .project-card-title {
@@ -5483,8 +5481,8 @@ select:focus-visible,
 }
 
 .project-settings-button:hover {
-  color: #1d4ed8;
-  background: #eff6ff;
+  color: #111827;
+  background: #eef2f7;
 }
 
 .work-project-tree {
@@ -5492,15 +5490,15 @@ select:focus-visible,
   gap: 5px;
   margin: 4px 2px 1px 8px;
   padding-left: 7px;
-  border-left: 2px solid #fdba74;
+  border-left: 1px solid #d8dee8;
 }
 
 .work-project-group {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #fed7aa;
+  border: 1px solid #d8dee8;
   border-radius: 7px;
-  background: #fffdf9;
+  background: #ffffff;
 }
 
 .work-project-group > header {
@@ -5509,8 +5507,8 @@ select:focus-visible,
   align-items: center;
   min-height: 36px;
   padding: 2px 3px 2px 6px;
-  border-bottom: 1px solid #ffedd5;
-  background: linear-gradient(90deg, #fff7ed 0%, #fffdf9 72%);
+  border-bottom: 1px solid #e5e9f0;
+  background: #f8fafc;
 }
 
 .work-project-open {
@@ -5520,7 +5518,7 @@ select:focus-visible,
   align-items: center;
   gap: 6px;
   padding: 3px 0;
-  color: #7c3f08;
+  color: #1f2937;
   text-align: left;
 }
 
@@ -5575,13 +5573,14 @@ select:focus-visible,
 }
 
 .work-project-threads .conversation-row-shell {
-  border-left: 2px solid #a7f3d0;
-  background: #f8fffc;
+  border-left: 2px solid #e2e8f0;
+  background: transparent;
 }
 
 .work-project-threads .conversation-row-shell.active {
-  border-left-color: #10b981;
-  background: #ecfdf5;
+  border-left-color: #64748b;
+  background: #eef2f7;
+  color: #111827;
 }
 
 .work-project-threads .conversation-row-shell {
