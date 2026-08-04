@@ -15,6 +15,7 @@ export type AgentItemType =
   | "context-audit"
   | "usage"
   | "error"
+  | "conversation-rewind"
   | "turn-status";
 
 export interface AgentThreadRecord {

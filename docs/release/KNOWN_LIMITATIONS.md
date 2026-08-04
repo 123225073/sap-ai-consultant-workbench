@@ -1,4 +1,4 @@
-# 0.1.7 已知限制
+# 0.1.8 已知限制
 
 1. 当前 Portable 和 Setup 未做 Authenticode 代码签名，可以安装和运行，但 Windows 可能显示“未知发布者”或 SmartScreen 提示；代码签名是提升分发信任的可选增强，不是个人使用的运行前置条件。
 2. 应用已配置独立产品图标；它只表达 SAP 顾问工作与 AI 元素，不使用或仿冒 SAP 官方 Logo。
@@ -30,3 +30,4 @@
 28. Mermaid `.mmd` 已支持应用内静态预览和 SVG/PNG/PDF 导出；为避免执行配置、链接、HTML 或脚本，预览器只支持受限的 `flowchart` / `graph` 节点与连线语法，复杂 Mermaid 图表会保留源码并提示不支持。
 29. MCP Header 只允许引用与当前 Project、MCP 连接和 Header 名称完全绑定的专用安全密钥；模型 API Key、SAP 密码和其他连接的密钥不能复用。全局 MCP 暂不允许引用 Project 密钥；MCP Header 密钥的页面录入仍待后续开放。
 30. 当前 Case 可导入 PDF、DOCX、XLSX、CSV、TXT 和 Markdown：原件仅保存在当前 Case，本地生成的脱敏摘录才可被只读工具按需检索。受密码保护、损坏、超大或超出受限语法的文件会被拒绝；扫描版 PDF 不含 OCR，复杂 Office 排版也不会原样还原。
+31. 编辑历史消息会保存可恢复的对话版本并撤销旧 checkpoint，但只回退当前线程的聊天上下文；运维项目共享文件、SAP 数据和外部系统状态不会自动回滚。

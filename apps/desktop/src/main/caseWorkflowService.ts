@@ -181,6 +181,7 @@ export function parseCaseWorkflowInput(input: unknown): CaseWorkflowInput {
     permissionMode: normalizeActionPermissionMode(candidate.permissionMode),
     providerId: providerHint.providerId,
     codexAssistEnabled: candidate.codexAssistEnabled === true,
+    rewindRevisionId: optionalWorkflowTargetId("对话历史版本 ID", candidate.rewindRevisionId),
     ...(modelSelectionRejected ? { modelSelectionRejected: true } : {})
   };
 }

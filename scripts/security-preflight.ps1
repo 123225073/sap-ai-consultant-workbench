@@ -124,6 +124,8 @@ $allowedIpc = @(
   "workbench:create-work-thread",
   "workbench:switch-work-thread",
   "workbench:update-conversation-thread-status",
+  "workbench:rewind-conversation",
+  "workbench:restore-conversation-revision",
   "workbench:create-daily-chat-thread",
   "workbench:switch-daily-chat-thread",
   "workbench:agent-runtime-health",

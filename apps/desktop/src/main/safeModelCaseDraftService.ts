@@ -219,13 +219,31 @@ function safeKnowledgeReference(item: SafeModelKnowledgeReferenceInput): SafeMod
   };
 }
 
+function keepSafeOptionalItems<TInput, TOutput>(items: TInput[], limit: number, convert: (item: TInput) => TOutput): TOutput[] {
+  return items.slice(0, limit).flatMap((item) => {
+    try {
+      return [convert(item)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+function safeOptionalField(label: string, value: string, maxLength: number): string {
+  try {
+    return safeField(label, value, maxLength);
+  } catch {
+    return "未提供";
+  }
+}
+
 export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): SafeModelDraftContext {
-  const safeSummaries = input.safeOutputSummaries.slice(0, MAX_SAFE_SUMMARIES).map(safeSummary);
-  const safeKnowledgeReferences = input.knowledgeReferences.slice(0, MAX_KNOWLEDGE_REFERENCES).map(safeKnowledgeReference);
+  const safeSummaries = keepSafeOptionalItems(input.safeOutputSummaries, MAX_SAFE_SUMMARIES, safeSummary);
+  const safeKnowledgeReferences = keepSafeOptionalItems(input.knowledgeReferences, MAX_KNOWLEDGE_REFERENCES, safeKnowledgeReference);
   const userInputSummary = safeField("用户输入摘要", input.userInput, MAX_USER_INPUT_CHARS);
-  const caseTitle = safeField("案件标题", input.caseTitle, MAX_CASE_TITLE_CHARS);
-  const caseSummary = safeField("案件摘要", input.caseSummary, MAX_CASE_SUMMARY_CHARS);
-  const standardsSummary = safeField("项目规范摘要", input.standardsSummary, MAX_STANDARDS_SUMMARY_CHARS);
+  const caseTitle = safeOptionalField("案件标题", input.caseTitle, MAX_CASE_TITLE_CHARS);
+  const caseSummary = safeOptionalField("案件摘要", input.caseSummary, MAX_CASE_SUMMARY_CHARS);
+  const standardsSummary = safeOptionalField("项目规范摘要", input.standardsSummary, MAX_STANDARDS_SUMMARY_CHARS);
   const taskLabel = safeField("任务模式", input.taskLabel, 40);
   const actionId = input.actionId ?? null;
   const sapVersion = input.sapVersion === "S4" || input.sapVersion === "ECC" ? input.sapVersion : "UNKNOWN";

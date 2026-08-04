@@ -772,6 +772,27 @@ export interface UpdateConversationThreadStatusInput {
   status: ConversationThreadStatus;
 }
 
+export interface RewindConversationInput {
+  scope: "work" | "chat";
+  threadId: string;
+  targetMessageId: string;
+}
+
+export interface RestoreConversationRevisionInput {
+  scope: "work" | "chat";
+  threadId: string;
+  revisionId: string;
+}
+
+export interface ConversationRevisionBase {
+  id: string;
+  createdAt: string;
+  targetMessageId: string;
+  targetCreatedAt: string;
+  targetContent: string;
+  messageCount: number;
+}
+
 export interface DailyChatMessage {
   id: string;
   threadId: string;
@@ -796,6 +817,11 @@ export interface DailyChatThread {
   archivedAt: string | null;
   removedAt: string | null;
   messages: DailyChatMessage[];
+  revisions: DailyChatConversationRevision[];
+}
+
+export interface DailyChatConversationRevision extends ConversationRevisionBase {
+  messages: DailyChatMessage[];
 }
 
 export interface CreateDailyChatThreadInput {
@@ -813,6 +839,7 @@ export interface AppendDailyChatMessageInput {
   providerId?: string;
   content: string;
   modelId?: string;
+  rewindRevisionId?: string;
 }
 
 export type AiConversationStreamScope = "daily-chat" | "case";
@@ -923,6 +950,7 @@ export interface CaseWorkflowInput {
   providerId?: string;
   codexAssistEnabled?: boolean;
   modelSelectionRejected?: boolean;
+  rewindRevisionId?: string;
 }
 
 export interface CaseGeneratedFile {
@@ -977,6 +1005,17 @@ export interface WorkThread {
   archivedAt: string | null;
   removedAt: string | null;
   messages: CaseMessage[];
+  revisions: WorkConversationRevision[];
+}
+
+export interface WorkConversationRevision extends ConversationRevisionBase {
+  messages: CaseMessage[];
+}
+
+export interface RewindConversationResult {
+  state: WorkbenchState;
+  revisionId: string;
+  removedMessageCount: number;
 }
 
 export interface ProjectSummary {

@@ -50,7 +50,7 @@ import {
 import { DatabaseService } from "./databaseService";
 import { buildSearchDocuments, searchWorkbench, type SafeOutputSummaryRecord } from "./searchService";
 import { emptySecretHandle } from "../shared/secretHandle";
-import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseAttachmentImportItem, CaseAttachmentImportResult, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatMessage, DailyChatThread, ExportCaseDiagramInput, ExportCaseDiagramResult, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreProjectToSidebarInput, SapDataPreviewResult, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkThread } from "../shared/workbenchTypes";
+import type { AdtConfig, AdtVerificationMode, AdtVerificationReport, AppendDailyChatMessageInput, CaseAttachmentImportItem, CaseAttachmentImportResult, CaseFileNode, CaseFilePreview, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistContext, CodexCaseAssistRun, CodexVerificationReport, ConfigStatus, ConversationThreadStatus, CreateDailyChatThreadInput, CreateLocalCaseInput, CreateLocalProjectInput, CreateWorkThreadInput, DailyChatConversationRevision, DailyChatMessage, DailyChatThread, ExportCaseDiagramInput, ExportCaseDiagramResult, FeishuHandoffResult, FeishuVerificationReport, HideProjectFromSidebarInput, KnowledgeImportLocalTextResult, ModelProviderVerificationReport, ModelSummary, ProjectConfig, ProjectKnowledgeView, ProjectSecretTarget, ProjectStandardsView, ProjectSummary, RestoreConversationRevisionInput, RestoreProjectToSidebarInput, RewindConversationInput, RewindConversationResult, SapDataPreviewResult, SapObjectEvidenceResult, SecretHandle, SecretKind, SearchResult, SwitchCaseInput, SwitchDailyChatThreadInput, SwitchProjectInput, SwitchWorkThreadInput, UpdateConversationThreadStatusInput, WorkbenchState, WorkConversationRevision, WorkThread } from "../shared/workbenchTypes";
 import type { AgentInterruptedTurnRecovery } from "../shared/agentRuntimeTypes";
 import { buildSafeModelDraftContext, type SafeModelDraftContext, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 import { normalizeSapObjectEvidenceResult, renderSapObjectEvidenceFiles, sapObjectEvidenceBoundary, type SapObjectEvidenceConnectorResult } from "./sapObjectEvidenceService";
@@ -381,6 +381,7 @@ function demoChatThread(): DailyChatThread {
     lastOpenedAt: nowIso(),
     archivedAt: null,
     removedAt: null,
+    revisions: [],
     messages: [
       {
         id: "seed-chat-assistant-1",
@@ -446,7 +447,8 @@ function starterChatThread(): DailyChatThread {
     lastOpenedAt: createdAt,
     archivedAt: null,
     removedAt: null,
-    messages: []
+    messages: [],
+    revisions: []
   };
 }
 
@@ -473,7 +475,8 @@ function createWorkThreadRecord(
     lastOpenedAt: createdAt,
     archivedAt: null,
     removedAt: null,
-    messages: caseItem.messages.map((message) => ({ ...message }))
+    messages: caseItem.messages.map((message) => ({ ...message })),
+    revisions: []
   };
 }
 
@@ -792,6 +795,32 @@ function parseUpdateConversationThreadStatusInput(input: unknown): UpdateConvers
   };
 }
 
+function parseRewindConversationInput(input: unknown): RewindConversationInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("回退对话请求无效。");
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["scope", "threadId", "targetMessageId"].includes(key))) throw new Error("回退对话请求包含不支持的字段。");
+  const candidate = input as Partial<RewindConversationInput>;
+  if (candidate.scope !== "work" && candidate.scope !== "chat") throw new Error("回退对话类型无效。");
+  return {
+    scope: candidate.scope,
+    threadId: assertStrictLifecycleId("会话 ID", candidate.threadId),
+    targetMessageId: assertStrictLifecycleId("目标消息 ID", candidate.targetMessageId)
+  };
+}
+
+function parseRestoreConversationRevisionInput(input: unknown): RestoreConversationRevisionInput {
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw new Error("恢复对话版本请求无效。");
+  const keys = Object.keys(input);
+  if (keys.some((key) => !["scope", "threadId", "revisionId"].includes(key))) throw new Error("恢复对话版本请求包含不支持的字段。");
+  const candidate = input as Partial<RestoreConversationRevisionInput>;
+  if (candidate.scope !== "work" && candidate.scope !== "chat") throw new Error("恢复对话类型无效。");
+  return {
+    scope: candidate.scope,
+    threadId: assertStrictLifecycleId("会话 ID", candidate.threadId),
+    revisionId: assertStrictLifecycleId("历史版本 ID", candidate.revisionId)
+  };
+}
+
 export function parseCreateDailyChatThreadInput(input: unknown): CreateDailyChatThreadInput {
   if (input === undefined || input === null) return {};
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -829,7 +858,7 @@ export function parseAppendDailyChatMessageInput(input: unknown): AppendDailyCha
     return { content: "" };
   }
   const keys = Object.keys(input);
-  if (keys.some((key) => !["threadId", "projectId", "providerId", "content", "modelId"].includes(key))) {
+  if (keys.some((key) => !["threadId", "projectId", "providerId", "content", "modelId", "rewindRevisionId"].includes(key))) {
     throw new Error("发送日常对话请求包含不支持的字段。");
   }
   const candidate = input as Partial<AppendDailyChatMessageInput>;
@@ -844,7 +873,10 @@ export function parseAppendDailyChatMessageInput(input: unknown): AppendDailyCha
       ? assertStrictLifecycleId("模型渠道 ID", candidate.providerId)
       : undefined,
     content: assertSafeDailyChatContent(candidate.content),
-    modelId: safeMessageModelId(candidate.modelId)
+    modelId: safeMessageModelId(candidate.modelId),
+    rewindRevisionId: typeof candidate.rewindRevisionId === "string" && candidate.rewindRevisionId.trim()
+      ? assertStrictLifecycleId("对话历史版本 ID", candidate.rewindRevisionId)
+      : undefined
   };
 }
 
@@ -991,7 +1023,8 @@ function createLocalChatThreadRecord(input: CreateDailyChatThreadInput, existing
     lastOpenedAt: createdAt,
     archivedAt: null,
     removedAt: null,
-    messages
+    messages,
+    revisions: []
   };
 }
 
@@ -1534,6 +1567,52 @@ function normalizeDailyChatMessage(value: unknown, threadId: string): DailyChatM
   };
 }
 
+const MAX_CONVERSATION_REVISIONS = 12;
+
+function normalizeDailyChatRevision(value: unknown, threadId: string): DailyChatConversationRevision | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<DailyChatConversationRevision>;
+  const id = safeId(candidate.id, "");
+  if (!id) return null;
+  const messages = Array.isArray(candidate.messages)
+    ? candidate.messages.flatMap((message) => {
+        const normalized = normalizeDailyChatMessage(message, threadId);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  return {
+    id,
+    createdAt: text(candidate.createdAt, nowIso()),
+    targetMessageId: safeId(candidate.targetMessageId, "unknown-message"),
+    targetCreatedAt: text(candidate.targetCreatedAt, candidate.createdAt ?? nowIso()),
+    targetContent: text(candidate.targetContent, "历史对话版本").slice(0, 240),
+    messageCount: messages.length,
+    messages
+  };
+}
+
+function normalizeWorkRevision(value: unknown, caseId: string): WorkConversationRevision | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<WorkConversationRevision>;
+  const id = safeId(candidate.id, "");
+  if (!id) return null;
+  const messages = Array.isArray(candidate.messages)
+    ? candidate.messages.flatMap((message) => {
+        const normalized = normalizeCaseMessage(message, caseId);
+        return normalized ? [normalized] : [];
+      })
+    : [];
+  return {
+    id,
+    createdAt: text(candidate.createdAt, nowIso()),
+    targetMessageId: safeId(candidate.targetMessageId, "unknown-message"),
+    targetCreatedAt: text(candidate.targetCreatedAt, candidate.createdAt ?? nowIso()),
+    targetContent: text(candidate.targetContent, "历史对话版本").slice(0, 240),
+    messageCount: messages.length,
+    messages
+  };
+}
+
 function normalizeDailyChatThread(value: unknown, fallback: DailyChatThread): DailyChatThread {
   const candidate = value && typeof value === "object" ? value as Partial<DailyChatThread> : fallback;
   const id = safeId(candidate.id, fallback.id);
@@ -1552,7 +1631,13 @@ function normalizeDailyChatThread(value: unknown, fallback: DailyChatThread): Da
     lastOpenedAt: text(candidate.lastOpenedAt, fallback.lastOpenedAt),
     archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : null,
     removedAt: typeof candidate.removedAt === "string" ? candidate.removedAt : null,
-    messages
+    messages,
+    revisions: (Array.isArray(candidate.revisions) ? candidate.revisions : fallback.revisions)
+      .flatMap((revision) => {
+        const normalized = normalizeDailyChatRevision(revision, id);
+        return normalized ? [normalized] : [];
+      })
+      .slice(0, MAX_CONVERSATION_REVISIONS)
   };
 }
 
@@ -1582,7 +1667,13 @@ function normalizeWorkThread(value: unknown, fallback: WorkThread): WorkThread {
     lastOpenedAt: text(candidate.lastOpenedAt, fallback.lastOpenedAt),
     archivedAt: typeof candidate.archivedAt === "string" ? candidate.archivedAt : null,
     removedAt: typeof candidate.removedAt === "string" ? candidate.removedAt : null,
-    messages
+    messages,
+    revisions: (Array.isArray(candidate.revisions) ? candidate.revisions : fallback.revisions)
+      .flatMap((revision) => {
+        const normalized = normalizeWorkRevision(revision, caseId);
+        return normalized ? [normalized] : [];
+      })
+      .slice(0, MAX_CONVERSATION_REVISIONS)
   };
 }
 
@@ -1704,7 +1795,8 @@ function chatThreadFingerprint(state: StoredState): unknown {
     id: thread.id,
     title: thread.title,
     status: thread.status,
-    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0
+    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0,
+    revisionCount: Array.isArray(thread.revisions) ? thread.revisions.length : 0
   }));
 }
 
@@ -1716,7 +1808,8 @@ function workThreadFingerprint(state: StoredState): unknown {
     caseId: thread.caseId,
     title: thread.title,
     status: thread.status,
-    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0
+    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0,
+    revisionCount: Array.isArray(thread.revisions) ? thread.revisions.length : 0
   }));
 }
 
@@ -2183,6 +2276,139 @@ export class WorkspaceStore {
           await this.writeCaseMarkdown(state, activeCase, buildCaseMaintenanceArtifacts(activeProject, activeCase), activeThread.id);
         }
       }
+      await this.saveState(state);
+      await this.refreshSearchIndex(state);
+      return this.withFiles(state);
+    });
+  }
+
+  async rewindConversation(input: unknown): Promise<RewindConversationResult> {
+    return this.runExclusive(async () => {
+      const request = parseRewindConversationInput(input);
+      const state = await this.loadOrCreateState();
+      const changedAt = nowIso();
+      const revisionId = `revision-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      let removedMessageCount = 0;
+
+      if (request.scope === "work") {
+        const thread = state.activeWorkThreadId === request.threadId
+          ? state.workThreads.find((item) => item.id === request.threadId && item.status === "active")
+          : undefined;
+        if (!thread) throw new Error("要回退的 Work 对话已归档、移除或不存在。");
+        const targetIndex = thread.messages.findIndex((item) => item.id === request.targetMessageId);
+        const target = thread.messages[targetIndex];
+        if (targetIndex < 0 || !target || target.role !== "user") throw new Error("只能从当前 Work 对话中的用户消息回退。");
+        const snapshot = thread.messages.map((message) => ({ ...message, linkedFileIds: [...message.linkedFileIds] }));
+        const revision: WorkConversationRevision = {
+          id: revisionId,
+          createdAt: changedAt,
+          targetMessageId: target.id,
+          targetCreatedAt: target.createdAt,
+          targetContent: target.content.slice(0, 240),
+          messageCount: snapshot.length,
+          messages: snapshot
+        };
+        removedMessageCount = snapshot.length - targetIndex;
+        thread.messages = snapshot.slice(0, targetIndex);
+        thread.revisions = [revision, ...thread.revisions].slice(0, MAX_CONVERSATION_REVISIONS);
+        thread.updatedAt = changedAt;
+        thread.lastOpenedAt = changedAt;
+        const project = state.projects.find((item) => item.id === thread.projectId);
+        const caseItem = project?.cases.find((item) => item.id === thread.caseId);
+        if (!project || !caseItem) throw new Error("Work 对话绑定的客户项目或运维项目已不存在。");
+        caseItem.messages = thread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+        caseItem.updatedAt = changedAt;
+        caseItem.lastOpenedAt = changedAt;
+        project.updatedAt = changedAt;
+        await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+      } else {
+        const thread = state.activeChatThreadId === request.threadId
+          ? state.chatThreads.find((item) => item.id === request.threadId && item.status === "active")
+          : undefined;
+        if (!thread) throw new Error("要回退的 Chat 对话已归档、移除或不存在。");
+        const targetIndex = thread.messages.findIndex((item) => item.id === request.targetMessageId);
+        const target = thread.messages[targetIndex];
+        if (targetIndex < 0 || !target || target.role !== "user") throw new Error("只能从当前 Chat 对话中的用户消息回退。");
+        const snapshot = thread.messages.map((message) => ({ ...message }));
+        const revision: DailyChatConversationRevision = {
+          id: revisionId,
+          createdAt: changedAt,
+          targetMessageId: target.id,
+          targetCreatedAt: target.createdAt,
+          targetContent: target.content.slice(0, 240),
+          messageCount: snapshot.length,
+          messages: snapshot
+        };
+        removedMessageCount = snapshot.length - targetIndex;
+        thread.messages = snapshot.slice(0, targetIndex);
+        thread.revisions = [revision, ...thread.revisions].slice(0, MAX_CONVERSATION_REVISIONS);
+        thread.updatedAt = changedAt;
+        thread.lastOpenedAt = changedAt;
+      }
+
+      await this.saveState(state);
+      await this.refreshSearchIndex(state);
+      return { state: await this.withFiles(state), revisionId, removedMessageCount };
+    });
+  }
+
+  async restoreConversationRevision(input: unknown): Promise<WorkbenchState> {
+    return this.runExclusive(async () => {
+      const request = parseRestoreConversationRevisionInput(input);
+      const state = await this.loadOrCreateState();
+      const changedAt = nowIso();
+      const backupId = `revision-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+      if (request.scope === "work") {
+        const thread = state.activeWorkThreadId === request.threadId
+          ? state.workThreads.find((item) => item.id === request.threadId && item.status === "active")
+          : undefined;
+        const revision = thread?.revisions.find((item) => item.id === request.revisionId);
+        if (!thread || !revision) throw new Error("要恢复的 Work 历史版本已不存在。");
+        const currentMessages = thread.messages.map((message) => ({ ...message, linkedFileIds: [...message.linkedFileIds] }));
+        const backup: WorkConversationRevision = {
+          id: backupId,
+          createdAt: changedAt,
+          targetMessageId: currentMessages.find((item) => item.role === "user")?.id ?? "empty-branch",
+          targetCreatedAt: currentMessages.find((item) => item.role === "user")?.createdAt ?? changedAt,
+          targetContent: "恢复历史版本前的当前分支",
+          messageCount: currentMessages.length,
+          messages: currentMessages
+        };
+        thread.messages = revision.messages.map((message) => ({ ...message, linkedFileIds: [...message.linkedFileIds] }));
+        thread.revisions = [backup, ...thread.revisions.filter((item) => item.id !== revision.id)].slice(0, MAX_CONVERSATION_REVISIONS);
+        thread.updatedAt = changedAt;
+        thread.lastOpenedAt = changedAt;
+        const project = state.projects.find((item) => item.id === thread.projectId);
+        const caseItem = project?.cases.find((item) => item.id === thread.caseId);
+        if (!project || !caseItem) throw new Error("Work 对话绑定的客户项目或运维项目已不存在。");
+        caseItem.messages = thread.messages.map((message) => ({ ...message, caseId: caseItem.id }));
+        caseItem.updatedAt = changedAt;
+        caseItem.lastOpenedAt = changedAt;
+        project.updatedAt = changedAt;
+        await this.writeCaseMarkdown(state, caseItem, buildCaseMaintenanceArtifacts(project, caseItem), thread.id);
+      } else {
+        const thread = state.activeChatThreadId === request.threadId
+          ? state.chatThreads.find((item) => item.id === request.threadId && item.status === "active")
+          : undefined;
+        const revision = thread?.revisions.find((item) => item.id === request.revisionId);
+        if (!thread || !revision) throw new Error("要恢复的 Chat 历史版本已不存在。");
+        const currentMessages = thread.messages.map((message) => ({ ...message }));
+        const backup: DailyChatConversationRevision = {
+          id: backupId,
+          createdAt: changedAt,
+          targetMessageId: currentMessages.find((item) => item.role === "user")?.id ?? "empty-branch",
+          targetCreatedAt: currentMessages.find((item) => item.role === "user")?.createdAt ?? changedAt,
+          targetContent: "恢复历史版本前的当前分支",
+          messageCount: currentMessages.length,
+          messages: currentMessages
+        };
+        thread.messages = revision.messages.map((message) => ({ ...message }));
+        thread.revisions = [backup, ...thread.revisions.filter((item) => item.id !== revision.id)].slice(0, MAX_CONVERSATION_REVISIONS);
+        thread.updatedAt = changedAt;
+        thread.lastOpenedAt = changedAt;
+      }
+
       await this.saveState(state);
       await this.refreshSearchIndex(state);
       return this.withFiles(state);

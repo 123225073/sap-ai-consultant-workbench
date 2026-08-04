@@ -1,6 +1,6 @@
 {
   "name": "@sap-ai-workbench/desktop",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "productName": "SAP AI 顾问工作台",
   "description": "本地优先的 SAP AI 顾问个人工作台",
@@ -54,7 +54,7 @@
       "node_modules/@sqlite.org/sqlite-wasm/**/*"
     ],
     "directories": {
-      "output": "../../release/0.1.7",
+      "output": "../../release/0.1.8",
       "buildResources": "build-resources"
     },
     "files": [

@@ -18,10 +18,12 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  History,
   MessageSquare,
   MoreHorizontal,
   PanelLeft,
   Paperclip,
+  Pencil,
   Plug,
   Plus,
   Search,
@@ -39,7 +41,7 @@ import CapabilityCenter, { type CapabilityMcpDraft, type CapabilityMcpConnection
 import KnowledgeCenter from "./KnowledgeCenter";
 import StandardsCenter from "./StandardsCenter";
 import MermaidPreview from "./MermaidPreview";
-import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
+import type { ActionPermissionMode, AdtConfig, AdtVerificationReport, AiConversationStreamEvent, ApiProviderConfig, AppendDailyChatMessageInput, CaseActionId, CaseFileNode, CaseFilePreview, CaseMessage, CaseSummary, CaseWorkflowInput, CodexVerificationReport, ConversationRevisionBase, ConversationThreadStatus, CopyProjectStandardsFromProjectInput, CopyProjectStandardsInput, DailyChatMessage, DailyChatThread, FeishuCliDiscoveryReport, FeishuCliInstallResult, FeishuCliProfileSetupResult, FeishuVerificationReport, KnowledgeCaseReferenceInput, KnowledgeEditInput, KnowledgeImportLocalTextInput, KnowledgeImportTextFileResult, KnowledgeItemActionInput, KnowledgeReviewInput, LocalAiInstallResult, LocalAiScanResult, ModelCapability, ModelProviderVerificationReport, ModelSummary, ProjectSecretInput, ProjectSummary, SapGuiDiscoveryReport, SapObjectEvidenceType, SaveProjectStandardsInput, SearchResult, TaskMode, WorkbenchState, WorkThread, WorkspaceBackupResult, WorkspaceImportResult } from "../shared/workbenchTypes";
 import type { AgentRuntimeEvent, AgentThreadSnapshot } from "../shared/agentRuntimeTypes";
 import type { CapabilityCenterSnapshot, CapabilitySkillDiscoveryReport } from "../shared/capabilityCenterTypes";
 import type { PromptProfileScope } from "../shared/promptMemoryTypes";
@@ -523,6 +525,16 @@ type ActiveAgentRun = {
   scope: AgentRuntimeEvent["scope"];
 };
 
+type EditingConversationMessage = {
+  scope: "work" | "chat";
+  threadId: string;
+  messageId: string;
+  createdAt: string;
+  originalContent: string;
+  previousDraft: string;
+  affectedMessageCount: number;
+};
+
 const selectableCapabilities: Exclude<ModelCapability, "chat">[] = ["vision", "reasoning", "tools", "web", "free"];
 
 const capabilityLabels: Record<ModelCapability, string> = {
@@ -867,12 +879,15 @@ const MessageContent = memo(function MessageContent({ content }: { content: stri
   </div>;
 });
 
-function MessageBubble({ message, files, onPreview }: { message: CaseMessage; files: CaseFileNode[]; onPreview: (node: CaseFileNode) => void }) {
+function MessageBubble({ message, files, onPreview, onEdit, editDisabled }: { message: CaseMessage; files: CaseFileNode[]; onPreview: (node: CaseFileNode) => void; onEdit: (message: CaseMessage) => void; editDisabled: boolean }) {
   if (message.role === "user") {
     return (
       <div className="user-message">
-        {message.content}
-        <time>{formatTime(message.createdAt)}</time>
+        <div className="user-message-content">{message.content}</div>
+        <div className="user-message-meta">
+          <time>{formatTime(message.createdAt)}</time>
+          <button type="button" onClick={() => onEdit(message)} disabled={editDisabled} aria-label="编辑并重发这条消息" title="编辑这条消息，并从这里回退后重发"><Pencil size={13} /></button>
+        </div>
       </div>
     );
   }
@@ -905,13 +920,16 @@ function MessageBubble({ message, files, onPreview }: { message: CaseMessage; fi
   );
 }
 
-function DailyChatBubble({ message }: { message: DailyChatMessage }) {
+function DailyChatBubble({ message, onEdit, editDisabled }: { message: DailyChatMessage; onEdit: (message: DailyChatMessage) => void; editDisabled: boolean }) {
   const content = readableHistoricalText(message.content, "这条历史记录的字符编码已损坏，无法可靠显示原文。");
   if (message.role === "user") {
     return (
       <div className="user-message">
-        {content}
-        <time>{formatTime(message.createdAt)}</time>
+        <div className="user-message-content">{content}</div>
+        <div className="user-message-meta">
+          <time>{formatTime(message.createdAt)}</time>
+          <button type="button" onClick={() => onEdit(message)} disabled={editDisabled} aria-label="编辑并重发这条消息" title="编辑这条消息，并从这里回退后重发"><Pencil size={13} /></button>
+        </div>
       </div>
     );
   }
@@ -924,6 +942,39 @@ function DailyChatBubble({ message }: { message: DailyChatMessage }) {
       </div>
       <MessageContent content={content} />
     </article>
+  );
+}
+
+function ConversationRevisionMenu({ revisions, busy, onRestore }: { revisions: ConversationRevisionBase[]; busy: boolean; onRestore: (revisionId: string) => void }) {
+  const [open, setOpen] = useState(false);
+  if (revisions.length === 0) return null;
+  return (
+    <div className="revision-menu-wrap">
+      <button type="button" className="context-panel-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} title="查看回退前保留的对话历史版本"><History size={15} />历史版本 {revisions.length}</button>
+      {open ? (
+        <div className="revision-menu" role="dialog" aria-label="对话历史版本">
+          <div className="revision-menu-title"><strong>可恢复版本</strong><button type="button" onClick={() => setOpen(false)} aria-label="关闭历史版本"><X size={14} /></button></div>
+          <p>恢复只切换聊天上下文；运维项目中的共享文件不会被删除。</p>
+          {revisions.slice(0, 6).map((revision) => (
+            <div className="revision-row" key={revision.id}>
+              <div><strong>{formatTime(revision.createdAt)} 的分支</strong><span>{revision.targetContent || "恢复前的对话"}</span><small>{revision.messageCount} 条消息</small></div>
+              <button type="button" onClick={() => onRestore(revision.id)} disabled={busy}>恢复</button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function EditingMessageBanner({ editing, onCancel }: { editing: EditingConversationMessage | null; onCancel: () => void }) {
+  if (!editing) return null;
+  return (
+    <div className="rewind-edit-banner">
+      <Pencil size={15} />
+      <div><strong>编辑 {formatTime(editing.createdAt)} 的消息</strong><span>发送时将从这里回退并重发，受影响的 {editing.affectedMessageCount} 条聊天记录会保存为可恢复版本；共享项目文件不删除。</span></div>
+      <button type="button" onClick={onCancel}>取消</button>
+    </div>
   );
 }
 
@@ -964,6 +1015,7 @@ function App() {
   const [selectedModelKey, setSelectedModelKey] = useState("");
   const [codexAssistEnabled, setCodexAssistEnabled] = useState(false);
   const [sendingMessage, setSendingMessage] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<EditingConversationMessage | null>(null);
   const [streamingTurn, setStreamingTurn] = useState<StreamingTurn | null>(null);
   const [activeAgentRun, setActiveAgentRun] = useState<ActiveAgentRun | null>(null);
   const [showScrollToLatest, setShowScrollToLatest] = useState(false);
@@ -2090,6 +2142,7 @@ function App() {
   useEffect(() => {
     followLatestRef.current = true;
     setShowScrollToLatest(false);
+    setEditingMessage(null);
     scrollConversationToLatest(true);
   }, [activeConversationKey]);
 
@@ -2132,6 +2185,59 @@ function App() {
     setNotice(response.ok ? response.data.message : response.error);
   }
 
+  function beginEditingConversationMessage(scope: "work" | "chat", target: CaseMessage | DailyChatMessage) {
+    if (sendingMessage) return;
+    const threadId = scope === "work" ? currentWorkThread?.id : activeChat?.id;
+    const messages = scope === "work" ? currentWorkThread?.messages : activeChat?.messages;
+    if (!threadId || !messages) return;
+    const targetIndex = messages.findIndex((item) => item.id === target.id);
+    if (targetIndex < 0 || target.role !== "user") return;
+    setEditingMessage({
+      scope,
+      threadId,
+      messageId: target.id,
+      createdAt: target.createdAt,
+      originalContent: target.content,
+      previousDraft: message,
+      affectedMessageCount: messages.length - targetIndex
+    });
+    setMessage(target.content);
+    messageDraftsRef.current.set(`${scope === "work" ? "work" : "chat"}:${threadId}`, target.content);
+    setNotice("");
+    requestAnimationFrame(() => {
+      composerTextareaRef.current?.focus();
+      composerTextareaRef.current?.setSelectionRange(target.content.length, target.content.length);
+    });
+  }
+
+  function cancelEditingConversationMessage() {
+    if (!editingMessage) return;
+    setMessage(editingMessage.previousDraft);
+    messageDraftsRef.current.set(activeConversationKey, editingMessage.previousDraft);
+    setEditingMessage(null);
+    requestAnimationFrame(() => composerTextareaRef.current?.focus());
+  }
+
+  async function restoreConversationRevision(scope: "work" | "chat", threadId: string, revisionId: string) {
+    if (!bridge || sendingMessage) return;
+    setSendingMessage(true);
+    try {
+      const response = await bridge.restoreConversationRevision({ scope, threadId, revisionId });
+      if (!response.ok) {
+        setNotice(response.error);
+        return;
+      }
+      setState(response.data);
+      setEditingMessage(null);
+      setMessage("");
+      setNotice("历史对话版本已恢复；共享的运维项目文件保持不变。当前分支也已自动保留为新的可恢复版本。");
+      followLatestRef.current = true;
+      requestAnimationFrame(() => scrollConversationToLatest(true));
+    } finally {
+      setSendingMessage(false);
+    }
+  }
+
   async function sendMessage() {
     if (sendingMessage) return;
     if (!bridge) {
@@ -2146,6 +2252,14 @@ function App() {
       setNotice("请先选择一个对话线程及其运维项目。");
       return;
     }
+    if (editingMessage && (
+      (activeView === "chat" ? "chat" : "work") !== editingMessage.scope
+      || (activeView === "chat" ? activeChat?.id : currentWorkThread?.id) !== editingMessage.threadId
+    )) {
+      setNotice("正在编辑的消息不属于当前对话，请取消编辑后重试。");
+      return;
+    }
+    const editingAtSubmit = editingMessage;
     const submittedMessage = message;
     const submittedContextKey = activeConversationKey;
     setMessage("");
@@ -2156,6 +2270,22 @@ function App() {
     pendingStopRef.current = false;
     setSendingMessage(true);
     try {
+      let rewindRevisionId: string | undefined;
+      if (editingAtSubmit) {
+        const rewind = await bridge.rewindConversation({
+          scope: editingAtSubmit.scope,
+          threadId: editingAtSubmit.threadId,
+          targetMessageId: editingAtSubmit.messageId
+        });
+        if (!rewind.ok) {
+          setNotice(rewind.error);
+          restoreSubmittedMessage(submittedContextKey, submittedMessage);
+          return;
+        }
+        rewindRevisionId = rewind.data.revisionId;
+        setState(rewind.data.state);
+        setEditingMessage(null);
+      }
       if (activeView === "chat") {
         const streamContextKey = `chat:${activeChat?.id ?? "new"}`;
         const chatInput: AppendDailyChatMessageInput = {
@@ -2163,7 +2293,8 @@ function App() {
           content: submittedMessage,
           projectId: selectedSafeDraftModel ? project?.id : undefined,
           providerId: selectedSafeDraftModel?.provider.id,
-          modelId: selectedSafeDraftModel?.model.id ?? "local-chat"
+          modelId: selectedSafeDraftModel?.model.id ?? "local-chat",
+          rewindRevisionId
         };
         setStreamingTurn({
           scope: "daily-chat",
@@ -2208,7 +2339,8 @@ function App() {
         actionId: null,
         permissionMode: actionPermissionMode,
         providerId: selectedSafeDraftModel?.provider.id,
-        codexAssistEnabled: false
+        codexAssistEnabled: false,
+        rewindRevisionId
       };
       setStreamingTurn({
         scope: "case",
@@ -3248,6 +3380,9 @@ function App() {
                 <h1>{readableHistoricalText(activeChat?.title ?? "日常对话", "历史对话（编码异常）")}</h1>
                 <p>独立保存 · 可临时使用当前 Project 的已授权模型渠道，内容不进入案件</p>
               </div>
+              <div className="case-heading-actions">
+                <ConversationRevisionMenu revisions={activeChat?.revisions ?? []} busy={sendingMessage} onRestore={(revisionId) => activeChat && void restoreConversationRevision("chat", activeChat.id, revisionId)} />
+              </div>
             </div>
 
             {notice ? <div className="phase-notice" role="status" aria-live="polite">
@@ -3259,7 +3394,7 @@ function App() {
             <div className="conversation-flow" ref={conversationFlowRef} onScroll={handleConversationScroll}>
               <div className="conversation-content">
                 {(activeChat?.messages ?? []).map((item) => (
-                  <DailyChatBubble message={item} key={item.id} />
+                  <DailyChatBubble message={item} onEdit={(message) => beginEditingConversationMessage("chat", message)} editDisabled={sendingMessage} key={item.id} />
                 ))}
                 {streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
                 {!activeChat?.messages.length && !(streamingTurn?.scope === "daily-chat" && streamingTurn.contextKey === `chat:${activeChat?.id ?? "new"}`) ? (
@@ -3274,6 +3409,7 @@ function App() {
             </div>
 
             <form className="composer daily-chat-composer compact-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+              <EditingMessageBanner editing={editingMessage?.scope === "chat" ? editingMessage : null} onCancel={cancelEditingConversationMessage} />
               <textarea ref={composerTextareaRef} rows={1} value={message} onChange={(event) => setMessage(event.target.value)} onKeyDown={handleComposerKeyDown} aria-label="日常对话输入" placeholder="输入消息，Enter 发送，Shift + Enter 换行" />
               <div className="composer-footer">
                 <div className="composer-tools" />
@@ -3281,10 +3417,10 @@ function App() {
                   <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
                   <button
                     type={sendingMessage ? "button" : "submit"}
-                    aria-label={sendingMessage ? "停止当前回复" : "发送日常对话"}
+                    aria-label={sendingMessage ? "停止当前回复" : editingMessage?.scope === "chat" ? "回退并重发" : "发送日常对话"}
                     className="send-button"
                     onClick={sendingMessage ? () => void stopCurrentTurn() : undefined}
-                    title={sendingMessage ? "停止当前回复" : "发送"}
+                    title={sendingMessage ? "停止当前回复" : editingMessage?.scope === "chat" ? "回退并重发" : "发送"}
                   >{sendingMessage ? <Square size={16} fill="currentColor" /> : <Send size={18} />}</button>
                 </div>
               </div>
@@ -3311,6 +3447,7 @@ function App() {
               <p>{project ? `${project.name} · ${currentCase?.title ?? "当前运维项目"} · 对话线程` : "请先创建客户项目"}</p>
             </div>
             <div className="case-heading-actions">
+              <ConversationRevisionMenu revisions={currentWorkThread?.revisions ?? []} busy={sendingMessage} onRestore={(revisionId) => currentWorkThread && void restoreConversationRevision("work", currentWorkThread.id, revisionId)} />
               {adtReady && sapReadonlyEnabled ? <button type="button" className="context-panel-trigger" onClick={() => setSapEvidencePanelOpen((open) => !open)} aria-expanded={sapEvidencePanelOpen} title="从已验证 SAP 连接读取单个对象证据，不执行写入"><Database size={16} />{sapEvidencePanelOpen ? "收起取证" : "SAP 取证"}</button> : null}
               {!filesPanelVisible ? <button type="button" className="context-panel-trigger" onClick={() => setFilesPanelVisible(true)} title="显示当前运维项目文件"><FileText size={16} />文件 {fileCount}</button> : null}
             </div>
@@ -3325,7 +3462,7 @@ function App() {
           <div className="conversation-flow" ref={conversationFlowRef} onScroll={handleConversationScroll}>
             <div className="conversation-content">
               {(currentWorkThread?.messages ?? []).map((item) => (
-                <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} key={item.id} />
+                <MessageBubble message={item} files={flatFiles} onPreview={previewCaseFile} onEdit={(message) => beginEditingConversationMessage("work", message)} editDisabled={sendingMessage} key={item.id} />
               ))}
               {streamingTurn?.scope === "case" && streamingTurn.contextKey === `work:${currentWorkThread?.id ?? ""}` ? <StreamingTurnBubble turn={streamingTurn} /> : null}
               <div className="conversation-end" ref={conversationEndRef} aria-hidden="true" />
@@ -3334,6 +3471,7 @@ function App() {
           </div>
 
           <form className={`composer compact-composer${caseActionConfirmationVisible || sapEvidencePanelOpen ? " expanded" : ""}`} onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+            <EditingMessageBanner editing={editingMessage?.scope === "work" ? editingMessage : null} onCancel={cancelEditingConversationMessage} />
             {isSapBoundProject(project) && adtReady && sapReadonlyEnabled && sapEvidencePanelOpen ? (
               <div className="sap-evidence-bar">
                 <div className="sap-evidence-status" title="当前 SAP 只读取证上下文；本功能不写入 SAP">
@@ -3407,10 +3545,10 @@ function App() {
                 <ComposerModelPicker options={catalogModelOptions} providerErrors={modelProviderErrors} selected={selectedSafeDraftModel} onSelect={selectComposerModel} />
                 <button
                   type={sendingMessage ? "button" : "submit"}
-                  aria-label={sendingMessage ? "停止当前任务" : "保存到当前案件"}
+                  aria-label={sendingMessage ? "停止当前任务" : editingMessage?.scope === "work" ? "回退并重发" : "保存到当前案件"}
                   className="send-button"
                   onClick={sendingMessage ? () => void stopCurrentTurn() : undefined}
-                  title={sendingMessage ? "停止当前任务" : "发送"}
+                  title={sendingMessage ? "停止当前任务" : editingMessage?.scope === "work" ? "回退并重发" : "发送"}
                 >{sendingMessage ? <Square size={16} fill="currentColor" /> : <Send size={18} />}</button>
               </div>
             </div>

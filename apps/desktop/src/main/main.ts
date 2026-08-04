@@ -1173,6 +1173,9 @@ async function runTrackedCaseMessage(
     resumeInput: target as unknown as Record<string, unknown>,
     recoveryOfTurnId: recoveryOfTurnId ?? null
   }, async ({ signal, turn, emitDelta, emitItem }) => {
+    if (target.rewindRevisionId) {
+      await emitItem("conversation-rewind", { revisionId: target.rewindRevisionId }, `${turn.id}:conversation-rewind`);
+    }
     const execution = await appendCaseMessage(store, secretStore, agentContextService, agentToolService, requestId, turn.id, target, (delta, providerName, modelId) => {
       emitDelta(delta, providerName, modelId);
       onDelta?.(delta, providerName, modelId);
@@ -1252,7 +1255,10 @@ async function runTrackedDailyChatMessage(
     userContent: request.content,
     resumeInput: { ...request, threadId: legacyThreadId } as unknown as Record<string, unknown>,
     recoveryOfTurnId: recoveryOfTurnId ?? null
-  }, async ({ signal, turn, emitDelta }) => {
+  }, async ({ signal, turn, emitDelta, emitItem }) => {
+    if (request.rewindRevisionId) {
+      await emitItem("conversation-rewind", { revisionId: request.rewindRevisionId }, `${turn.id}:conversation-rewind`);
+    }
     const state = await appendDailyChatMessage(store, secretStore, agentContextService, requestId, turn.id, { ...request, threadId: legacyThreadId }, (delta, providerName, modelId) => {
       emitDelta(delta, providerName, modelId);
       onDelta?.(delta, providerName, modelId);
@@ -1521,6 +1527,7 @@ function registerWorkbenchHandlers(
   runtime: AgentRuntime,
   agentContextService: AgentContextService,
   agentToolService: AgentToolService,
+  promptMemory: PromptMemoryService,
   capabilities: CapabilityCenterService,
   appRoot: string
 ): void {
@@ -1588,6 +1595,28 @@ function registerWorkbenchHandlers(
   }));
   ipcMain.handle("workbench:switch-work-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchWorkThread(input)));
   ipcMain.handle("workbench:update-conversation-thread-status", (event, input: unknown) => trustedResponse(event, appRoot, () => store.updateConversationThreadStatus(input)));
+  ipcMain.handle("workbench:rewind-conversation", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const result = await store.rewindConversation(input);
+    const request = input as { scope?: unknown; threadId?: unknown };
+    if (request.scope === "work" && typeof request.threadId === "string") {
+      const thread = result.state.workThreads.find((item) => item.id === request.threadId);
+      if (thread) await promptMemory.revokeThreadCheckpoint({ threadId: thread.id, projectId: thread.projectId, caseId: thread.caseId });
+    } else if (request.scope === "chat" && typeof request.threadId === "string") {
+      await promptMemory.revokeThreadCheckpoint({ threadId: request.threadId, projectId: null, caseId: null });
+    }
+    return result;
+  }));
+  ipcMain.handle("workbench:restore-conversation-revision", (event, input: unknown) => trustedResponse(event, appRoot, async () => {
+    const state = await store.restoreConversationRevision(input);
+    const request = input as { scope?: unknown; threadId?: unknown };
+    if (request.scope === "work" && typeof request.threadId === "string") {
+      const thread = state.workThreads.find((item) => item.id === request.threadId);
+      if (thread) await promptMemory.revokeThreadCheckpoint({ threadId: thread.id, projectId: thread.projectId, caseId: thread.caseId });
+    } else if (request.scope === "chat" && typeof request.threadId === "string") {
+      await promptMemory.revokeThreadCheckpoint({ threadId: request.threadId, projectId: null, caseId: null });
+    }
+    return state;
+  }));
   ipcMain.handle("workbench:create-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.createDailyChatThread(input)));
   ipcMain.handle("workbench:switch-daily-chat-thread", (event, input: unknown) => trustedResponse(event, appRoot, () => store.switchDailyChatThread(input)));
   ipcMain.handle("workbench:agent-runtime-health", (event) => trustedResponse(event, appRoot, async () => runtime.getHealth()));
@@ -2168,7 +2197,7 @@ if (!hasSingleInstanceLock) {
       (target, request, signal) => readSapDataPreview(store, secretStore, request, target, signal)
     );
     const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService, skillDiscoveryService);
-    registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, capabilityCenter, appRoot);
+    registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, promptMemoryService, capabilityCenter, appRoot);
     createMainWindow();
     if (automaticRecoveries.length > 0) {
       setTimeout(() => {
