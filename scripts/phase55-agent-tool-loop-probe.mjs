@@ -41,6 +41,8 @@ function toolSession() {
   const calls = [];
   return {
     calls,
+    getToolChoice() { return { mode: "auto" }; },
+    getRequirementState() { return { status: "none" }; },
     tools: [{
       name: "safe_tool",
       description: "读取已审核摘要",
@@ -363,9 +365,13 @@ const sapReader = async (target, request) => {
     generatedFiles: ["evidence/sap/ZREPORT.md"]
   };
 };
-const sapSession = await new AgentToolService(fakeStore, fakeMcp, null, sapReader).createSession({ threadId: "thread-1", projectId: "project-1", caseId: "case-1" });
-const sapTool = sapSession.tools.find((tool) => tool.description.includes("ADT") && tool.description.includes("MB52"));
-if (!sapTool) throw new Error("用户启用后，ADT 只读对象证据没有进入模型工具目录");
+const sapSession = await new AgentToolService(fakeStore, fakeMcp, null, sapReader).createSession({
+  threadId: "thread-1",
+  projectId: "project-1",
+  caseId: "case-1"
+}, { userContent: "通过 ADT 读取 ZMM_REPORT 程序源码" });
+const sapTool = sapSession.tools.find((tool) => tool.name.startsWith("sap_read_object_evidence_"));
+if (!sapTool) throw new Error("用户启用后，ADT 只读对象证据没有进入模型工具目录：" + sapSession.tools.map((tool) => tool.name).join(","));
 const sapResult = await sapSession.execute({ callId: "sap-call", name: sapTool.name, arguments: { objectType: "program", objectName: "ZREPORT" } });
 if (sapResult.isError || !sapReadCall || sapReadCall.target.threadId !== "thread-1" || sapReadCall.request.connectionMode !== "auto") throw new Error("ADT 模型工具没有固定到当前任务或没有执行只读自动路由");
 

@@ -44,25 +44,39 @@ const readSapData = async (actualTarget, request) => {
   };
 };
 const service = new AgentToolService(store, { listConnections: () => [] }, null, null, readSapData);
-const session = await service.createSession(target);
+const session = await service.createSession(target, { userContent: "读取 SAP 数据表 MARD 的业务数据" });
 const tool = session.tools.find((item) => /通用|任意业务问题|数据源/.test(item.description) && /ADT Data Preview|数据预览/.test(item.description));
 assert.ok(tool, "没有面向通用 SAP 问题的数据读取工具");
 assert.doesNotMatch(tool.description, /系统使用批准的 MARD|库存专用|只能.*库存/);
-for (const field of ["objectName", "objectType", "columns", "filters", "maxRows", "systemHint"]) {
+for (const field of ["operation", "objectName", "objectType", "columns", "filters", "maxRows"]) {
   assert.ok(Object.hasOwn(tool.inputSchema.properties, field), "通用工具缺少 " + field);
 }
+assert.equal(Object.hasOwn(tool.inputSchema.properties, "systemHint"), false, "模型不应覆盖原始用户消息中的 SAP 连接路由");
 assert.equal(Object.hasOwn(tool.inputSchema.properties, "plant"), false, "通用接口不应把工厂固化为顶层参数");
 assert.equal(Object.hasOwn(tool.inputSchema.properties, "sql"), false, "模型不应提交任意 SQL");
-const result = await session.execute({
+let result = await session.execute({
+  callId: "general-discover",
+  name: tool.name,
+  arguments: {
+    operation: "discover",
+    objectName: "MARD",
+    objectType: "table",
+    columns: [],
+    filters: [],
+    maxRows: 1
+  }
+});
+assert.equal(result.isError, false, result.content);
+result = await session.execute({
   callId: "general-read",
   name: tool.name,
   arguments: {
+    operation: "read",
     objectName: "MARD",
     objectType: "table",
     columns: ["MATNR", "WERKS", "LGORT", "LABST"],
     filters: [{ field: "WERKS", operator: "eq", value: "C050" }],
-    maxRows: 200,
-    systemHint: "Client 800"
+    maxRows: 200
   }
 });
 assert.equal(result.isError, false, result.content);
@@ -76,6 +90,10 @@ assert.match(result.content, /data-preview-MARD\.csv/);
 assert.match(result.content, /MAT-1/, "读取后的有界分析行必须返回模型，才能继续完成业务任务");
 
 enabled = false;
+await assert.rejects(
+  () => service.createSession(target, { userContent: "读取 SAP 数据表 MARD 的业务数据" }),
+  /尚未启用.*ADT Data Preview/
+);
 const disabled = await service.createSession(target);
 assert.equal(disabled.tools.some((item) => /ADT Data Preview|数据预览/.test(item.description)), false, "未授权时不应暴露通用 SAP 数据工具");
 

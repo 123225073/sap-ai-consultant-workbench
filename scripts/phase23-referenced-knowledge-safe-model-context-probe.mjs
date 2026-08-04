@@ -111,7 +111,7 @@ for (const forbidden of [FULL_BODY_MARKER, "sourceFilePath", "C:/customer/intern
 }
 pass("directKnowledgeSummaryOnly");
 
-assertThrows("unsafeReferenceTextBlocked", () => buildSafeModelDraftContext({
+const contextWithUnsafeReference = buildSafeModelDraftContext({
   taskMode: "problem-analysis",
   taskLabel: "问题分析",
   userInput: "safe input",
@@ -130,7 +130,10 @@ assertThrows("unsafeReferenceTextBlocked", () => buildSafeModelDraftContext({
     }
   ],
   safeOutputSummaries: []
-}));
+});
+assert(contextWithUnsafeReference.audit.referencedKnowledgeCount === 0, "unsafe knowledge reference was not discarded");
+assert(!JSON.stringify(contextWithUnsafeReference).includes("abcdefghijklmnop"), "unsafe knowledge reference leaked into context");
+pass("unsafeReferenceTextDiscarded");
 assertThrows("unsafeDirectGuardStillBlocks", () => assertNoUnsafeModelContextText("phase23", "Bearer abcdefghijklmnopqrstuvwxyz"));
 
 const checklist = {

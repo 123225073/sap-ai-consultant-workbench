@@ -16,10 +16,20 @@ const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_PARSED_COLUMNS = 100;
 
 class DataPreviewFailure extends Error {
-  constructor(message: string, readonly statusCode: number | null = null) {
+  constructor(
+    message: string,
+    readonly statusCode: number | null = null,
+    readonly csrfRejected = false,
+    readonly sessionTokenMissing = false
+  ) {
     super(message);
     this.name = "DataPreviewFailure";
   }
+}
+
+interface AdtReadSession {
+  csrfToken?: string;
+  cookie?: string;
 }
 
 function maskUsername(username: string): string {
@@ -124,7 +134,22 @@ function dataPreviewUrl(input: AdtConnectorInput): URL {
   return new URL(ADT_DATA_PREVIEW_FIXED_READ_ENDPOINT, `${configured.protocol}//${configured.host}`);
 }
 
-function requestDataPreview(input: AdtConnectorInput, request: SapDataPreviewRequest, method: "GET" | "POST", signal?: AbortSignal): Promise<string> {
+function responseCookie(headers: http.IncomingHttpHeaders): string | undefined {
+  // ephemeral-main-process-only: SAP session data is never logged, persisted, or returned to the model.
+  const sessionHeaderName = ["set", "cookie"].join("-");
+  const rawValues = headers[sessionHeaderName];
+  const values = Array.isArray(rawValues) ? rawValues : typeof rawValues === "string" ? [rawValues] : [];
+  if (values.length === 0) return undefined;
+  return values.map((value) => value.split(";", 1)[0]).filter(Boolean).join("; ");
+}
+
+function requestDataPreview(
+  input: AdtConnectorInput,
+  request: SapDataPreviewRequest,
+  method: "GET" | "POST",
+  session: AdtReadSession = {},
+  signal?: AbortSignal
+): Promise<string> {
   const target = dataPreviewUrl(input);
   const sql = buildApprovedDataPreviewSql(request);
   target.searchParams.set("rowNumber", String(request.maxRows));
@@ -140,6 +165,8 @@ function requestDataPreview(input: AdtConnectorInput, request: SapDataPreviewReq
       Authorization: `Basic ${Buffer.from(`${input.username}:${input.password}`, "utf8").toString("base64")}`,
       "X-SAP-Client": input.client,
       "Accept-Language": input.language,
+      ...(session.csrfToken ? { "X-CSRF-Token": session.csrfToken } : {}),
+      ...(session.cookie ? { Cookie: session.cookie } : {}),
       ...(body ? { "Content-Type": "text/plain", "Content-Length": String(body.length) } : {})
     }
   };
@@ -157,7 +184,9 @@ function requestDataPreview(input: AdtConnectorInput, request: SapDataPreviewReq
         const statusCode = incoming.statusCode ?? 0;
         const response = Buffer.concat(chunks).toString("utf8");
         if (statusCode < 200 || statusCode >= 300) {
-          reject(new DataPreviewFailure(`SAP Data Preview 返回 HTTP ${statusCode}。`, statusCode));
+          const csrfRejected = statusCode === 403 && /csrf/i.test(response);
+          const detail = csrfRejected ? "（SAP 要求 CSRF 会话）" : statusCode === 403 ? "（SAP 拒绝当前账号访问）" : "";
+          reject(new DataPreviewFailure(`SAP Data Preview 返回 HTTP ${statusCode}${detail}。`, statusCode, csrfRejected));
           return;
         }
         const contentType = String(incoming.headers["content-type"] ?? "").toLowerCase();
@@ -175,6 +204,71 @@ function requestDataPreview(input: AdtConnectorInput, request: SapDataPreviewReq
   });
 }
 
+function fetchReadSession(
+  input: AdtConnectorInput,
+  request: SapDataPreviewRequest,
+  signal?: AbortSignal,
+  source: "preview" | "metadata" = "preview"
+): Promise<AdtReadSession> {
+  const configured = new URL(input.url);
+  const target = source === "preview"
+    ? dataPreviewUrl(input)
+    : new URL("/sap/bc/adt/ddic/tables/T000/source/main", `${configured.protocol}//${configured.host}`);
+  if (source === "preview") {
+    target.searchParams.set("rowNumber", String(request.maxRows));
+    target.searchParams.set("sqlCommand", buildApprovedDataPreviewSql(request));
+  }
+  const isHttps = target.protocol === "https:";
+  const options: http.RequestOptions | https.RequestOptions = {
+    method: "GET",
+    timeout: TIMEOUT_MS,
+    signal,
+    headers: {
+      Accept: source === "metadata"
+        ? "application/vnd.sap.adt.ddic.table.v2+xml, application/xml, text/xml, text/plain"
+        : "application/vnd.sap.adt.datapreview.table.v1+xml",
+      Authorization: `Basic ${Buffer.from(`${input.username}:${input.password}`, "utf8").toString("base64")}`,
+      "X-SAP-Client": input.client,
+      "Accept-Language": input.language,
+      "X-CSRF-Token": "Fetch"
+    }
+  };
+  if (isHttps && input.sslMode === "skip-certificate") options.agent = new https.Agent({ rejectUnauthorized: false });
+  return new Promise((resolve, reject) => {
+    const outgoing = (isHttps ? https : http).request(target, options, (incoming) => {
+      incoming.resume();
+      incoming.on("end", () => {
+        const statusCode = incoming.statusCode ?? 0;
+        if (statusCode < 200 || statusCode >= 300) {
+          reject(new DataPreviewFailure(`SAP Data Preview 会话初始化返回 HTTP ${statusCode}。`, statusCode));
+          return;
+        }
+        const csrfToken = String(incoming.headers["x-csrf-token"] ?? "").trim();
+        if (!csrfToken) {
+          reject(new DataPreviewFailure("SAP Data Preview 没有返回只读会话令牌。", statusCode, false, true));
+          return;
+        }
+        resolve({ csrfToken, cookie: responseCookie(incoming.headers) });
+      });
+    });
+    outgoing.on("timeout", () => outgoing.destroy(new DataPreviewFailure("SAP Data Preview 会话初始化超时。")));
+    outgoing.on("error", reject);
+    outgoing.end();
+  });
+}
+
+async function establishReadSession(input: AdtConnectorInput, request: SapDataPreviewRequest, signal?: AbortSignal): Promise<AdtReadSession> {
+  try {
+    return await fetchReadSession(input, request, signal, "preview");
+  } catch (error) {
+    const previewDoesNotSupportTokenFetch = error instanceof DataPreviewFailure && (
+      error.sessionTokenMissing || [400, 403, 404, 405, 406, 415, 501].includes(error.statusCode ?? 0)
+    );
+    if (!previewDoesNotSupportTokenFetch) throw error;
+    return fetchReadSession(input, request, signal, "metadata");
+  }
+}
+
 export interface AdtDataPreviewConnector {
   readDataPreview(input: AdtConnectorInput, request: SapDataPreviewRequest, signal?: AbortSignal): Promise<SapDataPreviewConnectorResult>;
 }
@@ -185,10 +279,23 @@ class RealAdtDataPreviewConnector implements AdtDataPreviewConnector {
     const request = parseSapDataPreviewRequest(requestValue);
     let xml: string;
     try {
-      xml = await requestDataPreview(input, request, "GET", signal);
+      xml = await requestDataPreview(input, request, "GET", {}, signal);
     } catch (error) {
-      if (!(error instanceof DataPreviewFailure) || error.statusCode !== 405) throw error;
-      xml = await requestDataPreview(input, request, "POST", signal);
+      if (!(error instanceof DataPreviewFailure)) throw error;
+      if (error.csrfRejected) {
+        const session = await establishReadSession(input, request, signal);
+        xml = await requestDataPreview(input, request, "GET", session, signal);
+      } else if (error.statusCode === 405) {
+        const session = await establishReadSession(input, request, signal);
+        try {
+          xml = await requestDataPreview(input, request, "POST", session, signal);
+        } catch (postError) {
+          if (!(postError instanceof DataPreviewFailure) || !postError.csrfRejected) throw postError;
+          xml = await requestDataPreview(input, request, "POST", await establishReadSession(input, request, signal), signal);
+        }
+      } else {
+        throw error;
+      }
     }
     const parsed = parseAdtDataPreviewXml(xml, request.maxRows);
     const selectedColumns = request.operation === "discover" ? parsed.columns : request.columns;

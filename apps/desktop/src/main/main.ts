@@ -1,7 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, shell, type IpcMainInvokeEvent, type OpenDialogOptions } from "electron";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
-import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput } from "./adtReadonlyConnector";
+import { createAdtReadonlyConnector, createAdtValidationFailureReport, FakeAdtReadonlyConnector, type AdtConnectorInput, type AdtObjectSearchResult } from "./adtReadonlyConnector";
 import { discoverLocalSapGuiConnections, resolveAdtEndpointCandidates, type AdtEndpointCandidate } from "./adtEndpointResolver";
 import { createFeishuCliConnector, createFeishuValidationFailureReport, discoverFeishuCli, installFeishuCli, saveFeishuCliProfile, type FeishuCliConnectorInput } from "./feishuCliConnector";
 import { createCodexCliConnector, createCodexValidationFailureReport, type CodexCliConnectorInput } from "./codexCliConnector";
@@ -940,12 +940,10 @@ async function appendCaseMessage(
         prepared.projectId
       );
       const connector = createModelProviderConnector(prepared.baseUrl, prepared.providerType);
-      let toolSession;
-      try {
-        toolSession = await agentToolService.createSession({ threadId, projectId, caseId });
-      } catch {
-        toolSession = undefined;
-      }
+      const toolSession = await agentToolService.createSession(
+        { threadId, projectId, caseId },
+        { userContent: targetedInput.content }
+      );
       let emittedDelta = false;
       let toolActivityStarted = false;
       const generate = (modelId: string) => connector.generateSafeDraft({
@@ -1446,6 +1444,56 @@ async function readSapDataPreview(
     clearTimeout(timeout);
     activeSapEvidenceRuns.delete(runKey);
   }
+}
+
+async function searchSapObjects(
+  store: WorkspaceStore,
+  secretStore: SecureSecretStore,
+  target: { projectId: string; caseId: string; threadId: string },
+  query: string,
+  maxResults: number,
+  queryContext: string,
+  signal?: AbortSignal
+): Promise<AdtObjectSearchResult> {
+  const { projectId, config } = await store.getProjectWorkTargetConfig(target);
+  if (config.agentTools.sapReadonlyEnabled !== true && config.agentTools.sapDataPreviewEnabled !== true) {
+    throw new Error("SAP 对象搜索尚未获得当前客户项目的显式授权，请先在配置中心启用对应的 SAP 只读 AI 工具。");
+  }
+  const allConnections = config.adtConnections.length > 0 ? config.adtConnections : [config.adt];
+  const route = routeSapConnections(allConnections, queryContext, config.activeAdtConnectionId);
+  if (route.connectionIds.length === 0) throw new Error(route.reason);
+  if (route.needsConfirmation || route.connectionIds.length !== 1) {
+    throw new Error(`${route.reason} 为避免搜索错误 SAP 系统，请在问题中明确 SID 或 Client 后重试。`);
+  }
+  const connection = allConnections.find((item) => item.id === route.connectionIds[0]);
+  if (!connection) throw new Error("建议的 SAP 连接已不存在，请重新检查客户项目配置。");
+  const scopedConfig = projectConfigForAdtConnection(config, connection);
+  const configCheck = await validateAdtConfig(scopedConfig);
+  if (!configCheck.ok) throw new Error(`${connection.alias || connection.systemId || "SAP 连接"}：${configCheck.message} ${configCheck.suggestion}`);
+  if (connection.connectionStatus !== "verified" || connection.minimalReadStatus !== "verified" || connection.lastVerificationMode !== "adt") {
+    throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 尚未完成真实 ADT 与 T000 只读验证。`);
+  }
+  let password = "";
+  try {
+    password = await secretStore.resolveProjectSecret(projectId, { kind: "adt-password", connectionId: connection.id });
+  } catch {
+    throw new Error(`${connection.alias || connection.systemId || "SAP 连接"} 在系统安全存储中没有可用密码，请重新保存并验证。`);
+  }
+  const connector = createAdtReadonlyConnector();
+  let lastError: unknown = null;
+  for (const candidate of configCheck.candidates) {
+    try {
+      return await connector.searchObjects(
+        { ...adtInputWithoutPassword(scopedConfig, candidate.url), password },
+        query,
+        maxResults,
+        signal
+      );
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${connection.alias || connection.systemId || "SAP 连接"} 的 ADT 对象搜索未返回结果。`);
 }
 
 async function prepareFeishuHandoff(store: WorkspaceStore): Promise<FeishuHandoffResult> {
@@ -2194,7 +2242,8 @@ if (!hasSingleInstanceLock) {
       mcpConnectionManager,
       skillPackageService,
       (target, request, signal) => readSapObjectEvidence(store, secretStore, request, target, signal),
-      (target, request, signal) => readSapDataPreview(store, secretStore, request, target, signal)
+      (target, request, signal) => readSapDataPreview(store, secretStore, request, target, signal),
+      (target, query, maxResults, queryContext, signal) => searchSapObjects(store, secretStore, target, query, maxResults, queryContext, signal)
     );
     const capabilityCenter = new CapabilityCenterService(store, promptMemoryService, skillPackageService, mcpConnectionManager, pluginPackageService, skillDiscoveryService);
     registerWorkbenchHandlers(store, secretStore, agentRuntime, agentContextService, agentToolService, promptMemoryService, capabilityCenter, appRoot);

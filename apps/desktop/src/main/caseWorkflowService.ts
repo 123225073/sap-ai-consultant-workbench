@@ -1,6 +1,6 @@
 import { standardsSummaryForTask } from "./standardsService";
 import type { ActionPermissionMode, CaseActionId, CaseGeneratedFile, CaseKnowledgeReference, CaseMessage, CaseSummary, CaseWorkflowInput, CodexCaseAssistRun, ProjectSummary, TaskMode } from "../shared/workbenchTypes";
-import { renderSafeModelDraftFiles, safeModelDraftBoundary, type SafeModelDraftRun } from "./safeModelCaseDraftService";
+import { renderSafeModelDraftFiles, safeModelDraftBoundary, safeModelDraftDisplayValue, type SafeModelDraftRun } from "./safeModelCaseDraftService";
 
 export const TASK_MODE_LABELS: Record<TaskMode, string> = {
   "problem-analysis": "问题分析",
@@ -684,8 +684,14 @@ export function buildAssistantContent(input: CaseWorkflowInput, generatedFiles: 
     ].filter(Boolean).join("\n");
   }
   if (modelDraft?.status === "failed") {
+    const failureReason = safeModelDraftDisplayValue(
+      "模型失败原因",
+      modelDraft.errorMessage,
+      "模型或受控工具调用失败，请检查当前连接、授权和模型兼容性后重试。"
+    );
     return [
       `已尝试使用已验证模型「${modelDraft.modelId}」，但模型草稿未生成。`,
+      `失败原因：${failureReason}`,
       "",
       actionLine,
       "本次失败未执行外部系统写入或发布，也没有保存原始模型请求或响应。",
@@ -816,7 +822,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## SAP 对象",
     "",
-    "- 尚未读取真实 SAP 对象。",
+    "- SAP 只读证据以当前工作文件夹中的 evidence/sap、snapshots、technical 文件和本轮工具审计记录为准；本上下文包不重复原始 SAP 数据。",
     "",
     "## 已引用知识",
     "",
@@ -832,7 +838,7 @@ function renderContextPack(project: ProjectSummary, caseItem: CaseSummary, gener
     "",
     "## 当前边界",
     "",
-    `- ${CASE_OUTPUT_PHASE} 只生成本地草稿文件、项目规范摘要、安全模型草稿和待确认知识候选。`,
+    `- ${CASE_OUTPUT_PHASE} 生成本地成果、项目规范摘要、安全模型结果和待确认知识候选；已授权 SAP 能力仅允许受控只读取证。`,
     `- ${modelBoundaryText(modelDraft)}`,
     `- ${CODEX_ASSIST_BOUNDARY}`,
     "- 候选知识必须人工确认后才能正式入库。",

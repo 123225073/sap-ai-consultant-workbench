@@ -67,10 +67,12 @@ const permissionModes: { id: ActionPermissionMode; label: string; summary: strin
 const sapEvidenceTypes: { id: SapObjectEvidenceType; label: string }[] = [
   { id: "program", label: "程序" },
   { id: "class", label: "类" },
+  { id: "interface", label: "接口" },
   { id: "function", label: "函数" },
   { id: "include", label: "Include" },
   { id: "table", label: "表" },
-  { id: "structure", label: "结构" }
+  { id: "structure", label: "结构" },
+  { id: "cds", label: "CDS DDL" }
 ];
 
 const workComposerPlaceholder = "描述问题、补充资料或继续讨论；需要沉淀成果时，打开“成果动作”。";

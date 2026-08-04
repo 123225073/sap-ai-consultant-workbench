@@ -11,10 +11,12 @@ import type {
 export const SAP_OBJECT_EVIDENCE_ALLOWED_TYPES = [
   "program",
   "class",
+  "interface",
   "function",
   "include",
   "table",
-  "structure"
+  "structure",
+  "cds"
 ] as const;
 
 export const sapObjectEvidenceBoundary = "SAP 只读证据：仅允许读取当前工作文件夹明确指定的单个对象；禁止 SAP 写入、任意 SQL、批量读取、传输和原始连接器输出。";

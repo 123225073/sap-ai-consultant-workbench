@@ -31,7 +31,23 @@ interface AdtStatusResult {
 
 export interface AdtReadonlyConnector {
   verify(input: AdtConnectorInput): Promise<AdtVerificationReport>;
+  searchObjects(input: AdtConnectorInput, query: string, maxResults: number, signal?: AbortSignal): Promise<AdtObjectSearchResult>;
   readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options?: { allowFakeEvidence?: boolean; signal?: AbortSignal }): Promise<SapObjectEvidenceConnectorResult>;
+}
+
+export interface AdtObjectSearchMatch {
+  name: string;
+  type: string;
+  description: string;
+  functionGroup?: string;
+}
+
+export interface AdtObjectSearchResult {
+  system: AdtRedactedSystemInfo;
+  query: string;
+  matches: AdtObjectSearchMatch[];
+  truncated: boolean;
+  searchedAt: string;
 }
 
 function nowIso(): string {
@@ -243,6 +259,8 @@ export function adtReadonlyObjectEvidencePath(request: SapObjectEvidenceRequest)
       return `/sap/bc/adt/programs/programs/${encodeSapName(request.objectName)}/source/main`;
     case "class":
       return `/sap/bc/adt/oo/classes/${encodeSapName(request.objectName)}/source/main`;
+    case "interface":
+      return `/sap/bc/adt/oo/interfaces/${encodeSapName(request.objectName)}/source/main`;
     case "include":
       return `/sap/bc/adt/programs/includes/${encodeSapName(request.objectName)}/source/main`;
     case "function":
@@ -254,6 +272,8 @@ export function adtReadonlyObjectEvidencePath(request: SapObjectEvidenceRequest)
       return `/sap/bc/adt/ddic/tables/${encodeSapName(request.objectName)}/source/main`;
     case "structure":
       return `/sap/bc/adt/ddic/structures/${encodeSapName(request.objectName)}/source/main`;
+    case "cds":
+      return `/sap/bc/adt/ddic/ddl/sources/${encodeSapName(request.objectName)}/source/main`;
     default: {
       const neverType: never = request.objectType;
       throw new Error(`不支持的 SAP 对象证据类型：${neverType}`);
@@ -267,6 +287,81 @@ function adtStatusPath(): string {
 
 function adtT000MinimalPath(): string {
   return "/sap/bc/adt/ddic/tables/T000/source/main";
+}
+
+function adtObjectSearchPath(query: string, maxResults: number): string {
+  const parameters = new URLSearchParams({
+    operation: "quickSearch",
+    query,
+    maxResults: String(maxResults)
+  });
+  return `/sap/bc/adt/repository/informationsystem/search?${parameters.toString()}`;
+}
+
+function decodeXmlText(value: string): string {
+  return value
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function safeSearchText(value: string, maxLength: number): string {
+  return decodeXmlText(value)
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/https?:\/\/\S+/gi, "[地址已隐藏]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
+function parseXmlAttributes(tag: string): Record<string, string> {
+  const attributes: Record<string, string> = {};
+  const pattern = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  for (const match of tag.matchAll(pattern)) {
+    attributes[match[1].toLowerCase()] = match[2] ?? match[3] ?? "";
+  }
+  return attributes;
+}
+
+export function parseAdtObjectSearchXml(xml: string, maxResults: number): AdtObjectSearchMatch[] {
+  const matches: AdtObjectSearchMatch[] = [];
+  const seen = new Set<string>();
+  const tags = xml.match(/<[^!?][^>]*>/g) ?? [];
+  for (const tag of tags) {
+    const attributes = parseXmlAttributes(tag);
+    const name = attributes["adtcore:name"] ?? attributes.name ?? attributes.object_name ?? attributes.objectname ?? "";
+    const type = attributes["adtcore:type"] ?? attributes.type ?? attributes.object_type ?? attributes.objecttype ?? "";
+    if (!name || !type) continue;
+    const safeName = safeSearchText(name, 120);
+    const safeType = safeSearchText(type, 80);
+    if (!safeName || !safeType) continue;
+    const key = `${safeType}\u0000${safeName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const match: AdtObjectSearchMatch = {
+      name: safeName,
+      type: safeType,
+      description: safeSearchText(
+        attributes["adtcore:description"] ?? attributes.description ?? attributes.text ?? "",
+        300
+      )
+    };
+    const uri = attributes["adtcore:uri"] ?? attributes.uri ?? "";
+    const functionGroupMatch = uri.match(/\/functions\/groups\/([^/?#]+)\/fmodules\//i);
+    if (functionGroupMatch) {
+      try {
+        const functionGroup = safeSearchText(decodeURIComponent(functionGroupMatch[1]), 80).toUpperCase();
+        if (functionGroup) match.functionGroup = functionGroup;
+      } catch {
+        // Malformed search metadata is ignored; raw URI is never returned.
+      }
+    }
+    matches.push(match);
+    if (matches.length >= maxResults) break;
+  }
+  return matches;
 }
 
 function normalizedContentType(value: string | string[] | undefined): string {
@@ -478,6 +573,32 @@ export class RealAdtReadonlyConnector implements AdtReadonlyConnector {
     }
   }
 
+  async searchObjects(input: AdtConnectorInput, query: string, maxResults: number, signal?: AbortSignal): Promise<AdtObjectSearchResult> {
+    if (input.readOnly !== true) throw new Error("ADT 只读模式未锁定，已阻止对象搜索。");
+    const normalizedQuery = query.normalize("NFKC").trim().toUpperCase();
+    if (!normalizedQuery || normalizedQuery.length > 120 || /[\u0000-\u001f\u007f]/.test(normalizedQuery)) {
+      throw new Error("SAP 对象搜索词格式无效。");
+    }
+    if (!Number.isInteger(maxResults) || maxResults < 1 || maxResults > 50) {
+      throw new Error("SAP 对象搜索结果上限必须在 1 到 50 之间。");
+    }
+    let result: AdtGetResult;
+    try {
+      result = await adtGet(input, adtObjectSearchPath(normalizedQuery, maxResults), signal);
+    } catch (searchError) {
+      const failure = describeAdtFailure(searchError);
+      throw externalConnectorThrownError({ reason: failure.message, suggestion: failure.suggestion });
+    }
+    const matches = parseAdtObjectSearchXml(result.text, maxResults);
+    return {
+      system: redactedSystem(input),
+      query: normalizedQuery,
+      matches,
+      truncated: matches.length >= maxResults,
+      searchedAt: nowIso()
+    };
+  }
+
   async readObjectEvidence(input: AdtConnectorInput, request: SapObjectEvidenceRequest, options: { signal?: AbortSignal } = {}): Promise<SapObjectEvidenceConnectorResult> {
     if (input.readOnly !== true) {
       const copy = externalConnectorUserError("ADT Service", "configuration");
@@ -556,6 +677,16 @@ export class FakeAdtReadonlyConnector implements AdtReadonlyConnector {
     }
 
     return this.report(t000.ok, checkedAt, system, steps, t000, errors);
+  }
+
+  async searchObjects(input: AdtConnectorInput, query: string, maxResults: number): Promise<AdtObjectSearchResult> {
+    return {
+      system: redactedSystem(input),
+      query: query.normalize("NFKC").trim().toUpperCase(),
+      matches: [{ name: "ZT_DEMO", type: "TABL/DT", description: "本地 probe 对象" }].slice(0, maxResults),
+      truncated: false,
+      searchedAt: nowIso()
+    };
   }
 
   private async status(input: AdtConnectorInput): Promise<AdtStatusResult> {

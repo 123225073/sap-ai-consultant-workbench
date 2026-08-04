@@ -11,6 +11,7 @@ import {
 import type { ActivatedSkill, SkillCatalogEntry } from "../shared/skillTypes";
 import type { SapDataPreviewRequest, SapDataPreviewResult, SapObjectEvidenceRequest, SapObjectEvidenceResult } from "../shared/workbenchTypes";
 import { WorkspaceStore } from "./workspaceStore";
+import { detectSapReadonlyIntent, type SapReadonlyIntent } from "./sapIntentRouter";
 
 export interface AgentToolTarget {
   threadId: string;
@@ -41,8 +42,21 @@ export interface AgentModelToolResult {
 
 export interface AgentToolSession {
   tools: AgentModelToolDefinition[];
+  getToolChoice(): { mode: "auto" | "required"; name?: string };
+  getRequirementState(): { status: "none" | "pending" | "satisfied" | "failed"; message?: string };
   authorize(call: AgentModelToolCall): { outcome: "allowed" | "denied"; message: string };
   execute(call: AgentModelToolCall, signal?: AbortSignal): Promise<AgentModelToolResult>;
+}
+
+export interface AgentToolSessionRequest {
+  userContent?: string;
+}
+
+export class AgentToolConfigurationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentToolConfigurationError";
+  }
 }
 
 interface RegisteredModelTool {
@@ -70,20 +84,74 @@ type AgentSapDataPreviewReader = (
   signal?: AbortSignal
 ) => Promise<SapDataPreviewResult>;
 
+type AgentSapObjectSearcher = (
+  target: { projectId: string; caseId: string; threadId: string },
+  query: string,
+  maxResults: number,
+  queryContext: string,
+  signal?: AbortSignal
+) => Promise<unknown>;
+
+function hasExplicitSapObjectIdentifier(content: string, connectionIdentifiers: readonly string[]): boolean {
+  const excluded = new Set([
+    "SAP", "ADT", "ABAP", "DDIC", "CDS", "S4", "S4HANA", "ECC", "SID", "CLIENT", "HTML", "PPT", "PPTX",
+    "EXCEL", "CSV", "JSON", "XML", "HTTP", "HTTPS", "MB52", "SE16", "SE16N",
+    ...connectionIdentifiers.flatMap((value) => value.toUpperCase().match(/[A-Z][A-Z0-9_-]{1,79}/g) ?? [])
+  ]);
+  const candidates = content.normalize("NFKC").match(/\/[A-Za-z0-9_]{1,30}\/[A-Za-z0-9_/$-]+|\b[A-Z][A-Z0-9_/$-]{2,79}\b/g) ?? [];
+  return candidates.some((rawCandidate) => {
+    const candidate = rawCandidate.toUpperCase();
+    if (excluded.has(candidate) || /^\d+$/.test(candidate) || /^[A-Z]\d{2,3}$/.test(candidate)) return false;
+    return /^\/[A-Z0-9_]{1,30}\/[A-Z0-9_/$-]+$/.test(candidate)
+      || /^[A-Z][A-Z0-9_/$-]{3,79}$/.test(candidate);
+  });
+}
+
+function hasReliableDirectObjectType(content: string): boolean {
+  const normalized = content.normalize("NFKC");
+  // Function modules need their Function group to construct the fixed ADT path.
+  // Always search first so the group is obtained from verified repository metadata.
+  if (/(?:function\s*module|函数模块|功能模块)/i.test(normalized)) return false;
+  if (/\bSAP[ML][A-Z0-9_/$-]{3,75}\b/.test(normalized)) return true;
+  return /(?:程序|报表|类|接口|包含程序|数据表|表结构|结构|program|report|class|interface|include|table|structure|\bCDS\b)/i.test(normalized);
+}
+
+function sapSearchMatchCount(result: ToolExecutionResult): number {
+  const { output } = result;
+  if (!output || typeof output !== "object" || Array.isArray(output)) return 0;
+  const search = (output as ToolJsonObject).search;
+  if (!search || typeof search !== "object" || Array.isArray(search)) return 0;
+  const matches = (search as ToolJsonObject).matches;
+  return Array.isArray(matches) ? matches.length : 0;
+}
+
 export class AgentToolService {
   constructor(
     private readonly store: WorkspaceStore,
     _mcp: unknown,
     private readonly skills: AgentSkillService | null = null,
     private readonly readSapEvidence: AgentSapEvidenceReader | null = null,
-    private readonly readSapDataPreview: AgentSapDataPreviewReader | null = null
+    private readonly readSapDataPreview: AgentSapDataPreviewReader | null = null,
+    private readonly searchSapObjects: AgentSapObjectSearcher | null = null
   ) {
     void _mcp;
   }
 
-  async createSession(target: AgentToolTarget): Promise<AgentToolSession> {
+  async createSession(target: AgentToolTarget, request: AgentToolSessionRequest = {}): Promise<AgentToolSession> {
     const config = await this.store.getProjectConfig(target.projectId);
     const agentTools = config.agentTools;
+    const userContent = (request.userContent ?? "").trim();
+    const connections = config.adtConnections?.length ? config.adtConnections : config.adt ? [config.adt] : [];
+    const connectionHints = connections.flatMap((connection) => [
+      connection.systemId,
+      connection.alias
+    ]).filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+    const sapIntent = detectSapReadonlyIntent(userContent, connectionHints);
+    const explicitObjectIdentifier = hasExplicitSapObjectIdentifier(userContent, connectionHints);
+    const directSapTarget = explicitObjectIdentifier && (
+      sapIntent === "sap-data-read" || hasReliableDirectObjectType(userContent)
+    );
+    assertSapIntentToolEnablement(sapIntent, agentTools);
     const builtinTools = createBuiltinReadonlyTools({
       readCaseSafeContext: (input) => this.readCaseSafeContext(input.threadId, input.projectId, input.caseId),
       searchPublishedKnowledge: (input) => this.searchPublishedKnowledge(input.projectId, input.query, input.topK),
@@ -146,24 +214,54 @@ export class AgentToolService {
         )
       });
     }
-    if (agentTools.sapReadonlyEnabled && this.readSapEvidence && target.caseId) {
+    if (sapIntent && (agentTools.sapReadonlyEnabled || agentTools.sapDataPreviewEnabled) && this.searchSapObjects && target.caseId) {
       registry.register({
-        name: "sap.read_object_evidence",
-        description: "通过已验证的 ADT 只读连接读取一个明确命名的 ABAP 或 DDIC 对象证据，并保存到当前工作文件夹。仅支持 program、class、function、include、table、structure 的源码或元数据；不能运行事务、导出 MB52，也不能读取库存、订单或财务业务数据行。",
+        name: "sap.search_objects",
+        description: "通过当前客户项目已验证的 ADT 只读连接执行 SAP Repository Quick Search。用于在读取源码、元数据或业务数据前发现可能的 ABAP/DDIC/CDS 对象，等价于 sap-adt-cli 的 search-object 安全子集。只接受名称/通配符搜索，不执行 SQL、事务或任何写入；目标 SAP 系统只由用户原始消息与项目默认连接决定，模型不能改写。",
         risk: "read-only",
         scope: "case",
         inputSchema: {
           type: "object",
           properties: {
-            objectType: { type: "string", enum: ["program", "class", "function", "include", "table", "structure"] },
+            query: { type: "string", minLength: 1, maxLength: 120 },
+            maxResults: { type: "integer", minimum: 1, maximum: 50 }
+          },
+          required: ["query", "maxResults"],
+          additionalProperties: false,
+          minProperties: 2,
+          maxProperties: 2
+        },
+        timeoutMs: 60_000,
+        maxResultChars: 12_000,
+        execute: async (argumentsValue, context) => ({
+          search: await this.searchSapObjects!(
+            { projectId: context.projectId, caseId: context.caseId!, threadId: context.threadId },
+            argumentsValue.query as string,
+            argumentsValue.maxResults as number,
+            userContent,
+            context.signal
+          ),
+          trust: "sap-adt-readonly-object-search"
+        })
+      });
+    }
+    if (sapIntent === "sap-object-read" && agentTools.sapReadonlyEnabled && this.readSapEvidence && target.caseId) {
+      registry.register({
+        name: "sap.read_object_evidence",
+        description: "通过已验证的 ADT 只读连接读取一个明确命名的 ABAP 或 DDIC 对象证据，并保存到当前工作文件夹。支持 program、class、interface、function、include、table、structure 和 CDS DDL 的源码或元数据；不能运行事务、导出 MB52，也不能读取库存、订单或财务业务数据行。",
+        risk: "read-only",
+        scope: "case",
+        inputSchema: {
+          type: "object",
+          properties: {
+            objectType: { type: "string", enum: ["program", "class", "interface", "function", "include", "table", "structure", "cds"] },
             objectName: { type: "string", minLength: 1, maxLength: 80 },
             functionGroup: { type: "string", minLength: 1, maxLength: 80 },
-            queryContext: { type: "string", minLength: 1, maxLength: 500 }
           },
           required: ["objectType", "objectName"],
           additionalProperties: false,
           minProperties: 2,
-          maxProperties: 4
+          maxProperties: 3
         },
         timeoutMs: 60_000,
         maxResultChars: 8_000,
@@ -177,7 +275,7 @@ export class AgentToolService {
             objectName: argumentsValue.objectName as string,
             ...(typeof argumentsValue.functionGroup === "string" ? { functionGroup: argumentsValue.functionGroup } : {}),
             connectionMode: "auto",
-            queryContext: typeof argumentsValue.queryContext === "string" ? argumentsValue.queryContext : argumentsValue.objectName as string
+            queryContext: userContent
           }, context.signal);
           return {
             object: result.summary,
@@ -188,10 +286,10 @@ export class AgentToolService {
         }
       });
     }
-    if (agentTools.sapDataPreviewEnabled && this.readSapDataPreview && target.caseId) {
+    if (sapIntent === "sap-data-read" && agentTools.sapDataPreviewEnabled && this.readSapDataPreview && target.caseId) {
       registry.register({
         name: "sap.read_data_preview",
-        description: "面向任意 SAP 业务问题的通用 ADT Data Preview 只读工具。先理解用户目标并判断合适的 DDIC table、view 或 CDS；不确定字段时先用 operation=discover、空 columns/filters、maxRows=1 发现字段，再用 operation=read、明确字段和至少一个业务筛选完成有界读取。用户明确 SID 或 Client 时，将其规范为 systemHint（例如 Client 800）以连接对应系统。模型不能提交 SQL，工具不会运行事务或执行写入；读取后必须继续分析并完成用户要求的答复或本地成果，不能停在“已读取数据”。MB52、订单、凭证、配置核对等都只是这条通用链路的使用场景，不是独立功能。",
+        description: "面向任意 SAP 业务问题的通用 ADT Data Preview 只读工具。先根据对象搜索结果判断合适的 DDIC table、view 或 CDS；必须先用 operation=discover、空 columns/filters、maxRows=1 发现字段，再用 operation=read、明确字段和至少一个业务筛选完成有界读取。目标 SAP 系统由用户原始消息与客户项目配置确定，模型不能改写。模型不能提交 SQL，工具不会运行事务或执行写入；读取后必须继续分析并完成用户要求的答复或本地成果，不能停在“已读取数据”。MB52、订单、凭证、配置核对等都只是这条通用链路的使用场景，不是独立功能。",
         risk: "read-only",
         scope: "case",
         inputSchema: {
@@ -219,30 +317,30 @@ export class AgentToolService {
               maxItems: 12
             },
             maxRows: { type: "integer", minimum: 1, maximum: 2000 },
-            systemHint: { type: "string", minLength: 1, maxLength: 80 }
           },
-          required: ["objectName", "objectType", "columns", "filters", "maxRows"],
+          required: ["operation", "objectName", "objectType", "columns", "filters", "maxRows"],
           additionalProperties: false,
-          minProperties: 5,
-          maxProperties: 7
+          minProperties: 6,
+          maxProperties: 6
         },
         timeoutMs: 60_000,
         maxResultChars: 48_000,
         execute: async (argumentsValue, context) => {
+          const operation = argumentsValue.operation === "discover" ? "discover" : "read";
           const result = await this.readSapDataPreview!({
             projectId: context.projectId,
             caseId: context.caseId!,
             threadId: context.threadId
           }, {
             intent: "sap-readonly-data",
-            operation: argumentsValue.operation === "discover" ? "discover" : "read",
+            operation,
             objectName: argumentsValue.objectName as string,
             objectType: argumentsValue.objectType as SapDataPreviewRequest["objectType"],
-            columns: argumentsValue.columns as string[],
-            filters: argumentsValue.filters as unknown as SapDataPreviewRequest["filters"],
-            maxRows: argumentsValue.maxRows as number,
+            columns: operation === "discover" ? [] : argumentsValue.columns as string[],
+            filters: operation === "discover" ? [] : argumentsValue.filters as unknown as SapDataPreviewRequest["filters"],
+            maxRows: operation === "discover" ? 1 : argumentsValue.maxRows as number,
             readOnly: true,
-            ...(typeof argumentsValue.systemHint === "string" ? { queryContext: argumentsValue.systemHint } : {})
+            queryContext: userContent
           }, context.signal);
           return {
             intent: result.intent,
@@ -261,14 +359,51 @@ export class AgentToolService {
       });
     }
     const mappings: RegisteredModelTool[] = registry.list().map((tool) => modelMapping(tool, target));
+    type RequiredSapStage = "search" | "object-read" | "data-discover" | "data-read";
+    let requiredStage: RequiredSapStage | null = sapIntent
+      ? directSapTarget
+        ? sapIntent === "sap-data-read" ? "data-discover" : "object-read"
+        : "search"
+      : null;
+    let requiredAttempts = 0;
+    let requiredFailure: string | null = null;
+    const runtimeNameForStage = (stage: RequiredSapStage): string => stage === "search"
+      ? "sap.search_objects"
+      : stage === "object-read"
+        ? "sap.read_object_evidence"
+        : "sap.read_data_preview";
+    const requiredMapping = (): RegisteredModelTool | null => requiredStage
+      ? mappings.find((mapping) => mapping.runtimeName === runtimeNameForStage(requiredStage!)) ?? null
+      : null;
+    const requiredRuntimeNames = sapIntent === "sap-data-read"
+      ? directSapTarget ? ["sap.read_data_preview"] : ["sap.search_objects", "sap.read_data_preview"]
+      : sapIntent === "sap-object-read"
+        ? directSapTarget ? ["sap.read_object_evidence"] : ["sap.search_objects", "sap.read_object_evidence"]
+        : [];
+    const missingRequiredTool = requiredRuntimeNames.find((runtimeName) => !mappings.some((mapping) => mapping.runtimeName === runtimeName));
+    if (missingRequiredTool) {
+      throw new AgentToolConfigurationError("已识别 SAP 只读任务，但通用 ADT 搜索/读取工具链未能完整注册。请确认对应 AI 工具已启用，并重新验证当前客户项目的 SAP 连接后重试。");
+    }
 
     const descriptors = new Map(registry.list().map((item) => [item.name, item]));
     const executor = new ToolExecutor(registry);
     const policyEngine = new PolicyEngine();
     const authorize = (call: AgentModelToolCall): { outcome: "allowed" | "denied"; message: string } => {
+      const pendingMapping = requiredMapping();
+      if (pendingMapping && call.name !== pendingMapping.providerName) {
+        return { outcome: "denied", message: `当前 SAP 只读流程必须先执行 ${pendingMapping.runtimeName}，已拒绝跳过发现/读取阶段。` };
+      }
       const mapping = mappings.find((item) => item.providerName === call.name);
       if (!mapping) return { outcome: "denied", message: "模型请求了未注册的工具，已拒绝执行。" };
       if (call.argumentsError) return { outcome: "denied", message: call.argumentsError };
+      if (mapping.runtimeName === "sap.read_data_preview") {
+        if (requiredStage === "data-discover" && call.arguments.operation !== "discover") {
+          return { outcome: "denied", message: "当前必须先执行 operation=discover 的字段发现，已阻止提前读取业务行。" };
+        }
+        if (requiredStage === "data-read" && call.arguments.operation !== "read") {
+          return { outcome: "denied", message: "字段发现已完成，当前必须执行 operation=read 的有界读取。" };
+        }
+      }
       const definition = registry.get(mapping.runtimeName);
       if (!definition) return { outcome: "denied", message: "工具目录已发生变化，已拒绝执行。" };
       try {
@@ -299,10 +434,33 @@ export class AgentToolService {
           inputSchema: mapping.inputSchema
         };
       }),
+      getToolChoice: () => {
+        const mapping = requiredMapping();
+        return mapping && !requiredFailure ? { mode: "required", name: mapping.providerName } : { mode: "auto" };
+      },
+      getRequirementState: () => {
+        if (!sapIntent) return { status: "none" };
+        if (requiredFailure) return { status: "failed", message: requiredFailure };
+        if (!requiredStage) return { status: "satisfied" };
+        const mapping = requiredMapping();
+        return {
+          status: "pending",
+          message: mapping
+            ? `SAP 只读任务仍需执行 ${mapping.runtimeName}。`
+            : "SAP 只读任务所需工具未注册。"
+        };
+      },
       authorize,
       execute: async (call, signal) => {
+        const pendingMapping = requiredMapping();
         const authorization = authorize(call);
-        if (authorization.outcome !== "allowed") return failedToolResult(call, authorization.message);
+        if (authorization.outcome !== "allowed") {
+          if (pendingMapping?.providerName === call.name) {
+            requiredAttempts += 1;
+            if (requiredAttempts >= 3) requiredFailure = `${pendingMapping.runtimeName} 连续 3 次未通过参数或权限校验，已停止本次 SAP 读取。最后原因：${authorization.message}`;
+          }
+          return failedToolResult(call, authorization.message);
+        }
         const mapping = mappings.find((item) => item.providerName === call.name);
         if (!mapping) return failedToolResult(call, "模型请求了未注册的工具，已拒绝执行。");
         try {
@@ -316,8 +474,34 @@ export class AgentToolService {
             caseId: target.caseId,
             signal
           });
-          return successfulToolResult(call, result);
+          const toolResult = successfulToolResult(call, result);
+          if (pendingMapping?.providerName === call.name) {
+            if (requiredStage === "search" && sapSearchMatchCount(result) === 0) {
+              requiredAttempts += 1;
+              if (requiredAttempts >= 3) requiredFailure = "sap.search_objects 连续 3 次未找到匹配对象，已停止本次 SAP 读取。请在问题中提供更明确的表、CDS、程序或对象名称后重试。";
+            } else {
+              requiredAttempts = 0;
+            }
+            if (requiredStage === "search" && sapSearchMatchCount(result) > 0) requiredStage = sapIntent === "sap-data-read" ? "data-discover" : "object-read";
+            else if (requiredStage === "data-discover" && call.arguments.operation === "discover") requiredStage = "data-read";
+            else if (requiredStage === "data-read" && call.arguments.operation !== "discover") requiredStage = null;
+            else if (requiredStage === "object-read") requiredStage = null;
+          }
+          return toolResult;
         } catch (error) {
+          if (pendingMapping?.providerName === call.name) {
+            const reason = safeToolError(error);
+            if (requiredStage === "search") {
+              // Some otherwise usable SAP systems do not expose Repository Quick Search.
+              // Keep the failed search visible to the model, then force a fixed read/discovery
+              // so the candidate is verified by ADT instead of treating model knowledge as evidence.
+              requiredAttempts = 0;
+              requiredStage = sapIntent === "sap-data-read" ? "data-discover" : "object-read";
+            } else {
+              requiredAttempts += 1;
+              if (requiredAttempts >= 3) requiredFailure = `${pendingMapping.runtimeName} 连续 3 次执行失败，已停止本次 SAP 读取。最后原因：${reason}`;
+            }
+          }
           return failedToolResult(call, safeToolError(error));
         }
       }
@@ -463,6 +647,25 @@ export class AgentToolService {
       allowedToolsPolicy: "advisory-only",
       trust: "untrusted-extension-instructions"
     };
+  }
+}
+
+function assertSapIntentToolEnablement(
+  intent: SapReadonlyIntent,
+  agentTools: {
+    sapReadonlyEnabled: boolean;
+    sapDataPreviewEnabled: boolean;
+  }
+): void {
+  if (intent === "sap-data-read" && !agentTools.sapDataPreviewEnabled) {
+    throw new AgentToolConfigurationError(
+      "已识别为 SAP 业务数据只读任务，但当前客户项目尚未启用“SAP 业务数据只读（ADT Data Preview）”。连接验证只证明配置可用，不等于授权模型读取业务数据；请到配置中心 → AI 工具中启用后重试。"
+    );
+  }
+  if (intent === "sap-object-read" && !agentTools.sapReadonlyEnabled) {
+    throw new AgentToolConfigurationError(
+      "已识别为 SAP 对象只读任务，但当前客户项目尚未启用“SAP 对象只读”。请到配置中心 → AI 工具中启用后重试。"
+    );
   }
 }
 

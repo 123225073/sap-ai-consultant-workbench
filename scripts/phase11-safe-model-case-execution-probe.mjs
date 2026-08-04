@@ -23,7 +23,7 @@ import {
   renderSafeModelDraftFiles,
   safeModelDraftBoundary
 } from "./apps/desktop/src/main/safeModelCaseDraftService.ts";
-import { parseCaseWorkflowInput } from "./apps/desktop/src/main/caseWorkflowService.ts";
+import { buildAssistantContent, parseCaseWorkflowInput } from "./apps/desktop/src/main/caseWorkflowService.ts";
 import { FakeModelProviderConnector } from "./apps/desktop/src/main/modelProviderConnector.ts";
 import { WorkspaceStore } from "./apps/desktop/src/main/workspaceStore.ts";
 
@@ -100,7 +100,9 @@ pass("safeModelHint");
 assertThrows("unsafeSecretBlocked", () => buildSafeModelDraftContext({ ...safeInput, userInput: "api_key = abcdefghijklmnop" }));
 assertThrows("unsafeAbapBlocked", () => buildSafeModelDraftContext({ ...safeInput, userInput: "REPORT z_demo.\\nDATA lv_x TYPE string." }));
 assertThrows("unsafeSqlBlocked", () => buildSafeModelDraftContext({ ...safeInput, userInput: "SELECT * FROM mara INTO TABLE lt_mara." }));
-assertThrows("unsafeUrlBlocked", () => buildSafeModelDraftContext({ ...safeInput, caseSummary: "SAP host https://sap.example.com should not enter model context." }));
+const contextWithUnsafeOptionalSummary = buildSafeModelDraftContext({ ...safeInput, caseSummary: "SAP host https://sap.example.com should not enter model context." });
+assert(!JSON.stringify(contextWithUnsafeOptionalSummary).includes("sap.example.com"), "unsafe optional summary was not discarded");
+pass("unsafeOptionalSummaryDiscarded");
 assertThrows("unsafeDirectTextGuard", () => assertNoUnsafeModelContextText("probe", "Bearer abcdefghijklmnop"));
 
 const connector = new FakeModelProviderConnector();
@@ -144,6 +146,17 @@ assert(files.every((file) => file.relativePath.startsWith("outputs/")), "safe mo
 assert(!filePayload.includes("messages"), "raw prompt messages leaked into draft artifact");
 assert(!filePayload.includes("FULL_BODY_SHOULD_NOT_ENTER_MODEL"), "raw context leaked into draft artifact");
 pass("draftArtifactNoRawPrompt");
+
+const visibleFailure = buildAssistantContent(parsedSafeModelHint, [], {
+  status: "failed",
+  providerName: "Probe OpenAI Compatible",
+  modelId: "google/gemini-2.0-flash:free",
+  generatedAt: "2026-07-03T00:00:00.000Z",
+  errorMessage: "sap.search_objects 连续失败：连接超时",
+  contextAudit: context.audit
+});
+assert(visibleFailure.includes("sap.search_objects 连续失败：连接超时"), "safe SAP tool failure reason was not returned to the user-visible assistant message");
+pass("safeFailureReasonVisible");
 
 const store = new WorkspaceStore(isolatedRepoRoot);
 await mkdir(isolatedRepoRoot, { recursive: true });

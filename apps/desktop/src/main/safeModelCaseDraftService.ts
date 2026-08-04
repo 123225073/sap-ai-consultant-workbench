@@ -17,7 +17,7 @@ export const SAFE_MODEL_CONTEXT_ALLOWED_FIELDS = [
   "boundary"
 ] as const;
 
-export const safeModelDraftBoundary = "安全模型草稿：只使用当前输入、案件摘要、项目规范摘要、已引用已发布知识摘要和安全输出摘要；只生成本地草稿，不读取 SAP、不写 SAP、不发布飞书、不保存密钥。";
+export const safeModelDraftBoundary = "安全模型本地草稿：默认只使用当前输入、案件摘要、项目规范摘要、已引用已发布知识摘要和安全输出摘要；SAP 读取只能来自本轮已启用、已授权且实际成功返回的受控只读工具，并必须标明系统、Client、数据源、筛选、行数与截断范围；不写 SAP、不发布飞书、不保存密钥。";
 
 const MAX_USER_INPUT_CHARS = 1200;
 const MAX_CASE_TITLE_CHARS = 160;
@@ -278,7 +278,7 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
     `边界：${safeModelDraftBoundary}`,
     "",
     "输出要求：",
-    "1. 只写可编辑的本地草稿，不声称已经读取 SAP。",
+    "1. 输出可编辑的本地结果。没有成功工具结果时不得声称读取 SAP；本轮若有成功的受控 SAP 只读工具结果，应把它作为带来源证据继续分析，并准确说明筛选、返回行数和是否截断。",
     "2. 不输出 SAP 写入、激活、传输释放或飞书发布动作。",
     "3. 如果证据不足，明确写“待用户确认”。",
     "4. 输出必须是当前案件的专用内容，禁止用产品功能说明或通用占位模板冒充成果。",
@@ -290,7 +290,7 @@ export function buildSafeModelDraftContext(input: SafeModelDraftContextInput): S
   const systemContent = [
     "你是 SAP AI 顾问工作台的本地草稿助手。",
     "你只能使用用户提供的安全上下文生成回复。",
-    "不要要求或推断密钥，不要编造已读取 SAP、已发布飞书或已写入外部系统。",
+    "不要要求或推断密钥，不要编造未执行的 SAP 读取、飞书发布或外部系统写入；受控只读工具成功返回的 SAP 结果可以据实引用，但不能扩大其筛选和完整性范围。",
     safeModelDraftBoundary
   ].join("\n");
 

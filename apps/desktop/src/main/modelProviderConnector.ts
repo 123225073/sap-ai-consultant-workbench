@@ -693,12 +693,20 @@ async function invokeAgentToolLoopStream(
       temperature,
       requester,
       round,
+      toolChoice: session.getToolChoice(),
       onDelta: (delta) => {
         accumulated += delta;
         onDelta(delta);
       }
     });
     if (result.calls.length === 0) {
+      const requirement = session.getRequirementState();
+      if (requirement.status === "pending") {
+        throw new Error(`当前模型服务没有执行工作台要求的 SAP ADT 只读工具调用。${requirement.message ?? ""} 这通常表示模型或 CPA/反向代理忽略了 tool_choice；已拒绝把普通文本当作读取成功。`);
+      }
+      if (requirement.status === "failed") {
+        throw new Error(requirement.message ?? "SAP ADT 只读工具执行失败，已拒绝生成成功结论。");
+      }
       if (!accumulated.trim() && result.content.trim()) {
         accumulated = result.content;
         onDelta(result.content);
@@ -728,8 +736,16 @@ async function invokeAgentToolLoopStream(
       toolResults.push(toolResult);
     }
     appendProviderToolResults(protocol, messages, toolResults);
+    const requirement = session.getRequirementState();
+    if (requirement.status === "failed") {
+      throw new Error(requirement.message ?? "SAP ADT 只读工具执行失败，已拒绝生成成功结论。");
+    }
   }
 
+  const requirement = session.getRequirementState();
+  if (requirement.status === "pending" || requirement.status === "failed") {
+    throw new Error(requirement.message ?? "SAP ADT 只读流程未在安全轮数内完成，已拒绝生成成功结论。");
+  }
   const stopped = "\n\n工具调用已达到安全轮数上限，我已停止继续调用。请缩小问题范围后重试。";
   accumulated += stopped;
   onDelta(stopped);
@@ -755,9 +771,17 @@ async function invokeToolAwareStreamRound(options: {
   temperature: number | undefined;
   requester: SecureModelStreamRequester;
   round: number;
+  toolChoice: { mode: "auto" | "required"; name?: string };
   onDelta: (delta: string) => void;
 }): Promise<ToolAwareRound> {
-  const { input, protocol, messages, system, maxTokens, temperature, requester, round, onDelta } = options;
+  const { input, protocol, messages, system, maxTokens, temperature, requester, round, toolChoice, onDelta } = options;
+  const providerToolChoice = toolChoice.mode === "required" && toolChoice.name
+    ? protocol === "anthropic"
+      ? { type: "tool", name: toolChoice.name }
+      : { type: "function", function: { name: toolChoice.name } }
+    : protocol === "anthropic"
+      ? { type: "auto" }
+      : "auto";
   const requestBody = protocol === "anthropic"
     ? {
         model: input.modelId,
@@ -769,6 +793,7 @@ async function invokeToolAwareStreamRound(options: {
           description: tool.description,
           input_schema: tool.inputSchema
         })),
+        tool_choice: providerToolChoice,
         stream: true
       }
     : {
@@ -778,7 +803,7 @@ async function invokeToolAwareStreamRound(options: {
           type: "function",
           function: { name: tool.name, description: tool.description, parameters: tool.inputSchema }
         })),
-        tool_choice: "auto",
+        tool_choice: providerToolChoice,
         max_tokens: maxTokens,
         ...(typeof temperature === "number" ? { temperature } : {}),
         stream: true
@@ -1088,7 +1113,8 @@ abstract class HttpModelProviderConnector implements ModelProviderConnector {
           }
         );
       } catch (error) {
-        if (toolModeEmittedText || !isToolProtocolUnsupported(error)) throw error;
+        const requiredToolUse = input.toolSession.getToolChoice().mode === "required";
+        if (requiredToolUse || toolModeEmittedText || !isToolProtocolUnsupported(error)) throw error;
         content = guarded
           ? await invokeChatStream(input, this.protocol, input.context.messages, 900, 0.2, this.streamRequester, guarded.push)
           : await invokeChat(input, this.protocol, input.context.messages, 900, 0.2, this.requester);

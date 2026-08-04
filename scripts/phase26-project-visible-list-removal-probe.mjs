@@ -51,7 +51,7 @@ for (const [name, marker, source] of [
   ["renderer bridge type", "hideProjectFromSidebar", sources.viteEnv],
   ["visible project list", "visibleProjects", sources.app],
   ["visible filter", "item.isVisible !== false", sources.app],
-  ["sidebar-only notice", "项目仅从侧边栏隐藏", sources.app],
+  ["hidden project recovery", "查看并恢复已隐藏项目", sources.app],
   ["project actions style", "project-actions", sources.styles],
   ["preflight marker", PROBE_MARKER, sources.preflight]
 ]) {

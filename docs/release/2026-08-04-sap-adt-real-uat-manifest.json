@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "executedAt": "2026-08-04T15:41:25.213Z",
+  "sourceBaseline": "a0f40fa8b5d4c987979020e3e0f2ddd27deb24bf",
+  "script": "scripts/phase64-real-adt-isolated-uat.mjs",
+  "scriptSha256": "9c2a646b1f13c8ff810edae5ef4f4300cecc9c9aecec436f0666f57976729711",
+  "distMainSha256": "1d989f76c5c7f8ecc6c37b1060deaf00bb757362823c9543abfdf55ab8547b21",
+  "toolSequence": [
+    { "tool": "sap_search_objects", "ok": true },
+    { "tool": "sap_read_data_preview", "stage": "discover", "ok": true },
+    { "tool": "sap_read_data_preview", "stage": "read", "ok": true }
+  ],
+  "repositorySearchMode": "direct-success",
+  "assistantCompleted": true,
+  "isolatedCopy": true,
+  "formalStateUnchanged": true,
+  "tempCleanupCompleted": true,
+  "sensitiveIdentifiersPersisted": false,
+  "businessRowsPersisted": false
+}

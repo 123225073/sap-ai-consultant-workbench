@@ -58,6 +58,8 @@ const functionRequest = parseSapObjectEvidenceRequest({
 assert(ADT_READONLY_FIXED_GET_ENDPOINTS === "adt-readonly-fixed-get-endpoints", "fixed endpoint marker missing");
 assert(adtReadonlyObjectEvidencePath({ objectType: "program", objectName: "ZREP_TEST" }) === "/sap/bc/adt/programs/programs/ZREP_TEST/source/main", "program endpoint mismatch");
 assert(adtReadonlyObjectEvidencePath({ objectType: "class", objectName: "/UI2/CL_JSON" }) === "/sap/bc/adt/oo/classes/%2FUI2%2FCL_JSON/source/main", "class endpoint mismatch");
+assert(adtReadonlyObjectEvidencePath({ objectType: "interface", objectName: "ZIF_TEST" }) === "/sap/bc/adt/oo/interfaces/ZIF_TEST/source/main", "interface endpoint mismatch");
+assert(adtReadonlyObjectEvidencePath({ objectType: "cds", objectName: "ZI_TEST" }) === "/sap/bc/adt/ddic/ddl/sources/ZI_TEST/source/main", "CDS endpoint mismatch");
 assert(adtReadonlyObjectEvidencePath(functionRequest) === "/sap/bc/adt/functions/groups/ZFG_TEST/fmodules/ZFM_TEST/source/main", "function endpoint mismatch");
 pass("fixedEndpointMapping");
 

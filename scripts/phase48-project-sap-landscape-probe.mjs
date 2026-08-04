@@ -169,7 +169,7 @@ try {
   for (const marker of ["TextBatchTransactionJournal", "recoverInterruptedTextBatchTransactions", 'journal.status = "committed"', "rollbackPreparingTransaction"]) {
     assert(store.includes(marker), "crash-recoverable evidence transaction marker is missing: " + marker);
   }
-  assert(styles.includes(".sap-connection-picker-panel") && styles.includes(".adt-system-group") && styles.includes(".project-hide-button"), "SAP connection or compact Project settings UI styles missing");
+  assert(styles.includes(".sap-connection-picker-panel") && styles.includes(".adt-system-group") && styles.includes(".project-menu-panel"), "SAP connection or compact Project settings UI styles missing");
   process.stdout.write("phase48-project-sap-landscape-static=ok\n");
 } catch (error) {
   process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

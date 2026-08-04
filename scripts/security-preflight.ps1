@@ -1939,6 +1939,9 @@ $sapEvidenceMarkers = @(
   @{ Pattern = "ADT_READONLY_FIXED_GET_ENDPOINTS"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "RealAdtReadonlyConnector"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "adtReadonlyObjectEvidencePath"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "adtObjectSearchPath"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "operation: `"quickSearch`""; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
+  @{ Pattern = "searchObjects"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "readObjectEvidence"; Path = "apps/desktop/src/main/adtReadonlyConnector.ts" },
   @{ Pattern = "appendSapObjectEvidence"; Path = "apps/desktop/src/main/workspaceStore.ts" },
   @{ Pattern = "workbench:read-sap-object-evidence"; Path = "apps/desktop/src/main/main.ts" },
@@ -1970,7 +1973,7 @@ if ($LASTEXITCODE -eq 0) {
   throw "SAP evidence write-method scan failed."
 }
 
-$adtForbiddenEndpointHits = rg -n -- "datapreview|repository/informationsystem/search|repository/nodestructure|/sap/bc/adt/cts|/sap/bc/adt/activation|x-csrf-token|csrf" apps/desktop/src/main/adtReadonlyConnector.ts
+$adtForbiddenEndpointHits = rg -n -- "datapreview|repository/nodestructure|/sap/bc/adt/cts|/sap/bc/adt/activation|x-csrf-token|csrf" apps/desktop/src/main/adtReadonlyConnector.ts
 if ($LASTEXITCODE -eq 0) {
   $adtForbiddenEndpointHits | ForEach-Object { Write-Host $_ }
   throw "SAP evidence connector contains forbidden ADT endpoint or CSRF marker."
@@ -1997,12 +2000,33 @@ foreach ($marker in $sapBusinessPreviewMarkers) {
     throw "SAP business preview marker is missing: $($marker.Pattern)"
   }
 }
-$sapBusinessMutationHits = rg -n -i -- "\b(INSERT|UPDATE|DELETE|MODIFY|MERGE|TRUNCATE|CALL\s+TRANSACTION|SUBMIT)\b|/sap/bc/adt/(activation|cts)|x-csrf-token" apps/desktop/src/main/adtDataPreviewConnector.ts
+$sapBusinessMutationHits = rg -n -i -- "\b(INSERT|UPDATE|DELETE|MODIFY|MERGE|TRUNCATE|CALL\s+TRANSACTION|SUBMIT)\b|/sap/bc/adt/(activation|cts)" apps/desktop/src/main/adtDataPreviewConnector.ts
 if ($LASTEXITCODE -eq 0) {
   $sapBusinessMutationHits | ForEach-Object { Write-Host $_ }
   throw "SAP business-data preview connector contains mutation or privileged endpoint markers."
 } elseif ($LASTEXITCODE -gt 1) {
   throw "SAP business-data preview mutation scan failed."
+}
+$sapBusinessCsrfMarkers = @(
+  "interface AdtReadSession",
+  '"X-CSRF-Token": "Fetch"',
+  "establishReadSession",
+  "ephemeral-main-process-only"
+)
+foreach ($marker in $sapBusinessCsrfMarkers) {
+  $markerHit = Select-String -SimpleMatch -Pattern $marker -Path "apps/desktop/src/main/adtDataPreviewConnector.ts"
+  if ($markerHit) {
+    Write-Host "OK SAP read-session marker: $marker"
+  } else {
+    throw "SAP Data Preview ephemeral read session safety marker is missing: $marker"
+  }
+}
+$sapBusinessCsrfLeakHits = rg -n -i -- "console\.|logger\.|writeFile|appendFile|JSON\.stringify\((?:session|csrf)" apps/desktop/src/main/adtDataPreviewConnector.ts
+if ($LASTEXITCODE -eq 0) {
+  $sapBusinessCsrfLeakHits | ForEach-Object { Write-Host $_ }
+  throw "SAP Data Preview ephemeral session may be logged, persisted, or returned."
+} elseif ($LASTEXITCODE -gt 1) {
+  throw "SAP Data Preview ephemeral session leak scan failed."
 }
 $sapBusinessArbitraryInputHits = rg -n -- "sqlCommand|argumentsValue\.sql|properties:\s*\{[\s\S]*sql:" apps/desktop/src/main/agentToolService.ts
 if ($LASTEXITCODE -eq 0) {
